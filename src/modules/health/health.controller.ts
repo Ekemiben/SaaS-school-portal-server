@@ -19,6 +19,12 @@ export class HealthController {
   }
 
   @Public()
+  @Get('api/v1/health')
+  getApiV1Health() {
+    return this.getHealth();
+  }
+
+  @Public()
   @Get()
   getRoot() {
     return {

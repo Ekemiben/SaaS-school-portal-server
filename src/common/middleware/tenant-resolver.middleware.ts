@@ -22,42 +22,77 @@ export class TenantResolverMiddleware implements NestMiddleware {
 
     let tenant: any = null;
 
-    if (headerTenantId) {
-      tenant = await this.prisma.tenant.findUnique({
-        where: { id: headerTenantId },
-        include: { domains: true },
-      });
-    } else if (headerTenantSlug) {
-      tenant = await this.prisma.tenant.findUnique({
-        where: { slug: headerTenantSlug },
-        include: { domains: true },
-      });
-    } else if (host && host !== 'localhost' && host !== '127.0.0.1') {
-      // 1. Check custom or platform subdomain domain table
-      const tenantDomain = await this.prisma.tenantDomain.findUnique({
-        where: { domain: host },
-        include: { tenant: true },
-      });
-
-      if (tenantDomain) {
-        tenant = tenantDomain.tenant;
-      } else {
-        // 2. Check if subdomain match (e.g. greenfield.yoursaas.com or greenfield.schoolportal.com)
-        const parts = host.split('.');
-        if (parts.length >= 3) {
-          const sub = parts[0];
+    if (this.prisma.isDbConnected) {
+      try {
+        if (headerTenantId) {
           tenant = await this.prisma.tenant.findUnique({
-            where: { slug: sub },
+            where: { id: headerTenantId },
+            include: { domains: true },
+          });
+        } else if (headerTenantSlug) {
+          tenant = await this.prisma.tenant.findUnique({
+            where: { slug: headerTenantSlug },
+            include: { domains: true },
+          });
+        } else if (host && host !== 'localhost' && host !== '127.0.0.1') {
+          // 1. Check custom or platform subdomain domain table
+          const tenantDomain = await this.prisma.tenantDomain.findUnique({
+            where: { domain: host },
+            include: { tenant: true },
+          });
+
+          if (tenantDomain) {
+            tenant = tenantDomain.tenant;
+          } else {
+            // 2. Check if subdomain match (e.g. greenfield.yoursaas.com or greenfield.schoolportal.com)
+            const parts = host.split('.');
+            if (parts.length >= 3) {
+              const sub = parts[0];
+              tenant = await this.prisma.tenant.findUnique({
+                where: { slug: sub },
+              });
+            }
+          }
+        }
+
+        // Default development / test tenant fallback if none found
+        if (!tenant) {
+          tenant = await this.prisma.tenant.findFirst({
+            where: { status: 'ACTIVE' },
           });
         }
+      } catch {
+        this.prisma.isDbConnected = false;
+        tenant = null;
       }
     }
 
-    // Default development / test tenant fallback if none found
+    // In-memory fallback if not found or DB not connected
     if (!tenant) {
-      tenant = await this.prisma.tenant.findFirst({
-        where: { status: 'ACTIVE' },
-      });
+      if (headerTenantId && this.prisma.memoryStore.tenants.has(headerTenantId)) {
+        tenant = this.prisma.memoryStore.tenants.get(headerTenantId);
+      } else if (headerTenantSlug) {
+        tenant = Array.from(this.prisma.memoryStore.tenants.values()).find(
+          (t) => t.slug === headerTenantSlug,
+        );
+      } else if (host && host !== 'localhost' && host !== '127.0.0.1') {
+        const domain = Array.from(this.prisma.memoryStore.domains.values()).find(
+          (d) => d.domain === host,
+        );
+        if (domain) {
+          tenant = this.prisma.memoryStore.tenants.get(domain.tenantId);
+        } else {
+          const sub = host.split('.')[0];
+          tenant = Array.from(this.prisma.memoryStore.tenants.values()).find(
+            (t) => t.slug === sub,
+          );
+        }
+      }
+
+      // Default fallback demo tenant
+      if (!tenant) {
+        tenant = Array.from(this.prisma.memoryStore.tenants.values())[0] || null;
+      }
     }
 
     if (tenant) {
