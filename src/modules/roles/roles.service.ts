@@ -7,7 +7,7 @@ export class RolesService {
   constructor(private readonly prisma: PrismaService) {}
 
   async listRoles(_tenantId: string) {
-    return [
+    const systemRoles = [
       {
         id: 'role_school_owner',
         name: 'School Owner',
@@ -75,6 +75,69 @@ export class RolesService {
         permissions: ['students.view'],
       },
     ];
+
+    const customRoles = Array.from(this.prisma.memoryStore.roles.values()).filter(
+      (r) => r.tenantId === _tenantId,
+    );
+
+    return [...systemRoles, ...customRoles];
+  }
+
+  async createRole(
+    tenantId: string,
+    dto: { name: string; description?: string; permissions: string[] },
+  ) {
+    const id = `role_custom_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const newRole = {
+      id,
+      tenantId,
+      name: dto.name,
+      description: dto.description || '',
+      isSystem: false,
+      permissions: dto.permissions || [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    this.prisma.memoryStore.roles.set(id, newRole);
+    return newRole;
+  }
+
+  async updateRole(
+    tenantId: string,
+    roleId: string,
+    dto: { name?: string; description?: string; permissions?: string[] },
+  ) {
+    if (roleId.startsWith('role_school_') || roleId.startsWith('role_teacher') || roleId.startsWith('role_parent')) {
+      throw new Error('System-defined default roles cannot be modified.');
+    }
+
+    const role = this.prisma.memoryStore.roles.get(roleId);
+    if (!role || role.tenantId !== tenantId) {
+      throw new Error('Custom role not found.');
+    }
+
+    if (dto.name) role.name = dto.name;
+    if (dto.description !== undefined) role.description = dto.description;
+    if (dto.permissions) role.permissions = dto.permissions;
+    role.updatedAt = new Date();
+
+    this.prisma.memoryStore.roles.set(roleId, role);
+    return role;
+  }
+
+  async deleteRole(tenantId: string, roleId: string) {
+    if (roleId.startsWith('role_school_') || roleId.startsWith('role_teacher') || roleId.startsWith('role_parent')) {
+      throw new Error('System-defined default roles cannot be deleted.');
+    }
+
+    const role = this.prisma.memoryStore.roles.get(roleId);
+    if (!role || role.tenantId !== tenantId) {
+      throw new Error('Custom role not found.');
+    }
+
+    this.prisma.memoryStore.roles.delete(roleId);
+    return { success: true, message: 'Custom role deleted successfully.' };
   }
 
   async listPermissions() {

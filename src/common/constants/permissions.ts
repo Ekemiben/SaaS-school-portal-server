@@ -4,6 +4,7 @@ export const SystemPermissions = {
   SETTINGS_MANAGE: 'settings.manage',
   DOMAINS_MANAGE: 'domains.manage',
   SUBSCRIPTION_MANAGE: 'subscription.manage',
+  BILLING_MANAGE: 'billing.manage',
 
   // Users & Roles
   USERS_VIEW: 'users.view',
@@ -57,6 +58,7 @@ export const SystemPermissions = {
 
   // Operations
   TRANSPORT_MANAGE: 'transport.manage',
+  COMMUNICATIONS_VIEW: 'communications.view',
   COMMUNICATIONS_MANAGE: 'communications.manage',
   NOTIFICATIONS_SEND: 'notifications.send',
   REPORTS_VIEW: 'reports.view',

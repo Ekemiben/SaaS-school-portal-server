@@ -44,4 +44,18 @@ export class ExaminationsController {
   ) {
     return this.examinationsService.publish(tenant.tenantId, id);
   }
+
+  @Get('grading/scales')
+  async getGradingScales(@CurrentTenant() tenant: TenantContext) {
+    return this.examinationsService.getGradingScales(tenant.tenantId);
+  }
+
+  @RequirePermissions(SystemPermissions.EXAMINATIONS_MANAGE)
+  @Post('grading/scales')
+  async createGradingScale(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() body: { name: string; rules: any[] },
+  ) {
+    return this.examinationsService.createGradingScale(tenant.tenantId, body);
+  }
 }

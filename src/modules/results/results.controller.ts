@@ -41,4 +41,37 @@ export class ResultsController {
   ) {
     return this.resultsService.getReportCard(tenant.tenantId, studentId, examinationId);
   }
+
+  @Get('report-card/:studentId/:examinationId/print')
+  async getPrintableReportCard(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('studentId') studentId: string,
+    @Param('examinationId') examinationId: string,
+  ) {
+    return this.resultsService.getPrintableReportCard(tenant.tenantId, studentId, examinationId);
+  }
+
+  @RequirePermissions(SystemPermissions.RESULTS_APPROVE)
+  @Post('approve')
+  async approveResults(
+    @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
+    @Body() body: { examinationId: string; classId?: string },
+  ) {
+    return this.resultsService.approveResults(
+      tenant.tenantId,
+      body.examinationId,
+      user?.id || 'sys_user',
+      body.classId,
+    );
+  }
+
+  @RequirePermissions(SystemPermissions.RESULTS_PUBLISH)
+  @Post('publish')
+  async publishResults(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() body: { examinationId: string; classId?: string },
+  ) {
+    return this.resultsService.publishResults(tenant.tenantId, body.examinationId, body.classId);
+  }
 }

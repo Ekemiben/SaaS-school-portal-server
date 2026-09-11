@@ -93,6 +93,72 @@ export class AuthController {
     return this.authService.getProfile(user.id, tenant.tenantId);
   }
 
+  @Public()
+  @Post('forgot-password')
+  async forgotPassword(
+    @CurrentTenant() tenant: TenantContext,
+    @Body('email') email: string,
+  ) {
+    return this.authService.forgotPassword(tenant.tenantId, email);
+  }
+
+  @Public()
+  @Post('reset-password')
+  async resetPassword(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() body: { token: string; newPassword: string },
+  ) {
+    return this.authService.resetPassword(tenant.tenantId, body.token, body.newPassword);
+  }
+
+  @Post('change-password')
+  async changePassword(
+    @CurrentUser() user: any,
+    @CurrentTenant() tenant: TenantContext,
+    @Body() body: { currentPassword: string; newPassword: string },
+  ) {
+    return this.authService.changePassword(
+      user.id,
+      tenant.tenantId,
+      body.currentPassword,
+      body.newPassword,
+    );
+  }
+
+  @Post('switch-campus')
+  async switchCampus(
+    @CurrentUser() user: any,
+    @CurrentTenant() tenant: TenantContext,
+    @Body('campusId') campusId: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.authService.switchCampus(user.id, tenant.tenantId, campusId);
+    res.cookie('accessToken', result.accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 3600 * 1000,
+    });
+    return result;
+  }
+
+  @Post('2fa/generate')
+  async generate2fa(
+    @CurrentUser() user: any,
+    @CurrentTenant() tenant: TenantContext,
+  ) {
+    return this.authService.setup2FA(user.id, tenant.tenantId);
+  }
+
+  @Post('2fa/verify')
+  async verify2fa(
+    @CurrentUser() user: any,
+    @CurrentTenant() tenant: TenantContext,
+    @Body('code') code: string,
+  ) {
+    return this.authService.verify2FA(user.id, tenant.tenantId, code);
+  }
+
   @Post('logout')
   async logout(@Res({ passthrough: true }) res: Response) {
     res.clearCookie('accessToken');

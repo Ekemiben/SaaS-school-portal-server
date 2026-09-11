@@ -25,6 +25,15 @@ export class AttendanceController {
     });
   }
 
+  @RequirePermissions(SystemPermissions.ATTENDANCE_VIEW)
+  @Get('statistics')
+  async getStatistics(
+    @CurrentTenant() tenant: TenantContext,
+    @Query('classId') classId?: string,
+  ) {
+    return this.attendanceService.getStatistics(tenant.tenantId, classId);
+  }
+
   @RequirePermissions(SystemPermissions.ATTENDANCE_MARK)
   @Post('mark')
   async markAttendance(

@@ -94,4 +94,80 @@ export class ResultsService {
       },
     };
   }
+
+  async approveResults(tenantId: string, examinationId: string, approvedByUserId: string, classId?: string) {
+    let count = 0;
+    for (const [id, res] of this.prisma.memoryStore.results.entries()) {
+      if (res.tenantId === tenantId && res.examinationId === examinationId) {
+        if (!classId || res.classId === classId) {
+          res.isApproved = true;
+          res.approvedAt = new Date();
+          res.approvedByUserId = approvedByUserId;
+          this.prisma.memoryStore.results.set(id, res);
+          count++;
+        }
+      }
+    }
+    return { success: true, count, message: `${count} results approved successfully` };
+  }
+
+  async publishResults(tenantId: string, examinationId: string, classId?: string) {
+    let count = 0;
+    for (const [id, res] of this.prisma.memoryStore.results.entries()) {
+      if (res.tenantId === tenantId && res.examinationId === examinationId) {
+        if (!classId || res.classId === classId) {
+          res.isPublished = true;
+          res.publishedAt = new Date();
+          this.prisma.memoryStore.results.set(id, res);
+          count++;
+        }
+      }
+    }
+    return { success: true, count, message: `${count} results published and visible to parents/students` };
+  }
+
+  async getPrintableReportCard(tenantId: string, studentId: string, examinationId: string) {
+    const report = await this.getReportCard(tenantId, studentId, examinationId);
+    const tenant = this.prisma.memoryStore.tenants.get(tenantId);
+    const cls = report.student.currentClassId
+      ? this.prisma.memoryStore.classes.get(report.student.currentClassId)
+      : null;
+
+    return {
+      template: 'STANDARD_TRANSCRIPT_V1',
+      schoolInfo: {
+        schoolName: tenant?.name || 'School Name',
+        schoolSlug: tenant?.slug || '',
+        currency: tenant?.currency || 'USD',
+      },
+      student: {
+        id: report.student.id,
+        fullName: `${report.student.firstName} ${report.student.lastName}`,
+        admissionNumber: report.student.admissionNumber,
+        gender: report.student.gender,
+        className: cls?.name || 'Class',
+      },
+      examination: {
+        id: report.examination?.id || examinationId,
+        name: report.examination?.name || 'Term Examination',
+      },
+      grades: report.results.map((r: any) => {
+        const subject = this.prisma.memoryStore.subjects.get(r.subjectId);
+        return {
+          subjectName: subject?.name || 'Subject',
+          subjectCode: subject?.code || '',
+          score: r.marksObtained,
+          maxScore: r.maxMarks,
+          grade: r.grade,
+          remarks: r.remarks || 'Satisfactory',
+        };
+      }),
+      summary: report.summary,
+      signatureLine: {
+        principal: 'Approved & Signed by Principal',
+        date: new Date().toLocaleDateString(),
+      },
+      printableAt: new Date().toISOString(),
+    };
+  }
 }

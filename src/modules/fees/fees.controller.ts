@@ -45,4 +45,22 @@ export class FeesController {
   ) {
     return this.feesService.generateInvoice(tenant.tenantId, body);
   }
+
+  @RequirePermissions(SystemPermissions.FEES_MANAGE)
+  @Post('waivers')
+  async applyFeeWaiver(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() body: any,
+  ) {
+    return this.feesService.applyFeeWaiver(tenant.tenantId, body);
+  }
+
+  @RequirePermissions(SystemPermissions.FEES_VIEW)
+  @Get('waivers')
+  async getWaivers(
+    @CurrentTenant() tenant: TenantContext,
+    @Query('studentId') studentId?: string,
+  ) {
+    return this.feesService.getWaivers(tenant.tenantId, studentId);
+  }
 }

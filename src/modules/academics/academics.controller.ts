@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query, Param } from '@nestjs/common';
 import { AcademicsService } from './academics.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
@@ -69,5 +69,51 @@ export class AcademicsController {
     @Body() body: any,
   ) {
     return this.academicsService.createSubject(tenant.tenantId, body);
+  }
+
+  // --- Enrollments & Promotions ---
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Post('enrollments')
+  async enrollStudent(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() body: { studentId: string; classId: string; academicYearId: string; rollNumber?: string },
+  ) {
+    return this.academicsService.enrollStudent(tenant.tenantId, body);
+  }
+
+  @Get('classes/:classId/enrollments')
+  async getClassEnrollments(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('classId') classId: string,
+    @Query('academicYearId') academicYearId?: string,
+  ) {
+    return this.academicsService.getClassEnrollments(tenant.tenantId, classId, academicYearId);
+  }
+
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Post('enrollments/promote')
+  async promoteStudents(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() body: { fromClassId: string; toClassId: string; targetAcademicYearId: string; studentIds: string[] },
+  ) {
+    return this.academicsService.promoteStudents(tenant.tenantId, body);
+  }
+
+  // --- Class Subjects ---
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Post('class-subjects')
+  async assignClassSubject(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() body: { classId: string; subjectId: string; teacherId: string; periodsPerWeek?: number },
+  ) {
+    return this.academicsService.assignClassSubject(tenant.tenantId, body);
+  }
+
+  @Get('classes/:classId/subjects')
+  async getClassSubjects(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('classId') classId: string,
+  ) {
+    return this.academicsService.getClassSubjects(tenant.tenantId, classId);
   }
 }

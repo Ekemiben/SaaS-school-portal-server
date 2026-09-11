@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Body, Param, Query, Headers } from '@nestjs/common';
 import { PaymentsService } from './payments.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
+import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
@@ -19,6 +20,15 @@ export class PaymentsController {
     return this.paymentsService.listPayments(tenant.tenantId, studentId);
   }
 
+  @RequirePermissions(SystemPermissions.PAYMENTS_VIEW)
+  @Get(':id/receipt')
+  async getReceipt(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.paymentsService.getReceipt(tenant.tenantId, id);
+  }
+
   @Post('initialize')
   async initialize(
     @CurrentTenant() tenant: TenantContext,
@@ -33,6 +43,22 @@ export class PaymentsController {
     @Param('reference') reference: string,
   ) {
     return this.paymentsService.verifyPayment(tenant.tenantId, reference);
+  }
+
+  @RequirePermissions(SystemPermissions.FEES_MANAGE)
+  @Post(':id/refund')
+  async refundPayment(
+    @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
+    @Param('id') id: string,
+    @Body('reason') reason: string,
+  ) {
+    return this.paymentsService.refundPayment(
+      tenant.tenantId,
+      id,
+      reason || 'Administrative refund',
+      user?.id || 'sys_user',
+    );
   }
 
   @Public()

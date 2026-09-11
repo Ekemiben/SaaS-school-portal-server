@@ -1,10 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
+import { NotificationProcessor } from '../../jobs/processors/notification.processor.js';
 import { randomUUID } from 'crypto';
 
 @Injectable()
 export class AttendanceService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notificationProcessor: NotificationProcessor,
+  ) {}
 
   async getAttendance(
     tenantId: string,
@@ -55,7 +59,76 @@ export class AttendanceService {
       };
       this.prisma.memoryStore.attendance.set(id, record);
       saved.push(record);
+
+      // Trigger instant parent SMS/Email notification if student is ABSENT
+      if (r.status === 'ABSENT') {
+        const student = this.prisma.memoryStore.students.get(r.studentId);
+        if (student) {
+          const parent = student.parentId ? this.prisma.memoryStore.parents.get(student.parentId) : null;
+          const recipient = parent?.phone || parent?.email || 'parent@example.com';
+          this.notificationProcessor.process({
+            id: `job_att_absent_${id}`,
+            data: {
+              channel: parent?.phone ? 'sms' : 'email',
+              tenantId,
+              recipient,
+              subject: `Absence Alert: ${student.firstName} ${student.lastName}`,
+              body: `Dear Parent, please be notified that ${student.firstName} ${student.lastName} was marked ABSENT on ${data.date}. Remarks: ${r.remarks || 'None'}.`,
+              metadata: { studentId: r.studentId, date: data.date },
+            },
+          }).catch(() => {});
+        }
+      }
     }
     return { success: true, count: saved.length, records: saved };
+  }
+
+  async getStatistics(tenantId: string, classId?: string) {
+    const records = Array.from(this.prisma.memoryStore.attendance.values()).filter(
+      (a) => a.tenantId === tenantId && (!classId || a.classId === classId),
+    );
+
+    const total = records.length;
+    if (total === 0) {
+      return {
+        totalRecords: 0,
+        presentRate: 100,
+        absentRate: 0,
+        lateRate: 0,
+        chronicAbsentees: [],
+      };
+    }
+
+    const presentCount = records.filter((r) => r.status === 'PRESENT').length;
+    const absentCount = records.filter((r) => r.status === 'ABSENT').length;
+    const lateCount = records.filter((r) => r.status === 'LATE').length;
+
+    // Identify chronic absentees (> 3 absences)
+    const absentPerStudent = new Map<string, number>();
+    for (const r of records) {
+      if (r.status === 'ABSENT') {
+        absentPerStudent.set(r.studentId, (absentPerStudent.get(r.studentId) || 0) + 1);
+      }
+    }
+
+    const chronicAbsentees = [];
+    for (const [studentId, count] of absentPerStudent.entries()) {
+      if (count >= 2) {
+        const student = this.prisma.memoryStore.students.get(studentId);
+        chronicAbsentees.push({
+          studentId,
+          studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
+          absenceCount: count,
+        });
+      }
+    }
+
+    return {
+      totalRecords: total,
+      presentRate: Math.round((presentCount / total) * 100),
+      absentRate: Math.round((absentCount / total) * 100),
+      lateRate: Math.round((lateCount / total) * 100),
+      chronicAbsentees,
+    };
   }
 }

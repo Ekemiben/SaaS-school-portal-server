@@ -36,6 +36,18 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     fileAssets: new Map<string, any>(),
     subscriptions: new Map<string, any>(),
     auditLogs: new Map<string, any>(),
+    timetables: new Map<string, any>(),
+    timetableEntries: new Map<string, any>(),
+    homework: new Map<string, any>(),
+    homeworkSubmissions: new Map<string, any>(),
+    communications: new Map<string, any>(),
+    communicationThreads: new Map<string, any>(),
+    billingInvoices: new Map<string, any>(),
+    gradingScales: new Map<string, any>(),
+    feeWaivers: new Map<string, any>(),
+    classSubjects: new Map<string, any>(),
+    mfaSecrets: new Map<string, any>(),
+    resetTokens: new Map<string, any>(),
   };
 
   constructor() {
