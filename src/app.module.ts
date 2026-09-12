@@ -48,6 +48,7 @@ import { ExpensesModule } from './modules/expenses/expenses.module.js';
 import { TransportModule } from './modules/transport/transport.module.js';
 import { CommunicationsModule } from './modules/communications/communications.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
+import { StorageModule } from './modules/storage/storage.module.js';
 import { FilesModule } from './modules/files/files.module.js';
 import { ReportsModule } from './modules/reports/reports.module.js';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module.js';
@@ -82,6 +83,7 @@ import { HealthModule } from './modules/health/health.module.js';
     TransportModule,
     CommunicationsModule,
     NotificationsModule,
+    StorageModule,
     FilesModule,
     ReportsModule,
     SubscriptionsModule,

@@ -1,13 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
-import { ReportProcessor } from '../../jobs/processors/report.processor.js';
-import { randomUUID } from 'crypto';
+import { QueueService } from '../../jobs/queue.service.js';
+import { QUEUES, JOB_TYPES } from '../../jobs/queue.constants.js';
 
 @Injectable()
 export class ReportsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly reportProcessor: ReportProcessor,
+    private readonly queueService: QueueService,
   ) {}
 
   async getExecutiveDashboard(tenantId: string) {
@@ -141,22 +141,24 @@ export class ReportsService {
     userId: string,
     dto: { reportType: 'report-card' | 'fee-summary' | 'attendance-sheet'; campusId?: string; parameters?: any },
   ) {
-    const jobId = `job_rep_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const result = await this.reportProcessor.process({
-      id: jobId,
-      data: {
+    const job = await this.queueService.addJob(
+      QUEUES.REPORTS,
+      JOB_TYPES.GENERATE_REPORT_CARD,
+      {
         reportType: dto.reportType,
         tenantId,
         campusId: dto.campusId,
         parameters: dto.parameters || {},
         requestedByUserId: userId,
       },
-    });
+      { attempts: 3, backoffDelay: 1000 },
+    );
 
     return {
-      jobId,
-      ...result,
-      status: 'QUEUED_AND_GENERATED',
+      jobId: job.jobId,
+      queueName: job.queueName,
+      status: 'QUEUED',
+      message: 'Report generation task successfully scheduled in persistent distributed queue.',
     };
   }
 }

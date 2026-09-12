@@ -1,13 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
 import { CreateAnnouncementDto, SendDirectMessageDto } from './dto/create-announcement.dto.js';
-import { NotificationProcessor } from '../../jobs/processors/notification.processor.js';
+import { QueueService } from '../../jobs/queue.service.js';
+import { QUEUES, JOB_TYPES } from '../../jobs/queue.constants.js';
 
 @Injectable()
 export class CommunicationsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly notificationProcessor: NotificationProcessor,
+    private readonly queueService: QueueService,
   ) {}
 
   async createAnnouncement(tenantId: string, authorUserId: string, dto: CreateAnnouncementDto) {
@@ -23,12 +24,13 @@ export class CommunicationsService {
 
     this.prisma.memoryStore.communications.set(id, announcement);
 
-    // If email or SMS channels requested, dispatch notifications asynchronously
+    // If email or SMS channels requested, dispatch notifications to persistent queue
     if (dto.channels?.includes('EMAIL') || dto.channels?.includes('SMS')) {
       const channel = dto.channels.includes('EMAIL') ? 'email' : 'sms';
-      this.notificationProcessor.process({
-        id: `job_ann_${id}`,
-        data: {
+      await this.queueService.addJob(
+        QUEUES.NOTIFICATIONS,
+        channel === 'email' ? JOB_TYPES.SEND_EMAIL : JOB_TYPES.SEND_SMS,
+        {
           channel,
           tenantId,
           recipient: 'broadcast-audience',
@@ -36,7 +38,8 @@ export class CommunicationsService {
           body: dto.content,
           metadata: { announcementId: id, audience: dto.audience },
         },
-      }).catch(() => {});
+        { attempts: 3, backoffDelay: 1000 },
+      );
     }
 
     return announcement;
