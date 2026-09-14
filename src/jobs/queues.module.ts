@@ -1,8 +1,9 @@
 import { Global, Module } from '@nestjs/common';
+import { JobsController } from './jobs.controller.js';
 import { RedisConnectionService } from './redis-connection.service.js';
 import { QueueService } from './queue.service.js';
 import { QueueWorkersService } from './queue-workers.service.js';
-import { JobsController } from './jobs.controller.js';
+import { BullmqService } from './bullmq.service.js';
 import { NotificationProcessor } from './processors/notification.processor.js';
 import { ReportProcessor } from './processors/report.processor.js';
 import { ImportExportProcessor } from './processors/import-export.processor.js';
@@ -25,6 +26,7 @@ import { WhatsAppAdapter } from '../modules/notifications/adapters/whatsapp.adap
     ReportProcessor,
     ImportExportProcessor,
     PaymentReconcileProcessor,
+    BullmqService,
   ],
   exports: [
     RedisConnectionService,
@@ -37,6 +39,7 @@ import { WhatsAppAdapter } from '../modules/notifications/adapters/whatsapp.adap
     ReportProcessor,
     ImportExportProcessor,
     PaymentReconcileProcessor,
+    BullmqService,
   ],
 })
 export class QueuesModule {}

@@ -1,4 +1,9 @@
-import { Injectable, ForbiddenException, BadRequestException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  ForbiddenException,
+  Logger,
+} from '@nestjs/common';
 import { PrismaService } from './prisma.service.js';
 
 @Injectable()
@@ -8,136 +13,158 @@ export class RlsHelper {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Sanitizes and validates tenant identifier to prevent SQL injection or malformed input
+   * Validates tenant ID format to prevent SQL injection and malformed identifiers.
    */
-  public validateTenantId(tenantId: string): string {
-    if (!tenantId || typeof tenantId !== 'string') {
-      throw new BadRequestException('Invalid tenant ID: A valid non-empty string tenantId is required.');
+  validateTenantId(tenantId: string): string {
+    if (!tenantId || typeof tenantId !== 'string' || !tenantId.trim()) {
+      throw new BadRequestException('Tenant ID cannot be empty or whitespace.');
     }
+
     const trimmed = tenantId.trim();
     if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) {
-      throw new BadRequestException('Security violation: Malformed tenant ID contains invalid characters.');
+      throw new BadRequestException(
+        `Invalid tenant ID format "${tenantId}". Must only contain alphanumeric characters, underscores, and dashes.`,
+      );
     }
+
     return trimmed;
   }
 
   /**
-   * Asserts that a given entity strictly belongs to the requesting tenant
+   * Asserts that a resource belongs to the expected tenant context.
    */
-  public assertTenantOwnership(
+  assertTenantOwnership(
     expectedTenantId: string,
-    entityTenantId: string,
-    entityName: string = 'Resource',
+    actualTenantId: string,
+    resourceName = 'Resource',
   ): void {
-    const validExpected = this.validateTenantId(expectedTenantId);
-    if (!entityTenantId || entityTenantId !== validExpected) {
+    if (!expectedTenantId || !actualTenantId || expectedTenantId !== actualTenantId) {
       throw new ForbiddenException(
-        `Cross-tenant access violation: ${entityName} does not belong to your school organization.`,
+        `Cross-tenant access violation: ${resourceName} does not belong to the authenticated tenant.`,
       );
     }
   }
 
-  /**
-   * Executes a database operation within a transaction-local tenant context.
-   * On PostgreSQL: executes `SET LOCAL app.current_tenant_id = '<tenantId>'`.
-   * On In-Memory Fallback: wraps memory stores with strict tenant isolation proxies.
-   */
-  async withTenantContext<T>(
-    tenantId: string,
-    callback: (prisma: PrismaService) => Promise<T>,
-  ): Promise<T> {
-    const validTenantId = this.validateTenantId(tenantId);
+  private createTenantScopedStore(tenantId: string, memoryStore: any) {
+    const handler: ProxyHandler<any> = {
+      get: (targetStore, prop: string) => {
+        const actualMap = targetStore[prop];
+        if (!(actualMap instanceof Map)) {
+          return actualMap;
+        }
 
-    if (this.prisma.isDbConnected) {
-      return this.prisma.$transaction(async (tx) => {
-        // Safe parameterization using PostgreSQL set_config with transaction-local scope (is_local = true)
-        await tx.$executeRaw`SELECT set_config('app.current_tenant_id', ${validTenantId}, true);`;
-        return callback(tx as unknown as PrismaService);
-      });
-    }
+        const isTenantMap = prop === 'tenants';
 
-    // In-memory fallback: create tenant-scoped proxy enforcing strict cross-tenant isolation
-    const scopedPrisma = this.createScopedMemoryStoreProxy(validTenantId);
-    return callback(scopedPrisma);
+        return {
+          get: (id: string) => {
+            const item = actualMap.get(id);
+            if (!item) return undefined;
+            if (isTenantMap) {
+              return item.id === tenantId ? item : undefined;
+            }
+            return item.tenantId === tenantId ? item : undefined;
+          },
+          has: (id: string) => {
+            const item = actualMap.get(id);
+            if (!item) return false;
+            if (isTenantMap) {
+              return item.id === tenantId;
+            }
+            return item.tenantId === tenantId;
+          },
+          values: () => {
+            const all = Array.from(actualMap.values());
+            if (isTenantMap) {
+              return all.filter((item: any) => item.id === tenantId);
+            }
+            return all.filter((item: any) => item.tenantId === tenantId);
+          },
+          entries: () => {
+            const all = Array.from(actualMap.entries());
+            if (isTenantMap) {
+              return all.filter(([_, item]: any) => item.id === tenantId);
+            }
+            return all.filter(([_, item]: any) => item.tenantId === tenantId);
+          },
+          set: (id: string, value: any) => {
+            if (value && value.tenantId && value.tenantId !== tenantId) {
+              throw new ForbiddenException(`Cross-tenant mutation prohibited: Resource tagged with foreign tenantId ${value.tenantId}`);
+            }
+            const existing = actualMap.get(id);
+            if (existing && existing.tenantId && existing.tenantId !== tenantId) {
+              throw new ForbiddenException(`Cross-tenant update prohibited on foreign record ${id}`);
+            }
+            return actualMap.set(id, { ...value, tenantId: value.tenantId || tenantId });
+          },
+          delete: (id: string) => {
+            const existing = actualMap.get(id);
+            if (!existing) return false;
+            if (isTenantMap && existing.id !== tenantId) {
+              throw new ForbiddenException('Cannot delete foreign tenant');
+            }
+            if (!isTenantMap && existing.tenantId && existing.tenantId !== tenantId) {
+              throw new ForbiddenException('Cannot delete foreign tenant record');
+            }
+            return actualMap.delete(id);
+          },
+        };
+      },
+    };
+
+    return new Proxy(memoryStore, handler);
   }
 
   /**
-   * Wraps the in-memory fallback store with strict tenant filtering and mutation guards
+   * Executes a database query or transaction within the context of a specific tenant RLS session.
+   * Switches to application role and sets `SET LOCAL app.current_tenant_id = '<tenantId>'`.
    */
-  private createScopedMemoryStoreProxy(tenantId: string): PrismaService {
-    const sourcePrisma = this.prisma;
-    const scopedMemoryStore: Record<string, Map<string, any>> = {};
+  async withTenantContext<T>(
+    tenantId: string,
+    callback: (tx: PrismaService) => Promise<T>,
+  ): Promise<T> {
+    const validTenantId = this.validateTenantId(tenantId);
 
-    for (const [storeKey, originalMap] of Object.entries(sourcePrisma.memoryStore)) {
-      scopedMemoryStore[storeKey] = new Proxy(originalMap, {
-        get(target, prop, receiver) {
-          if (prop === 'get') {
-            return (key: string) => {
-              const item = target.get(key);
-              if (!item) return undefined;
-              if ('tenantId' in item && item.tenantId !== tenantId) {
-                // Cross-tenant item is invisible under RLS
-                return undefined;
-              }
-              return item;
-            };
-          }
-          if (prop === 'has') {
-            return (key: string) => {
-              const item = target.get(key);
-              if (!item) return false;
-              if ('tenantId' in item && item.tenantId !== tenantId) {
-                return false;
-              }
-              return true;
-            };
-          }
-          if (prop === 'set') {
-            return (key: string, value: any) => {
-              if (value && typeof value === 'object' && 'tenantId' in value) {
-                if (value.tenantId !== tenantId) {
-                  throw new ForbiddenException(
-                    `Cross-tenant write denied: Cannot insert/update entity for foreign tenant "${value.tenantId}".`,
-                  );
-                }
-              }
-              return target.set(key, value);
-            };
-          }
-          if (prop === 'delete') {
-            return (key: string) => {
-              const item = target.get(key);
-              if (!item) return false;
-              if ('tenantId' in item && item.tenantId !== tenantId) {
-                throw new ForbiddenException(
-                  `Cross-tenant delete denied: Cannot delete entity belonging to foreign tenant "${item.tenantId}".`,
-                );
-              }
-              return target.delete(key);
-            };
-          }
-          if (prop === 'values') {
-            return function* () {
-              for (const item of target.values()) {
-                if (!item || !('tenantId' in item) || item.tenantId === tenantId) {
-                  yield item;
-                }
-              }
-            };
-          }
-          return Reflect.get(target, prop, receiver);
+    if (!this.prisma.isDbConnected) {
+      const scopedStore = this.createTenantScopedStore(validTenantId, this.prisma.memoryStore);
+      const scopedPrisma = new Proxy(this.prisma, {
+        get: (target, prop) => {
+          if (prop === 'memoryStore') return scopedStore;
+          return (target as any)[prop];
         },
       });
+      return callback(scopedPrisma as unknown as PrismaService);
     }
 
-    // Return a shallow proxy of PrismaService substituting memoryStore
-    return new Proxy(sourcePrisma, {
-      get(target, prop, receiver) {
-        if (prop === 'memoryStore') {
-          return scopedMemoryStore;
-        }
-        return Reflect.get(target, prop, receiver);
-      },
+    const sanitizedTenantId = validTenantId.replace(/'/g, "''");
+    return this.prisma.$transaction(async (tx: any) => {
+      if (typeof tx.$executeRawUnsafe === 'function') {
+        await tx.$executeRawUnsafe(`SET LOCAL ROLE school_saas_app;`);
+        await tx.$executeRawUnsafe(`SET LOCAL app.current_tenant_id = '${sanitizedTenantId}';`);
+      } else if (typeof tx.$executeRaw === 'function') {
+        await tx.$executeRaw`SET LOCAL ROLE school_saas_app;`;
+      }
+      return callback(tx as unknown as PrismaService);
+    });
+  }
+
+  /**
+   * Executes database operations bypassing tenant RLS (used strictly for platform administrative actions).
+   * Sets `SET LOCAL app.bypass_rls = 'on'` in the transaction.
+   */
+  async withBypassContext<T>(
+    callback: (tx: PrismaService) => Promise<T>,
+  ): Promise<T> {
+    if (!this.prisma.isDbConnected) {
+      return callback(this.prisma);
+    }
+
+    return this.prisma.$transaction(async (tx: any) => {
+      if (typeof tx.$executeRawUnsafe === 'function') {
+        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on';`);
+      } else if (typeof tx.$executeRaw === 'function') {
+        await tx.$executeRaw`SET LOCAL app.bypass_rls = 'on';`;
+      }
+      return callback(tx as unknown as PrismaService);
     });
   }
 }

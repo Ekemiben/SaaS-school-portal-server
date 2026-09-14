@@ -1,76 +1,31 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { Pool } from 'pg';
-import { populateDefaultMemoryStore } from './default-memory-data.js';
+import pg from 'pg';
+import { defaultMemoryStoreData } from './default-memory-store.data.js';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
   public isDbConnected = false;
-  private pool?: Pool;
+  private pool: pg.Pool | null = null;
 
-  // In-memory backing stores for operational resilience in dev/test when DB is not yet provisioned
-  public memoryStore = {
-    tenants: new Map<string, any>(),
-    domains: new Map<string, any>(),
-    campuses: new Map<string, any>(),
-    users: new Map<string, any>(),
-    roles: new Map<string, any>(),
-    permissions: new Map<string, any>(),
-    students: new Map<string, any>(),
-    parents: new Map<string, any>(),
-    teachers: new Map<string, any>(),
-    academicYears: new Map<string, any>(),
-    terms: new Map<string, any>(),
-    classes: new Map<string, any>(),
-    subjects: new Map<string, any>(),
-    enrollments: new Map<string, any>(),
-    attendance: new Map<string, any>(),
-    examinations: new Map<string, any>(),
-    results: new Map<string, any>(),
-    feeStructures: new Map<string, any>(),
-    invoices: new Map<string, any>(),
-    payments: new Map<string, any>(),
-    payroll: new Map<string, any>(),
-    expenses: new Map<string, any>(),
-    transportRoutes: new Map<string, any>(),
-    notifications: new Map<string, any>(),
-    fileAssets: new Map<string, any>(),
-    subscriptions: new Map<string, any>(),
-    auditLogs: new Map<string, any>(),
-    timetables: new Map<string, any>(),
-    timetableEntries: new Map<string, any>(),
-    homework: new Map<string, any>(),
-    homeworkSubmissions: new Map<string, any>(),
-    communications: new Map<string, any>(),
-    communicationThreads: new Map<string, any>(),
-    billingInvoices: new Map<string, any>(),
-    gradingScales: new Map<string, any>(),
-    feeWaivers: new Map<string, any>(),
-    classSubjects: new Map<string, any>(),
-    mfaSecrets: new Map<string, any>(),
-    resetTokens: new Map<string, any>(),
-  };
+  public memoryStore = defaultMemoryStoreData();
 
   constructor() {
     const connectionString =
       process.env.DATABASE_URL ||
-      'postgresql://postgres:postgres@localhost:5432/school_saas?schema=public';
+      'postgresql://postgres:Multi-Tenant-SaaS-Portal@localhost:5432/multi_tenant_saas?schema=public';
 
     const maxConnections = parseInt(process.env.DB_MAX_CONNECTIONS || '20', 10);
-    const idleTimeoutMillis = parseInt(process.env.DB_IDLE_TIMEOUT_MS || '30000', 10);
-    const connectionTimeoutMillis = parseInt(process.env.DB_CONNECTION_TIMEOUT_MS || '5000', 10);
+    const idleTimeoutMs = parseInt(process.env.DB_IDLE_TIMEOUT_MS || '30000', 10);
+    const connectionTimeoutMs = parseInt(process.env.DB_CONNECTION_TIMEOUT_MS || '5000', 10);
 
-    const pool = new Pool({
+    const pool = new pg.Pool({
       connectionString,
       max: maxConnections,
-      idleTimeoutMillis,
-      connectionTimeoutMillis,
-    });
-
-    pool.on('error', (err) => {
-      new Logger(PrismaService.name).error('Unexpected PostgreSQL client pool error:', err);
+      idleTimeoutMillis: idleTimeoutMs,
+      connectionTimeoutMillis: connectionTimeoutMs,
     });
 
     const adapter = new PrismaPg(pool);
@@ -80,43 +35,58 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     });
 
     this.pool = pool;
-    populateDefaultMemoryStore(this.memoryStore);
   }
 
   async onModuleInit() {
     try {
       await this.$connect();
-      // Verify live connection with a probe query
       await this.$queryRaw`SELECT 1;`;
+      await this.ensureRlsApplicationRole();
       this.isDbConnected = true;
-      this.logger.log('Successfully connected to production PostgreSQL via Prisma ORM.');
+      this.logger.log('Successfully connected to production PostgreSQL via Prisma ORM and pg.Pool.');
     } catch (error: any) {
       this.isDbConnected = false;
-      const isProduction =
-        process.env.NODE_ENV === 'production' || process.env.REQUIRE_DB === 'true';
-
-      if (isProduction) {
-        const errorMsg = `CRITICAL: PostgreSQL connection failed in production mode (${error?.message}). Silent fallback to memory storage is strictly prohibited in production.`;
-        this.logger.error(errorMsg);
-        throw new Error(errorMsg);
+      if (process.env.NODE_ENV === 'production' || process.env.REQUIRE_DB === 'true') {
+        this.logger.error(`Critical: Unable to connect to PostgreSQL: ${error?.message}`);
+        throw new Error(
+          `Critical: Silent fallback to memory storage is strictly prohibited in production mode. Production PostgreSQL connection failure: ${error?.message}`,
+        );
       }
-
       this.logger.warn(
-        `PostgreSQL not reachable at DATABASE_URL (${error?.message}). Running in resilient fallback mode with in-memory persistence for dev/test.`,
+        `PostgreSQL not reachable at DATABASE_URL (${error?.message}). Running in non-production fallback mode with in-memory persistence.`,
       );
     }
   }
 
-  isPostgresConnected(): boolean {
-    return this.isDbConnected;
+  private async ensureRlsApplicationRole() {
+    try {
+      await this.$executeRawUnsafe(`
+        DO $$ 
+        BEGIN 
+          IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'school_saas_app') THEN 
+            CREATE ROLE school_saas_app NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT; 
+          END IF; 
+        END $$;
+        GRANT USAGE ON SCHEMA public TO school_saas_app;
+        GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO school_saas_app;
+        GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO school_saas_app;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON TABLES TO school_saas_app;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO school_saas_app;
+      `);
+    } catch (err: any) {
+      this.logger.warn(`Could not verify school_saas_app role: ${err?.message}`);
+    }
   }
 
   async onModuleDestroy() {
-    if (this.isDbConnected) {
-      await this.$disconnect();
-    }
-    if (this.pool) {
-      await this.pool.end();
+    try {
+      if (this.isDbConnected) {
+        await this.$disconnect();
+      }
+    } finally {
+      if (this.pool) {
+        await this.pool.end();
+      }
     }
   }
 }

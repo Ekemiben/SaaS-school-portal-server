@@ -42,6 +42,15 @@ export class TenantResolverMiddleware implements NestMiddleware {
           });
 
           if (tenantDomain) {
+            if (!tenantDomain.isVerified) {
+              throw new HttpException(
+                {
+                  code: ErrorCodes.RESOURCE_NOT_FOUND,
+                  message: 'This custom domain is pending DNS verification and is not yet active.',
+                },
+                HttpStatus.NOT_FOUND,
+              );
+            }
             tenant = tenantDomain.tenant;
           } else {
             // 2. Check if subdomain match (e.g. greenfield.yoursaas.com or greenfield.schoolportal.com)
@@ -61,7 +70,8 @@ export class TenantResolverMiddleware implements NestMiddleware {
             where: { status: 'ACTIVE' },
           });
         }
-      } catch {
+      } catch (err: any) {
+        if (err instanceof HttpException) throw err;
         this.prisma.isDbConnected = false;
         tenant = null;
       }
@@ -69,18 +79,27 @@ export class TenantResolverMiddleware implements NestMiddleware {
 
     // In-memory fallback if not found or DB not connected
     if (!tenant) {
-      if (headerTenantId && this.prisma.memoryStore.tenants.has(headerTenantId)) {
+      if (headerTenantId) {
         tenant = this.prisma.memoryStore.tenants.get(headerTenantId);
       } else if (headerTenantSlug) {
         tenant = Array.from(this.prisma.memoryStore.tenants.values()).find(
           (t) => t.slug === headerTenantSlug,
         );
       } else if (host && host !== 'localhost' && host !== '127.0.0.1') {
-        const domain = Array.from(this.prisma.memoryStore.domains.values()).find(
+        const domainMatch = Array.from(this.prisma.memoryStore.domains.values()).find(
           (d) => d.domain === host,
         );
-        if (domain) {
-          tenant = this.prisma.memoryStore.tenants.get(domain.tenantId);
+        if (domainMatch) {
+          if (!domainMatch.isVerified) {
+            throw new HttpException(
+              {
+                code: ErrorCodes.RESOURCE_NOT_FOUND,
+                message: 'This custom domain is pending DNS verification and is not yet active.',
+              },
+              HttpStatus.NOT_FOUND,
+            );
+          }
+          tenant = this.prisma.memoryStore.tenants.get(domainMatch.tenantId);
         } else {
           const sub = host.split('.')[0];
           tenant = Array.from(this.prisma.memoryStore.tenants.values()).find(

@@ -1,19 +1,11 @@
-import {
-  Controller,
-  Get,
-  Post,
-  Delete,
-  Param,
-  Body,
-  Query,
-} from '@nestjs/common';
+import { Controller, Get, Post, Delete, Param, Body, Query, HttpCode, HttpStatus } from '@nestjs/common';
 import { FilesService } from './files.service.js';
+import { PresignUploadDto } from './dto/file-upload.dto.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
-import { InitiateUploadDto } from './dto/initiate-upload.dto.js';
 import { ListFilesDto } from './dto/list-files.dto.js';
 
 @Controller('api/v1/files')
@@ -38,9 +30,18 @@ export class FilesController {
   async presignUpload(
     @CurrentTenant() tenant: TenantContext,
     @CurrentUser() user: any,
-    @Body() body: InitiateUploadDto,
+    @Body() dto: PresignUploadDto,
   ) {
-    return this.filesService.registerFile(tenant.tenantId, user?.id || 'sys_user', body);
+    return this.filesService.registerAndPresignUpload(tenant.tenantId, user?.id || 'sys_user', dto);
+  }
+
+  @RequirePermissions(SystemPermissions.FILES_MANAGE)
+  @Get(':id/presign-download')
+  async getPresignedDownload(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.filesService.getPresignedDownload(tenant.tenantId, id);
   }
 
   @RequirePermissions(SystemPermissions.FILES_MANAGE)
@@ -77,6 +78,7 @@ export class FilesController {
 
   @RequirePermissions(SystemPermissions.FILES_MANAGE)
   @Delete(':id')
+  @HttpCode(HttpStatus.OK)
   async deleteFile(
     @CurrentTenant() tenant: TenantContext,
     @Param('id') id: string,

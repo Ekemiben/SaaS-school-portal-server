@@ -1,4 +1,3 @@
-import { Storage } from '@google-cloud/storage';
 import type {
   IStorageAdapter,
   PresignedUploadOptions,
@@ -10,30 +9,37 @@ import type {
 
 export class GCSStorageAdapter implements IStorageAdapter {
   readonly provider = 'gcs';
-  private client: Storage | null = null;
+  private client: any = null;
 
   constructor(private readonly config: StorageConfigOptions) {}
 
-  private getClient(): Storage {
+  private async getClient(): Promise<any> {
     if (!this.client) {
-      const options: any = {};
-      if (this.config.gcsProjectId) {
-        options.projectId = this.config.gcsProjectId;
+      try {
+        const { Storage } = await import('@google-cloud/storage' as any);
+        const options: any = {};
+        if (this.config.gcsProjectId) {
+          options.projectId = this.config.gcsProjectId;
+        }
+        if (this.config.gcsKeyFilename) {
+          options.keyFilename = this.config.gcsKeyFilename;
+        }
+        this.client = new Storage(options);
+      } catch (err: any) {
+        throw new Error(`Google Cloud Storage SDK (@google-cloud/storage) is not available: ${err?.message}`);
       }
-      if (this.config.gcsKeyFilename) {
-        options.keyFilename = this.config.gcsKeyFilename;
-      }
-      this.client = new Storage(options);
     }
     return this.client;
   }
 
-  private getBucket() {
-    return this.getClient().bucket(this.config.bucket);
+  private async getBucket(): Promise<any> {
+    const client = await this.getClient();
+    return client.bucket(this.config.bucket);
   }
 
   async getUploadPresignedUrl(options: PresignedUploadOptions): Promise<PresignedUploadResult> {
-    const file = this.getBucket().file(options.key);
+    const bucket = await this.getBucket();
+    const file = bucket.file(options.key);
     const expiresIn = options.expiresInSeconds || this.config.presignedUrlExpiresSeconds || 900;
     const expires = Date.now() + expiresIn * 1000;
 
@@ -60,7 +66,8 @@ export class GCSStorageAdapter implements IStorageAdapter {
   }
 
   async getDownloadPresignedUrl(options: PresignedDownloadOptions): Promise<string> {
-    const file = this.getBucket().file(options.key);
+    const bucket = await this.getBucket();
+    const file = bucket.file(options.key);
     const expiresIn = options.expiresInSeconds || this.config.presignedUrlExpiresSeconds || 900;
     const expires = Date.now() + expiresIn * 1000;
 
@@ -84,7 +91,8 @@ export class GCSStorageAdapter implements IStorageAdapter {
     mimeType: string,
     metadata?: Record<string, string>,
   ): Promise<void> {
-    const file = this.getBucket().file(key);
+    const bucket = await this.getBucket();
+    const file = bucket.file(key);
     await file.save(buffer, {
       contentType: mimeType,
       metadata: {
@@ -94,7 +102,8 @@ export class GCSStorageAdapter implements IStorageAdapter {
   }
 
   async downloadBuffer(key: string): Promise<{ buffer: Buffer; mimeType: string; size: number }> {
-    const file = this.getBucket().file(key);
+    const bucket = await this.getBucket();
+    const file = bucket.file(key);
     const [data] = await file.download();
     const [meta] = await file.getMetadata();
 
@@ -106,7 +115,8 @@ export class GCSStorageAdapter implements IStorageAdapter {
   }
 
   async deleteObject(key: string): Promise<boolean> {
-    const file = this.getBucket().file(key);
+    const bucket = await this.getBucket();
+    const file = bucket.file(key);
     try {
       await file.delete();
       return true;
@@ -116,7 +126,8 @@ export class GCSStorageAdapter implements IStorageAdapter {
   }
 
   async objectExists(key: string): Promise<boolean> {
-    const file = this.getBucket().file(key);
+    const bucket = await this.getBucket();
+    const file = bucket.file(key);
     try {
       const [exists] = await file.exists();
       return exists;
@@ -126,7 +137,8 @@ export class GCSStorageAdapter implements IStorageAdapter {
   }
 
   async getMetadata(key: string): Promise<StorageFileMetadata | null> {
-    const file = this.getBucket().file(key);
+    const bucket = await this.getBucket();
+    const file = bucket.file(key);
     try {
       const [meta] = await file.getMetadata();
       return {

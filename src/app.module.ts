@@ -54,10 +54,12 @@ import { ReportsModule } from './modules/reports/reports.module.js';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module.js';
 import { AuditModule } from './modules/audit/audit.module.js';
 import { HealthModule } from './modules/health/health.module.js';
+import { MedicalModule } from './modules/medical/medical.module.js';
 
 @Module({
   imports: [
     HealthModule,
+    MedicalModule,
     PrismaModule,
     QueuesModule,
     TenancyModule,
