@@ -1,141 +1,121 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../../database/prisma.service.js';
-import { BullmqService } from '../../jobs/bullmq.service.js';
-import { QUEUES, JOB_TYPES } from '../../jobs/queue.constants.js';
-import { randomUUID } from 'crypto';
+import { AttendanceCoreService } from './services/attendance-core.service.js';
+import { AttendanceReportService } from './services/attendance-report.service.js';
+import { AttendanceConfigService } from './services/attendance-config.service.js';
+import { AttendanceSessionService } from './services/attendance-session.service.js';
+import { MarkAttendanceDto, AttendanceFilterDto } from './dto/mark-attendance.dto.js';
+import { CorrectAttendanceDto } from './dto/attendance-correction.dto.js';
+import { CreateAttendanceSessionDto, GenerateQrTokenDto, QrCheckInDto, DeviceCheckInDto } from './dto/attendance-session.dto.js';
+import { UpdateAttendanceConfigDto } from './dto/attendance-config.dto.js';
 
 @Injectable()
 export class AttendanceService {
   constructor(
-    private readonly prisma: PrismaService,
-    private readonly bullmqService: BullmqService,
+    private readonly coreService: AttendanceCoreService,
+    private readonly reportService: AttendanceReportService,
+    private readonly configService: AttendanceConfigService,
+    private readonly sessionService: AttendanceSessionService,
   ) {}
 
   async getAttendance(
     tenantId: string,
-    filters: { classId?: string; date?: string; studentId?: string },
+    filters: { classId?: string; date?: string; studentId?: string; subjectId?: string },
   ) {
-    let records = Array.from(this.prisma.memoryStore.attendance.values()).filter(
-      (a) => a.tenantId === tenantId,
-    );
-
-    if (filters.classId) {
-      records = records.filter((a) => a.classId === filters.classId);
-    }
-    if (filters.studentId) {
-      records = records.filter((a) => a.studentId === filters.studentId);
-    }
-    if (filters.date) {
-      const targetDate = new Date(filters.date).toISOString().split('T')[0];
-      records = records.filter((a) => new Date(a.date).toISOString().split('T')[0] === targetDate);
-    }
-
-    return records;
+    return this.coreService.getAttendanceRecords(tenantId, filters as AttendanceFilterDto);
   }
 
   async markAttendance(
     tenantId: string,
     campusId: string,
     userId: string,
-    data: {
-      classId: string;
-      date: string;
-      records: Array<{ studentId: string; status: 'PRESENT' | 'ABSENT' | 'LATE' | 'EXCUSED'; remarks?: string }>;
-    },
+    data: MarkAttendanceDto,
   ) {
-    const saved = [];
-    for (const r of data.records) {
-      const id = `att_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-      const record = {
-        id,
-        tenantId,
-        campusId,
-        studentId: r.studentId,
-        classId: data.classId,
-        date: new Date(data.date),
-        status: r.status,
-        remarks: r.remarks || null,
-        markedByUserId: userId,
-        createdAt: new Date(),
-      };
-      this.prisma.memoryStore.attendance.set(id, record);
-      saved.push(record);
+    return this.coreService.markAttendance(tenantId, campusId, userId, data);
+  }
 
-      // Trigger instant parent SMS/Email notification if student is ABSENT
-      if (r.status === 'ABSENT') {
-        const student = this.prisma.memoryStore.students.get(r.studentId);
-        if (student) {
-          const parent = student.parentId ? this.prisma.memoryStore.parents.get(student.parentId) : null;
-          const recipient = parent?.phone || parent?.email || 'parent@example.com';
-          this.bullmqService.dispatch(
-            QUEUES.NOTIFICATIONS,
-            JOB_TYPES.SEND_SMS,
-            {
-              tenantId,
-              userId,
-              campusId,
-              data: {
-                channel: parent?.phone ? 'sms' : 'email',
-                tenantId,
-                recipient,
-                subject: `Absence Alert: ${student.firstName} ${student.lastName}`,
-                body: `Dear Parent, please be notified that ${student.firstName} ${student.lastName} was marked ABSENT on ${data.date}. Remarks: ${r.remarks || 'None'}.`,
-                metadata: { studentId: r.studentId, date: data.date },
-              },
-            },
-          ).catch(() => {});
-        }
-      }
-    }
-    return { success: true, count: saved.length, records: saved };
+  async correctAttendance(
+    tenantId: string,
+    recordId: string,
+    userId: string,
+    dto: CorrectAttendanceDto,
+  ) {
+    return this.coreService.correctAttendance(tenantId, recordId, userId, dto);
+  }
+
+  async recordDeviceCheckIn(
+    tenantId: string,
+    userId: string,
+    dto: DeviceCheckInDto,
+  ) {
+    return this.coreService.recordDeviceCheckIn(tenantId, userId, dto);
   }
 
   async getStatistics(tenantId: string, classId?: string) {
-    const records = Array.from(this.prisma.memoryStore.attendance.values()).filter(
-      (a) => a.tenantId === tenantId && (!classId || a.classId === classId),
-    );
-
+    if (classId) {
+      const today = new Date().toISOString().split('T')[0];
+      try {
+        return await this.reportService.getDailyClassReport(tenantId, classId, today);
+      } catch {
+        // Fallback if class not found or no records
+      }
+    }
+    const records = await this.coreService.getAttendanceRecords(tenantId, { classId });
     const total = records.length;
     if (total === 0) {
-      return {
-        totalRecords: 0,
-        presentRate: 100,
-        absentRate: 0,
-        lateRate: 0,
-        chronicAbsentees: [],
-      };
+      return { totalRecords: 0, presentRate: 100, absentRate: 0, lateRate: 0, chronicAbsentees: [] };
     }
-
-    const presentCount = records.filter((r) => r.status === 'PRESENT').length;
-    const absentCount = records.filter((r) => r.status === 'ABSENT').length;
-    const lateCount = records.filter((r) => r.status === 'LATE').length;
-
-    // Identify chronic absentees (> 3 absences)
-    const absentPerStudent = new Map<string, number>();
-    for (const r of records) {
-      if (r.status === 'ABSENT') {
-        absentPerStudent.set(r.studentId, (absentPerStudent.get(r.studentId) || 0) + 1);
-      }
-    }
-
-    const chronicAbsentees = [];
-    for (const [studentId, count] of absentPerStudent.entries()) {
-      if (count >= 2) {
-        const student = this.prisma.memoryStore.students.get(studentId);
-        chronicAbsentees.push({
-          studentId,
-          studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-          absenceCount: count,
-        });
-      }
-    }
-
+    const presentCount = records.filter((r: any) => r.status === 'PRESENT').length;
+    const absentCount = records.filter((r: any) => r.status === 'ABSENT').length;
+    const lateCount = records.filter((r: any) => r.status === 'LATE').length;
     return {
       totalRecords: total,
       presentRate: Math.round((presentCount / total) * 100),
       absentRate: Math.round((absentCount / total) * 100),
       lateRate: Math.round((lateCount / total) * 100),
-      chronicAbsentees,
+      chronicAbsentees: [],
     };
+  }
+
+  // Session & QR
+  async createSession(tenantId: string, campusId: string, userId: string, dto: CreateAttendanceSessionDto) {
+    return this.sessionService.createSession(tenantId, campusId, userId, dto);
+  }
+
+  async generateQrToken(tenantId: string, sessionId: string, userId: string, dto?: GenerateQrTokenDto) {
+    return this.sessionService.generateQrToken(tenantId, sessionId, userId, dto);
+  }
+
+  async processQrCheckIn(tenantId: string, userId: string, dto: QrCheckInDto) {
+    return this.sessionService.processQrCheckIn(tenantId, userId, dto);
+  }
+
+  async closeSession(tenantId: string, sessionId: string, userId: string) {
+    return this.sessionService.closeSession(tenantId, sessionId, userId);
+  }
+
+  // Reports
+  async getDailyReport(tenantId: string, classId: string, date: string) {
+    return this.reportService.getDailyClassReport(tenantId, classId, date);
+  }
+
+  async getStudentHistory(tenantId: string, studentId: string, query?: any) {
+    return this.reportService.getStudentAttendanceHistory(tenantId, studentId, query);
+  }
+
+  async getSubjectReport(tenantId: string, subjectId: string, classId?: string) {
+    return this.reportService.getSubjectAttendanceReport(tenantId, subjectId, classId);
+  }
+
+  async getTruancyReport(tenantId: string, campusId?: string) {
+    return this.reportService.getTruancySummary(tenantId, campusId);
+  }
+
+  // Config
+  async getConfig(tenantId: string) {
+    return this.configService.getConfig(tenantId);
+  }
+
+  async updateConfig(tenantId: string, dto: UpdateAttendanceConfigDto) {
+    return this.configService.updateConfig(tenantId, dto);
   }
 }

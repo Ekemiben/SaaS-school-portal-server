@@ -3,7 +3,9 @@ export const SystemPermissions = {
   SETTINGS_VIEW: 'settings.view',
   SETTINGS_MANAGE: 'settings.manage',
   DOMAINS_MANAGE: 'domains.manage',
+  SUBSCRIPTION_VIEW: 'subscription.view',
   SUBSCRIPTION_MANAGE: 'subscription.manage',
+  BILLING_VIEW: 'billing.view',
   BILLING_MANAGE: 'billing.manage',
 
   // Users & Roles
@@ -71,8 +73,34 @@ export const SystemPermissions = {
   MEDICAL_VIEW: 'medical.view',
   MEDICAL_MANAGE: 'medical.manage',
 
+  // Discipline, Behavior & Pastoral Care
+  DISCIPLINE_VIEW: 'discipline.view',
+  DISCIPLINE_MANAGE: 'discipline.manage',
+
+  // Hostel & Dormitory Management
+  HOSTEL_VIEW: 'hostel.view',
+  HOSTEL_MANAGE: 'hostel.manage',
+
+  // Library Management System
+  LIBRARY_VIEW: 'library.view',
+  LIBRARY_MANAGE: 'library.manage',
+
+  // Inventory, Assets & Procurement
+  INVENTORY_VIEW: 'inventory.view',
+  INVENTORY_MANAGE: 'inventory.manage',
+  ASSETS_VIEW: 'assets.view',
+  ASSETS_MANAGE: 'assets.manage',
+  PROCUREMENT_VIEW: 'procurement.view',
+  PROCUREMENT_MANAGE: 'procurement.manage',
+
+  // Data Exchange & Backups
+  DATA_IMPORT: 'data.import',
+  DATA_EXPORT: 'data.export',
+  DATA_BACKUP: 'data.backup',
+
   // Platform Administration
   PLATFORM_ADMIN: 'platform.admin',
+  IMPERSONATE_USER: 'impersonate.user',
 } as const;
 
 export type SystemPermission = typeof SystemPermissions[keyof typeof SystemPermissions];

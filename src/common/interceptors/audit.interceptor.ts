@@ -21,8 +21,8 @@ export class AuditInterceptor implements NestInterceptor {
       return next.handle();
     }
 
-    const tenantId = req.tenant?.tenantId;
-    const actorUserId = req.user?.id;
+    const tenantId = req.tenant?.tenantId || req.tenantContext?.tenantId || req.tenantId || req.user?.tenantId;
+    const actorUserId = req.user?.id || req.user?.sub;
     const ipAddress = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress;
     const userAgent = req.headers['user-agent'];
     const requestId = req.requestId;

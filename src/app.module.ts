@@ -55,11 +55,27 @@ import { SubscriptionsModule } from './modules/subscriptions/subscriptions.modul
 import { AuditModule } from './modules/audit/audit.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { MedicalModule } from './modules/medical/medical.module.js';
+import { AdmissionsModule } from './modules/admissions/admissions.module.js';
+import { DisciplineModule } from './modules/discipline/discipline.module.js';
+import { HostelModule } from './modules/hostel/hostel.module.js';
+import { LibraryModule } from './modules/library/library.module.js';
+import { InventoryModule } from './modules/inventory/inventory.module.js';
+import { PlatformModule } from './modules/platform/platform.module.js';
+import { DataExchangeModule } from './modules/data-exchange/data-exchange.module.js';
+import { AiModule } from './modules/ai/ai.module.js';
 
 @Module({
   imports: [
+    AiModule,
     HealthModule,
     MedicalModule,
+    AdmissionsModule,
+    DisciplineModule,
+    HostelModule,
+    LibraryModule,
+    InventoryModule,
+    PlatformModule,
+    DataExchangeModule,
     PrismaModule,
     QueuesModule,
     TenancyModule,
