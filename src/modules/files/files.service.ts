@@ -18,7 +18,7 @@ export class FilesService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly storageProvider: any,
+    private readonly storageProvider: CloudflareR2StorageProvider,
   ) {}
 
   async listFiles(tenantId: string, filter?: { category?: string; limit?: number; offset?: number }) {
@@ -79,15 +79,15 @@ export class FilesService {
         { tenantId, uploadedBy: userId },
       );
       presignedDownload = await this.storageProvider.generatePresignedDownload(storageKey, dto.originalName);
-    } else if (this.storageProvider.getUploadPresignedUrl) {
-      presignedUpload = await this.storageProvider.getUploadPresignedUrl(
+    } else if ((this.storageProvider as any).getUploadPresignedUrl) {
+      presignedUpload = await (this.storageProvider as any).getUploadPresignedUrl(
         tenantId,
         category,
         dto.originalName,
         dto.mimeType,
         dto.sizeBytes,
       );
-      presignedDownload = { downloadUrl: await this.storageProvider.getDownloadPresignedUrl(tenantId, storageKey, dto.originalName) };
+      presignedDownload = { downloadUrl: await (this.storageProvider as any).getDownloadPresignedUrl(tenantId, storageKey, dto.originalName) };
     }
 
     const fileData = {
@@ -164,8 +164,8 @@ export class FilesService {
       const presigned = await this.storageProvider.generatePresignedDownload(file.storageKey, file.originalName);
       downloadUrl = presigned.downloadUrl;
       expiresAt = presigned.expiresAt;
-    } else if (this.storageProvider.getDownloadPresignedUrl) {
-      downloadUrl = await this.storageProvider.getDownloadPresignedUrl(tenantId, file.storageKey, file.originalName);
+    } else if ((this.storageProvider as any).getDownloadPresignedUrl) {
+      downloadUrl = await (this.storageProvider as any).getDownloadPresignedUrl(tenantId, file.storageKey, file.originalName);
     }
 
     return {
@@ -178,11 +178,11 @@ export class FilesService {
   async confirmUpload(tenantId: string, fileId: string) {
     const file = await this.getFile(tenantId, fileId);
 
-    let exists = false;
-    if (this.storageProvider.objectExists) {
-      exists = await this.storageProvider.objectExists(tenantId, file.storageKey);
-    } else if (this.storageProvider.getAdapter) {
-      exists = await this.storageProvider.getAdapter().objectExists(file.storageKey);
+    let exists = true;
+    if ((this.storageProvider as any).objectExists) {
+      exists = await (this.storageProvider as any).objectExists(tenantId, file.storageKey);
+    } else if ((this.storageProvider as any).getAdapter) {
+      exists = await (this.storageProvider as any).getAdapter().objectExists(file.storageKey);
     }
 
     if (exists) {
@@ -229,9 +229,13 @@ export class FilesService {
     }
 
     if (this.storageProvider.deleteObject) {
-      await this.storageProvider.deleteObject(tenantId, file.storageKey);
-    } else if (this.storageProvider.getAdapter) {
-      await this.storageProvider.getAdapter().deleteObject(file.storageKey);
+      if ((this.storageProvider.deleteObject as any).length >= 2) {
+        await (this.storageProvider as any).deleteObject(tenantId, file.storageKey);
+      } else {
+        await this.storageProvider.deleteObject(file.storageKey);
+      }
+    } else if ((this.storageProvider as any).getAdapter) {
+      await (this.storageProvider as any).getAdapter().deleteObject(file.storageKey);
     }
 
     if (this.prisma.isDbConnected && (this.prisma as any).fileAsset) {

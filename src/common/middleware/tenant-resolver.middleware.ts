@@ -139,6 +139,8 @@ export class TenantResolverMiddleware implements NestMiddleware {
       };
 
       reqAny.tenantContext = tenantContext;
+      reqAny.tenantId = tenant.id;
+      reqAny.tenant = tenantContext;
     }
 
     next();
