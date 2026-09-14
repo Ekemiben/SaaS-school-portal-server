@@ -46,9 +46,11 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       this.logger.log('Successfully connected to production PostgreSQL via Prisma ORM and pg.Pool.');
     } catch (error: any) {
       this.isDbConnected = false;
-      if (process.env.NODE_ENV === 'production') {
-        this.logger.error(`Critical: Unable to connect to PostgreSQL in production mode: ${error?.message}`);
-        throw new Error(`Production PostgreSQL connection failure: ${error?.message}`);
+      if (process.env.NODE_ENV === 'production' || process.env.REQUIRE_DB === 'true') {
+        this.logger.error(`Critical: Unable to connect to PostgreSQL: ${error?.message}`);
+        throw new Error(
+          `Critical: Silent fallback to memory storage is strictly prohibited in production mode. Production PostgreSQL connection failure: ${error?.message}`,
+        );
       }
       this.logger.warn(
         `PostgreSQL not reachable at DATABASE_URL (${error?.message}). Running in non-production fallback mode with in-memory persistence.`,

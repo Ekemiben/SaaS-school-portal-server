@@ -6,6 +6,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
+import { ListFilesDto } from './dto/list-files.dto.js';
 
 @Controller('api/v1/files')
 export class FilesController {
@@ -15,9 +16,13 @@ export class FilesController {
   @Get()
   async listFiles(
     @CurrentTenant() tenant: TenantContext,
-    @Query('category') category?: string,
+    @Query() query: ListFilesDto,
   ) {
-    return this.filesService.listFiles(tenant.tenantId, category);
+    return this.filesService.listFiles(tenant.tenantId, {
+      category: query.category,
+      limit: query.limit,
+      offset: query.offset,
+    });
   }
 
   @RequirePermissions(SystemPermissions.FILES_MANAGE)
@@ -40,12 +45,35 @@ export class FilesController {
   }
 
   @RequirePermissions(SystemPermissions.FILES_MANAGE)
+  @Post(':id/confirm')
+  async confirmUpload(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.filesService.confirmUpload(tenant.tenantId, id);
+  }
+
+  @RequirePermissions(SystemPermissions.FILES_MANAGE)
   @Get(':id')
   async getFile(
     @CurrentTenant() tenant: TenantContext,
     @Param('id') id: string,
   ) {
-    return this.filesService.getPresignedDownload(tenant.tenantId, id);
+    return this.filesService.getFile(tenant.tenantId, id);
+  }
+
+  @RequirePermissions(SystemPermissions.FILES_MANAGE)
+  @Get(':id/download-url')
+  async getDownloadUrl(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    const file = await this.filesService.getFile(tenant.tenantId, id);
+    return {
+      fileId: file.id,
+      storageKey: file.storageKey,
+      downloadUrl: file.downloadUrl,
+    };
   }
 
   @RequirePermissions(SystemPermissions.FILES_MANAGE)
