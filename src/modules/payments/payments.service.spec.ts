@@ -1,7 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { PaymentsService } from './payments.service.js';
 import { PrismaService } from '../../database/prisma.service.js';
 import { ConfigService } from '@nestjs/config';
+import { PaystackPaymentAdapter } from './adapters/paystack.adapter.js';
+import { FlutterwavePaymentAdapter } from './adapters/flutterwave.adapter.js';
+import { CloudflareR2StorageProvider } from '../files/storage.provider.js';
+import { BullmqService } from '../../jobs/bullmq.service.js';
 import { createHmac } from 'crypto';
 
 describe('PaymentsService Webhooks and Receipts', () => {
@@ -14,7 +18,19 @@ describe('PaymentsService Webhooks and Receipts', () => {
       PAYSTACK_SECRET_KEY: 'test_paystack_secret',
       FLUTTERWAVE_SECRET_HASH: 'test_flw_secret',
     });
-    paymentsService = new PaymentsService(prisma, configService);
+    const paystackAdapter = new PaystackPaymentAdapter(configService);
+    const flutterwaveAdapter = new FlutterwavePaymentAdapter(configService);
+    const storageProvider = new CloudflareR2StorageProvider(configService as any);
+    const bullmqService = new BullmqService(configService as any);
+    vi.spyOn(bullmqService, 'dispatch').mockResolvedValue('mock-job' as any);
+
+    paymentsService = new PaymentsService(
+      prisma,
+      paystackAdapter,
+      flutterwaveAdapter,
+      storageProvider,
+      bullmqService,
+    );
   });
 
   it('should verify Paystack webhook signature and process successful payment', async () => {

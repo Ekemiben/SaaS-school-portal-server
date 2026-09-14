@@ -1,0 +1,300 @@
+SaaS-school-portal-server/
+├── prisma/
+│   ├── schema.prisma                       # PostgreSQL relational schema & composite tenant indexes
+│   ├── migrations/                         # Migration history
+│   └── seed.ts                             # Initial system permissions & seed script
+│
+├── src/
+│   ├── main.ts                             # Application entry point (port 3000, global pipes, filters)
+│   ├── app.module.ts                       # Root application module aggregating core & feature modules
+│   │
+│   ├── config/                             # Environment & configuration loaders
+│   │   ├── configuration.ts                # Main config factory (app, db, jwt, redis, storage)
+│   │   ├── database.config.ts              # PostgreSQL / Prisma connection pooling settings
+│   │   ├── jwt.config.ts                   # Access & rotating refresh token secret settings
+│   │   ├── redis.config.ts                 # Redis & BullMQ settings
+│   │   ├── storage.config.ts               # S3-compatible bucket & credential configuration
+│   │   └── payment.config.ts               # Paystack & Flutterwave platform settings
+│   │
+│   ├── common/                             # Shared utilities, filters, guards, and decorators
+│   │   ├── constants/
+│   │   │   ├── error-codes.ts              # Standard machine-readable error codes
+│   │   │   ├── permissions.ts              # Standard system permissions enum/constants
+│   │   │   └── routes.ts                   # Route prefixes & versioning constants
+│   │   │
+│   │   ├── types/
+│   │   │   ├── tenant-context.interface.ts # Request-scoped tenant context definition
+│   │   │   ├── api-response.interface.ts   # Standard API response envelope contract
+│   │   │   └── pagination.interface.ts     # Standard pagination query & metadata types
+│   │   │
+│   │   ├── middleware/
+│   │   │   ├── request-id.middleware.ts    # Attaches unique requestId (req_...) to all requests
+│   │   │   └── tenant-resolver.middleware.ts # Extracts hostname, resolves & loads tenant context
+│   │   │
+│   │   ├── guards/
+│   │   │   ├── auth.guard.ts               # Validates short-lived access tokens / session
+│   │   │   ├── tenant.guard.ts             # Enforces user membership in resolved tenant
+│   │   │   ├── campus.guard.ts             # Enforces user's assigned campus boundary
+│   │   │   ├── roles.guard.ts              # Evaluates user roles
+│   │   │   ├── permissions.guard.ts        # Fine-grained RBAC permission guard
+│   │   │   └── platform-admin.guard.ts     # Guard for platform administration endpoints
+│   │   │
+│   │   ├── interceptors/
+│   │   │   ├── transform.interceptor.ts    # Normalizes responses to standard envelope
+│   │   │   ├── logging.interceptor.ts      # Structured telemetry (route, tenant, user, duration)
+│   │   │   └── audit.interceptor.ts        # Captures state changes for audited routes
+│   │   │
+│   │   ├── filters/
+│   │   │   ├── http-exception.filter.ts    # Standardizes NestJS HTTP error format
+│   │   │   └── all-exceptions.filter.ts    # Catches unhandled exceptions (avoids leaking stack traces)
+│   │   │
+│   │   ├── pipes/
+│   │   │   └── validation.pipe.ts          # Central validation pipe with DTO whitelist & transforms
+│   │   │
+│   │   └── decorators/
+│   │       ├── current-tenant.decorator.ts # Param decorator to inject trusted TenantContext
+│   │       ├── current-user.decorator.ts   # Param decorator to inject authenticated user
+│   │       ├── permissions.decorator.ts    # Metadata decorator for required permissions
+│   │       ├── roles.decorator.ts          # Metadata decorator for roles
+│   │       └── public.decorator.ts         # Bypasses auth guard on public routes
+│   │
+│   ├── database/                           # Persistence & Prisma Layer
+│   │   ├── prisma.service.ts               # Prisma client lifecycle & connection management
+│   │   ├── prisma.module.ts                # Global Prisma provider module
+│   │   ├── tenant-scoped.repository.ts     # Abstract repository enforcing tenantId scoping
+│   │   └── rls.helper.ts                   # Transaction-level PostgreSQL RLS context helper
+│   │
+│   ├── jobs/                               # Asynchronous Queue & Workers (BullMQ / Redis)
+│   │   ├── queues.module.ts                # Queue definitions & Redis connection
+│   │   ├── queue.constants.ts              # Queue names (reports, emails, exports, etc.)
+│   │   └── processors/
+│   │       ├── notification.processor.ts   # Tenant-scoped email/SMS/WhatsApp worker
+│   │       ├── report.processor.ts         # Asynchronous report generator worker
+│   │       ├── import-export.processor.ts  # Bulk student/fee CSV processor worker
+│   │       └── payment-reconcile.processor.ts # Idempotent payment reconciliation worker
+│   │
+│   └── modules/                            # Domain Modules (Section 14 & 23)
+│       ├── tenancy/                        # School organization, domains & subdomains
+│       │   ├── tenancy.module.ts
+│       │   ├── tenancy.controller.ts
+│       │   ├── tenancy.service.ts
+│       │   ├── tenancy.repository.ts
+│       │   └── dto/
+│       │       ├── create-tenant.dto.ts
+│       │       ├── update-tenant-settings.dto.ts
+│       │       └── verify-domain.dto.ts
+│       │
+│       ├── auth/                           # Authentication, token rotation & recovery
+│       │   ├── auth.module.ts
+│       │   ├── auth.controller.ts
+│       │   ├── auth.service.ts
+│       │   ├── strategies/
+│       │   │   ├── jwt-access.strategy.ts
+│       │   │   └── jwt-refresh.strategy.ts
+│       │   └── dto/
+│       │       ├── login.dto.ts
+│       │       ├── refresh-token.dto.ts
+│       │       └── reset-password.dto.ts
+│       │
+│       ├── users/                          # User accounts across school roles
+│       │   ├── users.module.ts
+│       │   ├── users.controller.ts
+│       │   ├── users.service.ts
+│       │   ├── users.repository.ts
+│       │   └── dto/
+│       │       ├── create-user.dto.ts
+│       │       └── update-user.dto.ts
+│       │
+│       ├── roles/                          # Role definitions & assignments
+│       │   ├── roles.module.ts
+│       │   ├── roles.controller.ts
+│       │   ├── roles.service.ts
+│       │   └── roles.repository.ts
+│       │
+│       ├── permissions/                    # Permission definitions & RBAC checks
+│       │   ├── permissions.module.ts
+│       │   ├── permissions.controller.ts
+│       │   ├── permissions.service.ts
+│       │   └── permissions.repository.ts
+│       │
+│       ├── campuses/                       # Multi-campus management per tenant
+│       │   ├── campuses.module.ts
+│       │   ├── campuses.controller.ts
+│       │   ├── campuses.service.ts
+│       │   ├── campuses.repository.ts
+│       │   └── dto/
+│       │       ├── create-campus.dto.ts
+│       │       └── assign-user-campus.dto.ts
+│       │
+│       ├── academics/                      # Academic years, terms, classes, streams & subjects
+│       │   ├── academics.module.ts
+│       │   ├── academics.controller.ts
+│       │   ├── academics.service.ts
+│       │   ├── academics.repository.ts
+│       │   └── dto/
+│       │       ├── create-academic-year.dto.ts
+│       │       ├── create-term.dto.ts
+│       │       ├── create-class.dto.ts
+│       │       └── create-subject.dto.ts
+│       │
+│       ├── students/                       # Student admissions, profiles & enrollment history
+│       │   ├── students.module.ts
+│       │   ├── students.controller.ts
+│       │   ├── students.service.ts
+│       │   ├── students.repository.ts
+│       │   └── dto/
+│       │       ├── create-student.dto.ts
+│       │       ├── update-student.dto.ts
+│       │       ├── filter-students.dto.ts
+│       │       └── enroll-student.dto.ts
+│       │
+│       ├── parents/                        # Parent/guardian profiles & student linkings
+│       │   ├── parents.module.ts
+│       │   ├── parents.controller.ts
+│       │   ├── parents.service.ts
+│       │   └── parents.repository.ts
+│       │
+│       ├── teachers/                       # Teachers/staff profiles & subject/class assignments
+│       │   ├── teachers.module.ts
+│       │   ├── teachers.controller.ts
+│       │   ├── teachers.service.ts
+│       │   └── teachers.repository.ts
+│       │
+│       ├── attendance/                     # Daily & subject-level student/staff attendance
+│       │   ├── attendance.module.ts
+│       │   ├── attendance.controller.ts
+│       │   ├── attendance.service.ts
+│       │   ├── attendance.repository.ts
+│       │   └── dto/
+│       │       └── mark-attendance.dto.ts
+│       │
+│       ├── examinations/                   # Exam schedules, assessment weights & grading scales
+│       │   ├── examinations.module.ts
+│       │   ├── examinations.controller.ts
+│       │   ├── examinations.service.ts
+│       │   └── examinations.repository.ts
+│       │
+│       ├── results/                        # Marks entry, result approval, publishing & report cards
+│       │   ├── results.module.ts
+│       │   ├── results.controller.ts
+│       │   ├── results.service.ts
+│       │   ├── results.repository.ts
+│       │   └── dto/
+│       │       ├── enter-marks.dto.ts
+│       │       └── publish-results.dto.ts
+│       │
+│       ├── timetable/                      # Class & teacher scheduling
+│       │   ├── timetable.module.ts
+│       │   ├── timetable.controller.ts
+│       │   ├── timetable.service.ts
+│       │   └── timetable.repository.ts
+│       │
+│       ├── homework/                       # Assignments & student submissions
+│       │   ├── homework.module.ts
+│       │   ├── homework.controller.ts
+│       │   ├── homework.service.ts
+│       │   └── homework.repository.ts
+│       │
+│       ├── fees/                           # Fee structures, categories & student billing
+│       │   ├── fees.module.ts
+│       │   ├── fees.controller.ts
+│       │   ├── fees.service.ts
+│       │   ├── fees.repository.ts
+│       │   └── dto/
+│       │       ├── create-fee-structure.dto.ts
+│       │       └── generate-invoice.dto.ts
+│       │
+│       ├── payments/                       # Invoicing, Paystack/Flutterwave adapters & webhooks
+│       │   ├── payments.module.ts
+│       │   ├── payments.controller.ts
+│       │   ├── payments.service.ts
+│       │   ├── payments.repository.ts
+│       │   ├── adapters/
+│       │   │   ├── payment-provider.interface.ts
+│       │   │   ├── paystack.adapter.ts
+│       │   │   └── flutterwave.adapter.ts
+│       │   └── dto/
+│       │       ├── initialize-payment.dto.ts
+│       │       └── webhook-payload.dto.ts
+│       │
+│       ├── payroll/                        # Staff salary structures, allowances & payslips
+│       │   ├── payroll.module.ts
+│       │   ├── payroll.controller.ts
+│       │   ├── payroll.service.ts
+│       │   └── payroll.repository.ts
+│       │
+│       ├── expenses/                       # School expenditure tracking & category budgets
+│       │   ├── expenses.module.ts
+│       │   ├── expenses.controller.ts
+│       │   ├── expenses.service.ts
+│       │   └── expenses.repository.ts
+│       │
+│       ├── transport/                      # Vehicles, routes & student transit assignments
+│       │   ├── transport.module.ts
+│       │   ├── transport.controller.ts
+│       │   ├── transport.service.ts
+│       │   └── transport.repository.ts
+│       │
+│       ├── communications/                 # Internal announcements, notices & newsletters
+│       │   ├── communications.module.ts
+│       │   ├── communications.controller.ts
+│       │   ├── communications.service.ts
+│       │   └── communications.repository.ts
+│       │
+│       ├── notifications/                  # Abstracted delivery (Email, SMS, WhatsApp)
+│       │   ├── notifications.module.ts
+│       │   ├── notifications.service.ts
+│       │   ├── adapters/
+│       │   │   ├── notification-provider.interface.ts
+│       │   │   ├── email.adapter.ts
+│       │   │   ├── sms.adapter.ts
+│       │   │   └── whatsapp.adapter.ts
+│       │   └── dto/
+│       │       └── send-notification.dto.ts
+│       │
+│       ├── reports/                        # Aggregated analytics, attendance & financial reports
+│       │   ├── reports.module.ts
+│       │   ├── reports.controller.ts
+│       │   ├── reports.service.ts
+│       │   └── reports.repository.ts
+│       │
+│       ├── files/                          # S3 storage with tenant-prefixed keys & signed URLs
+│       │   ├── files.module.ts
+│       │   ├── files.controller.ts
+│       │   ├── files.service.ts
+│       │   └── dto/
+│       │       └── upload-file.dto.ts
+│       │
+│       ├── subscriptions/                  # SaaS plans, quotas & usage limit enforcement
+│       │   ├── subscriptions.module.ts
+│       │   ├── subscriptions.controller.ts
+│       │   ├── subscriptions.service.ts
+│       │   └── subscriptions.repository.ts
+│       │
+│       ├── billing/                        # Platform-level subscription billing & recurring invoicing
+│       │   ├── billing.module.ts
+│       │   ├── billing.controller.ts
+│       │   ├── billing.service.ts
+│       │   └── billing.repository.ts
+│       │
+│       └── audit/                          # Immutable security & financial action logging
+│           ├── audit.module.ts
+│           ├── audit.controller.ts
+│           ├── audit.service.ts
+│           ├── audit.repository.ts
+│           └── dto/
+│               └── create-audit-log.dto.ts
+│
+├── test/
+│   ├── unit/                               # Service and utility unit tests
+│   ├── integration/                        # Repository and database queries
+│   ├── e2e/                                # End-to-end API route tests
+│   └── security/                           # Mandatory Multi-Tenancy Tests (Section 58)
+│       ├── tenant-isolation.spec.ts        # Verifies School A cannot read/update School B
+│       ├── campus-authorization.spec.ts    # Verifies cross-campus boundary enforcement
+│       ├── idor-prevention.spec.ts         # Verifies record ID tampering without tenant context fails
+│       └── payment-idempotency.spec.ts     # Verifies duplicate webhook & payment replay protection
+│
+├── .env.example                            # Required environment variable definitions
+├── package.json
+└── tsconfig.json

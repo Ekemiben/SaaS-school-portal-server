@@ -1,10 +1,16 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
+import { CustomDomainService } from './custom-domain.service.js';
 import { randomUUID } from 'crypto';
 
 @Injectable()
 export class TenancyService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(TenancyService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly customDomainService: CustomDomainService,
+  ) {}
 
   async resolveCurrentTenant(tenantId: string) {
     if (this.prisma.isDbConnected) {
@@ -12,19 +18,13 @@ export class TenancyService {
         where: { id: tenantId },
         include: { domains: true },
       });
-      if (!tenant) {
-        throw new NotFoundException('School organization tenant not found');
-      }
+      if (!tenant) throw new NotFoundException('School organization tenant not found');
       return this.sanitizeTenantConfig(tenant);
     }
 
     const tenant = this.prisma.memoryStore.tenants.get(tenantId);
-    if (!tenant) {
-      throw new NotFoundException('School organization tenant not found');
-    }
-    const domains = Array.from(this.prisma.memoryStore.domains.values()).filter(
-      (d) => d.tenantId === tenantId,
-    );
+    if (!tenant) throw new NotFoundException('School organization tenant not found');
+    const domains = Array.from(this.prisma.memoryStore.domains.values()).filter((d) => d.tenantId === tenantId);
     return this.sanitizeTenantConfig({ ...tenant, domains });
   }
 
@@ -37,32 +37,28 @@ export class TenancyService {
         include: { tenant: { include: { domains: true } } },
       });
 
-      if (tenantDomain) {
+      if (tenantDomain && tenantDomain.isVerified) {
         return this.sanitizeTenantConfig(tenantDomain.tenant);
       }
     } else {
       const domainMatch = Array.from(this.prisma.memoryStore.domains.values()).find(
-        (d) => d.domain === cleanHost,
+        (d) => d.domain === cleanHost && d.isVerified,
       );
       if (domainMatch) {
         const tenant = this.prisma.memoryStore.tenants.get(domainMatch.tenantId);
         if (tenant) {
-          const domains = Array.from(this.prisma.memoryStore.domains.values()).filter(
-            (d) => d.tenantId === tenant.id,
-          );
+          const domains = Array.from(this.prisma.memoryStore.domains.values()).filter((d) => d.tenantId === tenant.id);
           return this.sanitizeTenantConfig({ ...tenant, domains });
         }
       }
     }
 
-    // Subdomain matching
     const parts = cleanHost.split('.');
     if (parts.length >= 2) {
       const slug = parts[0];
       return this.findBySlug(slug);
     }
 
-    // Default fallback
     return this.getDefaultTenant();
   }
 
@@ -74,13 +70,9 @@ export class TenancyService {
       });
       if (tenant) return this.sanitizeTenantConfig(tenant);
     } else {
-      const tenant = Array.from(this.prisma.memoryStore.tenants.values()).find(
-        (t) => t.slug === slug,
-      );
+      const tenant = Array.from(this.prisma.memoryStore.tenants.values()).find((t) => t.slug === slug);
       if (tenant) {
-        const domains = Array.from(this.prisma.memoryStore.domains.values()).filter(
-          (d) => d.tenantId === tenant.id,
-        );
+        const domains = Array.from(this.prisma.memoryStore.domains.values()).filter((d) => d.tenantId === tenant.id);
         return this.sanitizeTenantConfig({ ...tenant, domains });
       }
     }
@@ -98,29 +90,67 @@ export class TenancyService {
 
     const first = Array.from(this.prisma.memoryStore.tenants.values())[0];
     if (first) {
-      const domains = Array.from(this.prisma.memoryStore.domains.values()).filter(
-        (d) => d.tenantId === first.id,
-      );
+      const domains = Array.from(this.prisma.memoryStore.domains.values()).filter((d) => d.tenantId === first.id);
       return this.sanitizeTenantConfig({ ...first, domains });
     }
     throw new NotFoundException('No active school organization configured.');
   }
 
-  async registerSchool(data: {
-    schoolName: string;
-    slug: string;
-    ownerEmail: string;
-    country?: string;
-    currency?: string;
-  }) {
+  listDomains(tenantId: string) {
+    return this.customDomainService.listDomains(tenantId);
+  }
+
+  addCustomDomain(tenantId: string, domain: string) {
+    return this.customDomainService.addCustomDomain(tenantId, domain);
+  }
+
+  verifyCustomDomain(tenantId: string, domain: string) {
+    return this.customDomainService.verifyCustomDomain(tenantId, domain);
+  }
+
+  setPrimaryDomain(tenantId: string, domain: string) {
+    return this.customDomainService.setPrimaryDomain(tenantId, domain);
+  }
+
+  removeCustomDomain(tenantId: string, domain: string) {
+    return this.customDomainService.removeCustomDomain(tenantId, domain);
+  }
+
+  async registerSchool(data: { schoolName: string; slug: string; ownerEmail: string; country?: string; currency?: string }) {
     const slug = data.slug.toLowerCase().replace(/[^a-z0-9-]/g, '');
 
-    // Check slug collision
-    const existing = Array.from(this.prisma.memoryStore.tenants.values()).find(
-      (t) => t.slug === slug,
-    );
-    if (existing) {
-      throw new ConflictException(`Subdomain slug "${slug}" is already taken.`);
+    if (this.prisma.isDbConnected) {
+      const existing = await this.prisma.tenant.findUnique({ where: { slug } });
+      if (existing) throw new ConflictException(`Subdomain slug "${slug}" is already taken.`);
+
+      const tenant = await this.prisma.tenant.create({
+        data: {
+          name: data.schoolName,
+          slug,
+          currency: data.currency || 'USD',
+          status: 'TRIAL',
+          plan: 'starter',
+          domains: {
+            create: {
+              domain: `${slug}.yoursaas.com`,
+              type: 'SUBDOMAIN',
+              isPrimary: true,
+              isVerified: true,
+              sslStatus: 'ACTIVE',
+            },
+          },
+          campuses: {
+            create: {
+              name: 'Main Campus',
+              code: 'MAIN-01',
+              country: data.country || 'United States',
+              isMain: true,
+            },
+          },
+        },
+        include: { domains: true },
+      });
+      return this.sanitizeTenantConfig(tenant);
     }
 
     const tenantId = `tenant_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
@@ -137,20 +167,12 @@ export class TenancyService {
       currency: data.currency || 'USD',
       status: 'TRIAL',
       plan: 'starter',
-      features: {
-        attendance: true,
-        examinations: true,
-        fees: true,
-        transport: false,
-        onlinePayments: true,
-      },
+      features: { attendance: true, examinations: true, fees: true, transport: false, onlinePayments: true },
       createdAt: new Date(),
       updatedAt: new Date(),
     };
 
     this.prisma.memoryStore.tenants.set(tenantId, newTenant);
-
-    // Add default subdomain
     const subDomainId = `domain_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
     this.prisma.memoryStore.domains.set(subDomainId, {
       id: subDomainId,
@@ -159,19 +181,7 @@ export class TenancyService {
       type: 'SUBDOMAIN',
       isPrimary: true,
       isVerified: true,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-
-    // Create main campus
-    const campusId = `campus_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-    this.prisma.memoryStore.campuses.set(campusId, {
-      id: campusId,
-      tenantId,
-      name: 'Main Campus',
-      code: 'MAIN-01',
-      country: data.country || 'United States',
-      isMain: true,
+      sslStatus: 'ACTIVE',
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -179,82 +189,24 @@ export class TenancyService {
     return this.sanitizeTenantConfig(newTenant);
   }
 
-  async addCustomDomain(tenantId: string, domain: string) {
-    const cleanDomain = domain.toLowerCase().trim();
-    const domainId = `domain_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-    const token = `verify_${randomUUID().replace(/-/g, '')}`;
-
-    const record = {
-      id: domainId,
-      tenantId,
-      domain: cleanDomain,
-      type: 'CUSTOM',
-      isPrimary: false,
-      isVerified: false,
-      verificationToken: token,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.domains.set(domainId, record);
-
-    return {
-      domain: cleanDomain,
-      verificationToken: token,
-      requiredDnsRecord: {
-        type: 'CNAME',
-        host: cleanDomain,
-        target: 'custom.yoursaas.com',
-      },
-    };
-  }
-
-  async verifyCustomDomain(tenantId: string, domain: string) {
-    const cleanDomain = domain.toLowerCase().trim();
-    const entry = Array.from(this.prisma.memoryStore.domains.values()).find(
-      (d) => d.tenantId === tenantId && d.domain === cleanDomain,
-    );
-
-    if (!entry) {
-      throw new NotFoundException(`Custom domain ${cleanDomain} not found for this school.`);
+  async updateBranding(tenantId: string, data: any) {
+    if (this.prisma.isDbConnected) {
+      const tenant = await this.prisma.tenant.update({
+        where: { id: tenantId },
+        data,
+        include: { domains: true },
+      });
+      return this.sanitizeTenantConfig(tenant);
     }
 
-    entry.isVerified = true;
-    entry.updatedAt = new Date();
-    this.prisma.memoryStore.domains.set(entry.id, entry);
-
-    return {
-      success: true,
-      message: `Domain ${cleanDomain} successfully verified and activated!`,
-      domain: entry,
-    };
-  }
-
-  async updateBranding(
-    tenantId: string,
-    data: {
-      name?: string;
-      logoUrl?: string;
-      faviconUrl?: string;
-      primaryColor?: string;
-      secondaryColor?: string;
-      timezone?: string;
-      locale?: string;
-      currency?: string;
-    },
-  ) {
     const tenant = this.prisma.memoryStore.tenants.get(tenantId);
-    if (!tenant) {
-      throw new NotFoundException('Tenant not found');
-    }
-
+    if (!tenant) throw new NotFoundException('Tenant not found');
     Object.assign(tenant, data, { updatedAt: new Date() });
     this.prisma.memoryStore.tenants.set(tenantId, tenant);
     return this.sanitizeTenantConfig(tenant);
   }
 
   private sanitizeTenantConfig(tenant: any) {
-    // Section 8 & 27: Secrets and payment credentials must never be exposed to public configuration
     return {
       id: tenant.id,
       name: tenant.name,

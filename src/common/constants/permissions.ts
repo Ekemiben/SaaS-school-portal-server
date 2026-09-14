@@ -57,13 +57,19 @@ export const SystemPermissions = {
   PAYROLL_MANAGE: 'payroll.manage',
 
   // Operations
+  TRANSPORT_VIEW: 'transport.view',
   TRANSPORT_MANAGE: 'transport.manage',
+  TRANSPORT_TRACK: 'transport.track',
   COMMUNICATIONS_VIEW: 'communications.view',
   COMMUNICATIONS_MANAGE: 'communications.manage',
   NOTIFICATIONS_SEND: 'notifications.send',
   REPORTS_VIEW: 'reports.view',
   FILES_MANAGE: 'files.manage',
   AUDIT_VIEW: 'audit.view',
+
+  // Health, Medical & Clinic
+  MEDICAL_VIEW: 'medical.view',
+  MEDICAL_MANAGE: 'medical.manage',
 
   // Platform Administration
   PLATFORM_ADMIN: 'platform.admin',

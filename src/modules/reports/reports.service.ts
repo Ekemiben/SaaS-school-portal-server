@@ -1,13 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
-import { ReportProcessor } from '../../jobs/processors/report.processor.js';
-import { randomUUID } from 'crypto';
+import { BullmqService } from '../../jobs/bullmq.service.js';
+import { QUEUES, JOB_TYPES } from '../../jobs/queue.constants.js';
 
 @Injectable()
 export class ReportsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly reportProcessor: ReportProcessor,
+    private readonly bullmqService: BullmqService,
   ) {}
 
   async getExecutiveDashboard(tenantId: string) {
@@ -141,22 +141,27 @@ export class ReportsService {
     userId: string,
     dto: { reportType: 'report-card' | 'fee-summary' | 'attendance-sheet'; campusId?: string; parameters?: any },
   ) {
-    const jobId = `job_rep_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const result = await this.reportProcessor.process({
-      id: jobId,
-      data: {
-        reportType: dto.reportType,
+    const result = await this.bullmqService.dispatch(
+      QUEUES.REPORTS,
+      JOB_TYPES.GENERATE_REPORT_CARD,
+      {
         tenantId,
+        userId,
         campusId: dto.campusId,
-        parameters: dto.parameters || {},
-        requestedByUserId: userId,
+        data: {
+          reportType: dto.reportType,
+          tenantId,
+          campusId: dto.campusId,
+          parameters: dto.parameters || {},
+          requestedByUserId: userId,
+        },
       },
-    });
+    );
 
     return {
-      jobId,
-      ...result,
-      status: 'QUEUED_AND_GENERATED',
+      jobId: result.jobId,
+      queue: result.queue,
+      status: 'QUEUED',
     };
   }
 }

@@ -3,11 +3,15 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Body,
   Headers,
   Param,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { TenancyService } from './tenancy.service.js';
+import { AddCustomDomainDto } from './dto/custom-domain.dto.js';
 import { Public } from '../../common/decorators/public.decorator.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
@@ -72,12 +76,18 @@ export class TenancyController {
   }
 
   @RequirePermissions(SystemPermissions.DOMAINS_MANAGE)
+  @Get('domains')
+  async listDomains(@CurrentTenant() tenant: TenantContext) {
+    return this.tenancyService.listDomains(tenant.tenantId);
+  }
+
+  @RequirePermissions(SystemPermissions.DOMAINS_MANAGE)
   @Post('domains/custom')
   async addCustomDomain(
     @CurrentTenant() tenant: TenantContext,
-    @Body('domain') domain: string,
+    @Body() dto: AddCustomDomainDto,
   ) {
-    return this.tenancyService.addCustomDomain(tenant.tenantId, domain);
+    return this.tenancyService.addCustomDomain(tenant.tenantId, dto.domain);
   }
 
   @RequirePermissions(SystemPermissions.DOMAINS_MANAGE)
@@ -87,5 +97,24 @@ export class TenancyController {
     @Param('domain') domain: string,
   ) {
     return this.tenancyService.verifyCustomDomain(tenant.tenantId, domain);
+  }
+
+  @RequirePermissions(SystemPermissions.DOMAINS_MANAGE)
+  @Patch('domains/:domain/primary')
+  async setPrimaryDomain(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('domain') domain: string,
+  ) {
+    return this.tenancyService.setPrimaryDomain(tenant.tenantId, domain);
+  }
+
+  @RequirePermissions(SystemPermissions.DOMAINS_MANAGE)
+  @Delete('domains/:domain')
+  @HttpCode(HttpStatus.OK)
+  async removeCustomDomain(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('domain') domain: string,
+  ) {
+    return this.tenancyService.removeCustomDomain(tenant.tenantId, domain);
   }
 }

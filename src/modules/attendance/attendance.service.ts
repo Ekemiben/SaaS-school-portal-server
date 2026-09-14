@@ -1,13 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
-import { NotificationProcessor } from '../../jobs/processors/notification.processor.js';
+import { BullmqService } from '../../jobs/bullmq.service.js';
+import { QUEUES, JOB_TYPES } from '../../jobs/queue.constants.js';
 import { randomUUID } from 'crypto';
 
 @Injectable()
 export class AttendanceService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly notificationProcessor: NotificationProcessor,
+    private readonly bullmqService: BullmqService,
   ) {}
 
   async getAttendance(
@@ -66,17 +67,23 @@ export class AttendanceService {
         if (student) {
           const parent = student.parentId ? this.prisma.memoryStore.parents.get(student.parentId) : null;
           const recipient = parent?.phone || parent?.email || 'parent@example.com';
-          this.notificationProcessor.process({
-            id: `job_att_absent_${id}`,
-            data: {
-              channel: parent?.phone ? 'sms' : 'email',
+          this.bullmqService.dispatch(
+            QUEUES.NOTIFICATIONS,
+            JOB_TYPES.SEND_SMS,
+            {
               tenantId,
-              recipient,
-              subject: `Absence Alert: ${student.firstName} ${student.lastName}`,
-              body: `Dear Parent, please be notified that ${student.firstName} ${student.lastName} was marked ABSENT on ${data.date}. Remarks: ${r.remarks || 'None'}.`,
-              metadata: { studentId: r.studentId, date: data.date },
+              userId,
+              campusId,
+              data: {
+                channel: parent?.phone ? 'sms' : 'email',
+                tenantId,
+                recipient,
+                subject: `Absence Alert: ${student.firstName} ${student.lastName}`,
+                body: `Dear Parent, please be notified that ${student.firstName} ${student.lastName} was marked ABSENT on ${data.date}. Remarks: ${r.remarks || 'None'}.`,
+                metadata: { studentId: r.studentId, date: data.date },
+              },
             },
-          }).catch(() => {});
+          ).catch(() => {});
         }
       }
     }
