@@ -27,6 +27,7 @@ export class StudentsController {
     @CurrentTenant() tenant: TenantContext,
     @Query('campusId') campusId?: string,
     @Query('classId') classId?: string,
+    @Query('status') status?: string,
     @Query('search') search?: string,
     @Query('page') page?: number,
     @Query('limit') limit?: number,
@@ -34,6 +35,7 @@ export class StudentsController {
     return this.studentsService.findAll(tenant.tenantId, {
       campusId,
       classId,
+      status,
       search,
       page,
       limit,

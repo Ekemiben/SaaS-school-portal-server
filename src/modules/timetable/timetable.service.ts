@@ -69,44 +69,84 @@ export class TimetableService {
     return entries;
   }
 
-  async addEntry(tenantId: string, dto: CreateTimetableEntryDto) {
-    // Conflict detection: Check if teacher or classroom is already scheduled during this day & overlapping time
-    const existingEntries = Array.from(this.prisma.memoryStore.timetableEntries.values()).filter(
-      (e) => e.tenantId === tenantId && e.dayOfWeek === dto.dayOfWeek,
+  async getAllEntries(
+    tenantId: string,
+    filters: { campusId?: string; classId?: string; teacherId?: string } = {},
+  ) {
+    let entries = Array.from(this.prisma.memoryStore.timetableEntries.values()).filter(
+      (e: any) => e.tenantId === tenantId,
     );
+    if (filters.campusId) {
+      entries = entries.filter(
+        (e: any) => !e.campusId || e.campusId === filters.campusId,
+      );
+    }
+    if (filters.classId) {
+      entries = entries.filter(
+        (e: any) => e.classId === filters.classId || e.classLevel === filters.classId,
+      );
+    }
+    if (filters.teacherId) {
+      entries = entries.filter(
+        (e: any) => e.teacherId === filters.teacherId || e.teacher === filters.teacherId,
+      );
+    }
+    return entries;
+  }
 
-    for (const existing of existingEntries) {
-      const isTimeOverlap =
-        (dto.startTime >= existing.startTime && dto.startTime < existing.endTime) ||
-        (dto.endTime > existing.startTime && dto.endTime <= existing.endTime) ||
-        (dto.startTime <= existing.startTime && dto.endTime >= existing.endTime);
+  async addEntry(tenantId: string, dto: any) {
+    // Conflict detection: Check if teacher or classroom is already scheduled during this day & overlapping time
+    if (dto.startTime && dto.endTime && dto.dayOfWeek) {
+      const existingEntries = Array.from(this.prisma.memoryStore.timetableEntries.values()).filter(
+        (e: any) => e.tenantId === tenantId && e.dayOfWeek === dto.dayOfWeek,
+      );
 
-      if (isTimeOverlap) {
-        if (existing.teacherId === dto.teacherId) {
-          throw new ConflictException({
-            errorCode: ErrorCodes.CONFLICT,
-            message: `Teacher is already booked for another period on ${dto.dayOfWeek} between ${existing.startTime} and ${existing.endTime}`,
-          });
-        }
-        if (dto.classroom && existing.classroom && existing.classroom.toLowerCase() === dto.classroom.toLowerCase()) {
-          throw new ConflictException({
-            errorCode: ErrorCodes.CONFLICT,
-            message: `Classroom ${dto.classroom} is already occupied on ${dto.dayOfWeek} between ${existing.startTime} and ${existing.endTime}`,
-          });
+      for (const existing of existingEntries) {
+        const isTimeOverlap =
+          (dto.startTime >= existing.startTime && dto.startTime < existing.endTime) ||
+          (dto.endTime > existing.startTime && dto.endTime <= existing.endTime) ||
+          (dto.startTime <= existing.startTime && dto.endTime >= existing.endTime);
+
+        if (isTimeOverlap) {
+          if (dto.teacherId && existing.teacherId === dto.teacherId) {
+            throw new ConflictException({
+              errorCode: ErrorCodes.CONFLICT,
+              message: `Teacher is already booked for another period on ${dto.dayOfWeek} between ${existing.startTime} and ${existing.endTime}`,
+            });
+          }
+          if (dto.classroom && existing.classroom && existing.classroom.toLowerCase() === dto.classroom.toLowerCase()) {
+            throw new ConflictException({
+              errorCode: ErrorCodes.CONFLICT,
+              message: `Classroom ${dto.classroom} is already occupied on ${dto.dayOfWeek} between ${existing.startTime} and ${existing.endTime}`,
+            });
+          }
         }
       }
     }
 
-    const id = `tte_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const id = dto.id || `tte_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const entry = {
+      ...dto,
       id,
       tenantId,
-      ...dto,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
 
     this.prisma.memoryStore.timetableEntries.set(id, entry);
+    return entry;
+  }
+
+  async updateEntry(tenantId: string, entryId: string, data: any) {
+    const entry = this.prisma.memoryStore.timetableEntries.get(entryId);
+    if (!entry || entry.tenantId !== tenantId) {
+      throw new NotFoundException({
+        errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
+        message: 'Timetable entry not found',
+      });
+    }
+    Object.assign(entry, data, { updatedAt: new Date() });
+    this.prisma.memoryStore.timetableEntries.set(entryId, entry);
     return entry;
   }
 

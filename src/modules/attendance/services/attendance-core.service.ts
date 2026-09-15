@@ -23,10 +23,16 @@ export class AttendanceCoreService {
     actorUserId: string,
     dto: MarkAttendanceDto,
   ) {
-    const targetClass = this.prisma.memoryStore.classes.get(dto.classId);
+    let targetClass = this.prisma.memoryStore.classes.get(dto.classId);
+    if (!targetClass) {
+      targetClass = Array.from(this.prisma.memoryStore.classes.values()).find(
+        (c: any) => c.tenantId === tenantId && (c.id === dto.classId || c.name === dto.classId),
+      );
+    }
     if (!targetClass || targetClass.tenantId !== tenantId) {
       throw new NotFoundException(`Class ${dto.classId} not found in this school.`);
     }
+    dto.classId = targetClass.id;
 
     if (dto.subjectId) {
       const subject = this.prisma.memoryStore.subjects.get(dto.subjectId);
@@ -199,7 +205,14 @@ export class AttendanceCoreService {
     );
 
     if (filter.campusId) list = list.filter((a: any) => a.campusId === filter.campusId);
-    if (filter.classId) list = list.filter((a: any) => a.classId === filter.classId);
+    if (filter.classId) {
+      const cls = this.prisma.memoryStore.classes.get(filter.classId) ||
+        Array.from(this.prisma.memoryStore.classes.values()).find(
+          (c: any) => c.tenantId === tenantId && (c.id === filter.classId || c.name === filter.classId),
+        );
+      const matchedIds = cls ? [cls.id, cls.name] : [filter.classId];
+      list = list.filter((a: any) => matchedIds.includes(a.classId));
+    }
     if (filter.subjectId) list = list.filter((a: any) => a.subjectId === filter.subjectId);
     if (filter.sessionId) list = list.filter((a: any) => a.sessionId === filter.sessionId);
     if (filter.studentId) list = list.filter((a: any) => a.studentId === filter.studentId);

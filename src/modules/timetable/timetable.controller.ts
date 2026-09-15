@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Body, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query } from '@nestjs/common';
 import { TimetableService } from './timetable.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
@@ -9,6 +9,21 @@ import { CreateTimetableDto, CreateTimetableEntryDto } from './dto/create-timeta
 @Controller('api/v1/timetable')
 export class TimetableController {
   constructor(private readonly timetableService: TimetableService) {}
+
+  @Get()
+  @RequirePermissions(SystemPermissions.ACADEMICS_VIEW)
+  getAllEntries(
+    @CurrentTenant() tenant: TenantContext,
+    @Query('campusId') campusId?: string,
+    @Query('classId') classId?: string,
+    @Query('teacherId') teacherId?: string,
+  ) {
+    return this.timetableService.getAllEntries(tenant.tenantId, {
+      campusId,
+      classId,
+      teacherId,
+    });
+  }
 
   @Post()
   @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
@@ -42,9 +57,19 @@ export class TimetableController {
   @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
   addEntry(
     @CurrentTenant() tenant: TenantContext,
-    @Body() dto: CreateTimetableEntryDto,
+    @Body() dto: any,
   ) {
     return this.timetableService.addEntry(tenant.tenantId, dto);
+  }
+
+  @Patch('entries/:id')
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  updateEntry(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: any,
+  ) {
+    return this.timetableService.updateEntry(tenant.tenantId, id, dto);
   }
 
   @Delete('entries/:id')

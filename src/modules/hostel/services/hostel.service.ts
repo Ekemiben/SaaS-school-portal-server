@@ -32,24 +32,44 @@ export class HostelService {
       id,
       tenantId,
       campusId: targetCampusId,
-      name: dto.name,
+      name: dto.name || (dto as any).hall || 'Hostel Hall',
+      hall: dto.name || (dto as any).hall || 'Hostel Hall',
       code: dto.code || `HST-${Math.floor(100 + Math.random() * 900)}`,
-      gender: dto.gender,
-      wardenName: dto.wardenName || null,
+      gender: dto.gender || 'Boys',
+      wardenName: dto.wardenName || (dto as any).warden || null,
+      warden: dto.wardenName || (dto as any).warden || null,
       wardenPhone: dto.wardenPhone || null,
       wardenUserId: dto.wardenUserId || null,
       description: dto.description || null,
-      status: dto.status || 'ACTIVE',
-      totalRooms: 0,
-      totalBeds: 0,
+      status: dto.status || 'Available',
+      totalRooms: Number((dto as any).rooms || (dto as any).totalRooms || 20),
+      rooms: Number((dto as any).rooms || (dto as any).totalRooms || 20),
+      totalBeds: Number((dto as any).totalBeds || (dto as any).beds || 80),
       occupiedBeds: 0,
+      residents: [],
       createdAt: new Date(),
       updatedAt: new Date(),
     };
 
     this.prisma.memoryStore.hostels.set(id, hostel);
     this.logger.log(`Created hostel ${hostel.id} (${hostel.name}) for tenant ${tenantId}`);
-    return hostel;
+    return this.enrichHostel(hostel);
+  }
+
+  private enrichHostel(h: any) {
+    const totalBeds = h.totalBeds || 0;
+    const occupiedBeds = h.occupiedBeds || 0;
+    return {
+      ...h,
+      hall: h.name || h.hall || 'Hostel Hall',
+      warden: h.wardenName || h.warden || 'Hostel Master',
+      wardenPhone: h.wardenPhone || '+234 800 000 0000',
+      rooms: h.totalRooms || h.rooms || 0,
+      totalBeds,
+      occupiedBeds,
+      status: occupiedBeds >= totalBeds && totalBeds > 0 ? 'Occupied' : (h.status || 'Available'),
+      residents: h.residents || [],
+    };
   }
 
   async listHostels(tenantId: string, campusId?: string, filter?: HostelFilterDto) {
@@ -66,13 +86,16 @@ export class HostelService {
       const q = filter.search.toLowerCase();
       list = list.filter(
         (h) =>
-          h.name.toLowerCase().includes(q) ||
+          (h.name && h.name.toLowerCase().includes(q)) ||
+          (h.hall && h.hall.toLowerCase().includes(q)) ||
           (h.wardenName && h.wardenName.toLowerCase().includes(q)) ||
+          (h.warden && h.warden.toLowerCase().includes(q)) ||
           (h.code && h.code.toLowerCase().includes(q)),
       );
     }
 
-    return list.sort((a, b) => a.name.localeCompare(b.name));
+    const sorted = list.sort((a, b) => (a.name || a.hall || '').localeCompare(b.name || b.hall || ''));
+    return sorted.map((h) => this.enrichHostel(h));
   }
 
   async getHostelById(tenantId: string, hostelId: string) {
@@ -80,7 +103,7 @@ export class HostelService {
     if (!hostel || hostel.tenantId !== tenantId) {
       throw new NotFoundException(`Hostel with ID ${hostelId} not found`);
     }
-    return hostel;
+    return this.enrichHostel(hostel);
   }
 
   async updateHostel(tenantId: string, hostelId: string, dto: UpdateHostelDto) {

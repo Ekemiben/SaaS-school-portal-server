@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Body, Query, Param } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Query, Param } from '@nestjs/common';
 import { ResultsService } from './results.service.js';
 import { AcademicSummaryService } from './services/academic-summary.service.js';
 import { ReportCardService } from './services/report-card.service.js';
@@ -62,6 +62,15 @@ export class ResultsController {
     @Body() dto: UpdateAssessmentStructureDto,
   ) {
     return this.resultsService.updateAssessmentStructure(tenant.tenantId, id, dto);
+  }
+
+  @RequirePermissions(SystemPermissions.EXAMINATIONS_MANAGE)
+  @Delete('assessment-structures/:id')
+  async deleteAssessmentStructure(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.resultsService.deleteAssessmentStructure(tenant.tenantId, id);
   }
 
   // --- Assessment Preview / Evaluation ---

@@ -146,37 +146,131 @@ export class FeesService {
     if (filters.status) invoices = invoices.filter((i: any) => i.status === filters.status);
     if (filters.classId) invoices = invoices.filter((i: any) => i.classId === filters.classId);
 
-    return invoices;
+    return invoices.map((inv: any) => {
+      const student =
+        this.prisma.memoryStore.students.get(inv.studentId) ||
+        Array.from(this.prisma.memoryStore.students.values()).find(
+          (s: any) =>
+            s.tenantId === tenantId && (s.admissionNumber === inv.studentId || s.id === inv.studentId),
+        );
+
+      const totalAmount = Number(inv.totalAmount !== undefined ? inv.totalAmount : inv.amount || 0);
+      const paidAmount = Number(inv.paidAmount !== undefined ? inv.paidAmount : inv.paid || 0);
+      const balanceAmount = Number(
+        inv.balanceAmount !== undefined ? inv.balanceAmount : Math.max(0, totalAmount - paidAmount),
+      );
+
+      const normalizedStatus =
+        paidAmount >= totalAmount && totalAmount > 0
+          ? 'Paid'
+          : paidAmount > 0
+          ? 'Partial'
+          : 'Pending';
+
+      const dueDateStr =
+        typeof inv.dueDate === 'string'
+          ? inv.dueDate
+          : inv.dueDate?.toISOString?.().split('T')[0] || '2025-10-15';
+
+      const payments = Array.from(this.prisma.memoryStore.payments.values())
+        .filter(
+          (p: any) =>
+            p.tenantId === tenantId &&
+            p.invoiceId === inv.id &&
+            (p.status === 'SUCCESSFUL' || p.status === 'Success'),
+        )
+        .map((p: any) => ({
+          ref: p.reference || p.id,
+          date:
+            typeof p.paidAt === 'string'
+              ? p.paidAt
+              : (p.paidAt || p.createdAt)?.toISOString?.().split('T')[0] ||
+                new Date().toISOString().split('T')[0],
+          amount: Number(p.amount || 0),
+          channel: p.channel || p.gateway || p.provider || 'Direct Bank Transfer',
+        }));
+
+      return {
+        ...inv,
+        id: inv.id,
+        invoiceNumber: inv.invoiceNumber || inv.id,
+        student: student ? `${student.firstName} ${student.lastName}` : inv.student || 'Student',
+        studentId: student ? student.admissionNumber || student.id : inv.studentId || 'STD-001',
+        class: student?.currentClass || inv.class || 'JSS 1A',
+        amount: totalAmount,
+        paid: paidAmount,
+        balance: balanceAmount,
+        status: normalizedStatus,
+        dueDate: dueDateStr,
+        term: inv.termId || inv.term || 'First Term 2025/2026',
+        items: (inv.lineItems || inv.items || []).map((it: any) => ({
+          name: it.name || it.description || 'Fee Item',
+          amount: Number(it.amount || 0),
+        })),
+        payments,
+      };
+    });
   }
 
   async generateInvoice(
     tenantId: string,
-    data: {
-      studentId: string;
-      feeStructureId: string;
-      dueDate?: string;
-      selectedOptionalItemCodes?: string[];
-      waiverAmount?: number;
-      notes?: string;
-    },
+    data: any,
   ) {
-    const fee = await this.getFeeStructureById(tenantId, data.feeStructureId);
-    const student = this.prisma.memoryStore.students.get(data.studentId);
-    if (!student || student.tenantId !== tenantId) {
-      throw new NotFoundException('Student record not found');
+    let student = data.studentId ? this.prisma.memoryStore.students.get(data.studentId) : null;
+    if (!student && data.studentId) {
+      student = Array.from(this.prisma.memoryStore.students.values()).find(
+        (s: any) =>
+          s.tenantId === tenantId && (s.admissionNumber === data.studentId || s.id === data.studentId),
+      );
     }
 
-    const evaluation = FeeCalculator.evaluate({
-      items: fee.items || [{ name: fee.name, code: 'BASE', amount: fee.amount, isOptional: false }],
-      currency: fee.currency,
-      dueDate: data.dueDate || fee.dueDate,
-      lateFeePercentage: fee.lateFeePercentage,
-      lateFeeGraceDays: fee.lateFeeGraceDays,
-      earlyBirdDiscountPercentage: fee.earlyBirdDiscountPercentage,
-      earlyBirdCutoffDate: fee.earlyBirdCutoffDate,
-      selectedOptionalCodes: data.selectedOptionalItemCodes,
-      waiverAmount: data.waiverAmount,
-    });
+    const fee = data.feeStructureId
+      ? this.prisma.memoryStore.feeStructures.get(data.feeStructureId)
+      : null;
+
+    let subtotal = 0;
+    let discountAmount = 0;
+    let latePenaltyAmount = 0;
+    let waiverAmount = 0;
+    let totalAmount = 0;
+    let lineItems = [];
+
+    if (fee) {
+      const evalRes = FeeCalculator.evaluate({
+        items: fee.items || [{ name: fee.name, code: 'BASE', amount: fee.amount, isOptional: false }],
+        currency: fee.currency,
+        targetAudience: fee.targetAudience,
+        dueDate: fee.dueDate,
+        lateFeePercentage: fee.lateFeePercentage,
+        lateFeeGraceDays: fee.lateFeeGraceDays,
+        earlyBirdDiscountPercentage: fee.earlyBirdDiscountPercentage,
+        earlyBirdCutoffDate: fee.earlyBirdCutoffDate,
+        selectedOptionalCodes: data.selectedOptionalItemCodes,
+        isNewStudent: data.isNewStudent,
+        isBoardingStudent: data.isBoardingStudent,
+        paymentDate: data.paymentDate,
+        waiverAmount: data.waiverAmount,
+      });
+      subtotal = evalRes.subtotal;
+      discountAmount = evalRes.discountAmount;
+      latePenaltyAmount = evalRes.latePenaltyAmount;
+      waiverAmount = evalRes.waiverAmount;
+      totalAmount = evalRes.totalAmount;
+      lineItems = evalRes.lineItems;
+    } else {
+      lineItems =
+        data.items || [
+          { name: 'Tuition Fee', amount: Number(data.amount) || 80000, isOptional: false },
+          { name: 'Development Levy', amount: 20000, isOptional: false },
+        ];
+      subtotal = Number(
+        data.subtotal || data.amount || lineItems.reduce((sum: number, it: any) => sum + Number(it.amount || 0), 0),
+      );
+      discountAmount = Number(data.discountAmount || 0);
+      latePenaltyAmount = Number(data.latePenaltyAmount || 0);
+      waiverAmount = Number(data.waiverAmount || 0);
+      totalAmount = data.totalAmount !== undefined ? Number(data.totalAmount) : (subtotal - discountAmount - waiverAmount + latePenaltyAmount);
+    }
 
     const count = this.prisma.memoryStore.invoices.size + 1;
     const invoiceNumber = `INV-${new Date().getFullYear()}-${count.toString().padStart(4, '0')}`;
@@ -185,31 +279,43 @@ export class FeesService {
     const invoice = {
       id,
       tenantId,
-      studentId: data.studentId,
-      feeStructureId: data.feeStructureId,
-      classId: student.currentClassId || null,
-      academicYearId: fee.academicYearId,
-      termId: fee.termId,
+      studentId: student?.id || data.studentId || 'std_adhoc',
+      student: data.student || (student ? `${student.firstName} ${student.lastName}` : 'Student'),
+      feeStructureId: data.feeStructureId || fee?.id || null,
+      classId: student?.currentClassId || data.class || 'JSS 1A',
+      class: data.class || student?.currentClass || 'JSS 1A',
+      academicYearId: fee?.academicYearId || 'ay_2026_2027',
+      termId: data.term || fee?.termId || 'First Term 2025/2026',
+      term: data.term || fee?.termId || 'First Term 2025/2026',
       invoiceNumber,
-      subtotal: evaluation.subtotal,
-      discountAmount: evaluation.discountAmount,
-      waiverAmount: evaluation.waiverAmount,
-      latePenaltyAmount: evaluation.latePenaltyAmount,
-      totalAmount: evaluation.totalAmount,
+      subtotal,
+      discountAmount,
+      waiverAmount,
+      latePenaltyAmount,
+      totalAmount,
       paidAmount: 0,
-      balanceAmount: evaluation.totalAmount,
-      currency: fee.currency,
-      lineItems: evaluation.lineItems,
+      balanceAmount: totalAmount,
+      currency: fee?.currency || 'NGN',
+      lineItems,
+      items: lineItems,
       notes: data.notes || null,
-      dueDate: data.dueDate ? new Date(data.dueDate) : fee.dueDate || new Date(),
-      status: evaluation.totalAmount === 0 ? 'PAID' : 'PENDING',
+      dueDate: data.dueDate ? new Date(data.dueDate) : fee?.dueDate || new Date(),
+      status: totalAmount === 0 ? 'PAID' : 'PENDING',
       issuedAt: new Date(),
       createdAt: new Date(),
       updatedAt: new Date(),
     };
 
     this.prisma.memoryStore.invoices.set(id, invoice);
-    return invoice;
+    return {
+      ...invoice,
+      amount: totalAmount,
+      paid: 0,
+      balance: totalAmount,
+      status: invoice.status,
+      dueDate: typeof invoice.dueDate === 'string' ? invoice.dueDate : invoice.dueDate.toISOString().split('T')[0],
+      payments: [],
+    };
   }
 
   // --- Fee Waivers & Discounts ---
@@ -243,9 +349,12 @@ export class FeesService {
     this.prisma.memoryStore.feeWaivers.set(waiverId, waiver);
 
     // Update invoice totals
+    const subtotal = invoice.subtotal !== undefined ? Number(invoice.subtotal) : Number(invoice.totalAmount || 0);
+    const discountAmount = Number(invoice.discountAmount || 0);
+    const latePenaltyAmount = Number(invoice.latePenaltyAmount || 0);
     invoice.waiverAmount = Number((invoice.waiverAmount || 0) + Number(data.amount));
-    invoice.totalAmount = Math.max(0, invoice.subtotal - invoice.discountAmount - invoice.waiverAmount + invoice.latePenaltyAmount);
-    invoice.balanceAmount = Math.max(0, invoice.totalAmount - invoice.paidAmount);
+    invoice.totalAmount = Math.max(0, subtotal - discountAmount - invoice.waiverAmount + latePenaltyAmount);
+    invoice.balanceAmount = Math.max(0, invoice.totalAmount - (Number(invoice.paidAmount) || 0));
     if (invoice.balanceAmount === 0 && invoice.paidAmount > 0) {
       invoice.status = 'PAID';
     }

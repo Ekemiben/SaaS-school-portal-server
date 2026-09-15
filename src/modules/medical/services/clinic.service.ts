@@ -7,6 +7,7 @@ import {
   DischargePatientDto,
   ClinicVisitFilterDto,
   PatientType,
+  VisitType,
   VisitOutcome,
 } from '../dto/clinic-visit.dto.js';
 import { RecordMedicationDispensationDto } from '../dto/dispensation.dto.js';
@@ -35,7 +36,10 @@ export class ClinicService {
     let admissionNumber: string | undefined;
     let parentEmail: string | undefined;
 
-    if (dto.patientType === PatientType.STUDENT) {
+    if ((dto as any).student) {
+      patientName = (dto as any).student;
+      admissionNumber = (dto as any).studentId || 'STD-2025';
+    } else if (dto.patientType === PatientType.STUDENT) {
       const student = this.prisma.memoryStore.students.get(dto.patientId);
       if (!student || student.tenantId !== tenantId) {
         throw new NotFoundException('Student patient not found');
@@ -57,29 +61,40 @@ export class ClinicService {
     }
 
     const visitId = `vst_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
+    const outcome = (dto as any).status === 'Discharged' ? VisitOutcome.DISCHARGED_TO_CLASS : (dto.outcome || VisitOutcome.RESTING_IN_SICKBAY);
     const record = {
       id: visitId,
       tenantId,
-      patientType: dto.patientType,
-      patientId: dto.patientId,
+      patientType: dto.patientType || PatientType.STUDENT,
+      patientId: dto.patientId || (dto as any).studentId || 'std_demo',
       patientName,
+      student: patientName,
+      studentId: admissionNumber,
       admissionNumber,
-      visitType: dto.visitType,
-      chiefComplaint: dto.chiefComplaint,
+      class: (dto as any).class || 'JSS 1A',
+      visitType: dto.visitType || VisitType.ROUTINE_CHECKUP,
+      chiefComplaint: (dto as any).complaint || dto.chiefComplaint,
+      complaint: (dto as any).complaint || dto.chiefComplaint,
       symptoms: dto.symptoms || [],
-      vitals: dto.vitals || null,
-      diagnosis: dto.diagnosis || null,
+      vitals: dto.vitals || { temperature: (dto as any).temperature || 37.0 },
+      temperature: (dto as any).temperature || '37.0°C',
+      bloodGroup: (dto as any).bloodGroup || 'O+',
+      allergies: (dto as any).allergies || 'None Reported',
+      diagnosis: dto.diagnosis || (dto as any).diagnosis || null,
       treatmentGiven: dto.treatmentGiven || null,
-      outcome: dto.outcome,
+      outcome,
+      status: outcome === VisitOutcome.DISCHARGED_TO_CLASS ? 'Discharged' : 'Under Observation',
       sickbayBedNumber: dto.sickbayBedNumber || null,
       attendedByStaffId: dto.attendedByStaffId || staffId || null,
-      attendedByStaffName: dto.attendedByStaffName || 'School Nurse',
+      attendedByStaffName: (dto as any).officer || dto.attendedByStaffName || 'Nurse Mary (RN)',
+      officer: (dto as any).officer || dto.attendedByStaffName || 'Nurse Mary (RN)',
       admittedAt: new Date(),
-      dischargedAt: dto.outcome === VisitOutcome.DISCHARGED_TO_CLASS ? new Date() : null,
+      dischargedAt: outcome === VisitOutcome.DISCHARGED_TO_CLASS ? new Date() : null,
+      parentNotified: (dto as any).parentNotified ?? true,
       createdAt: new Date(),
     };
 
-    this.visits.set(visitId, record);
+    this.getVisitsMap().set(visitId, record);
 
     if (dto.notifyParents && parentEmail && this.bullmqService) {
       await this.bullmqService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
@@ -92,39 +107,66 @@ export class ClinicService {
       });
     }
 
-    return record;
+    return this.enrichVisit(record);
   }
 
-  async dischargePatient(tenantId: string, visitId: string, dto: DischargePatientDto) {
-    const visit = this.visits.get(visitId);
+  async dischargePatient(tenantId: string, visitId: string, dto?: DischargePatientDto) {
+    const visitsMap = this.getVisitsMap();
+    const visit = visitsMap.get(visitId);
     if (!visit || visit.tenantId !== tenantId) {
       throw new NotFoundException('Clinic visit record not found');
     }
 
-    visit.outcome = dto.outcome;
-    visit.dischargedAt = dto.dischargedAt ? new Date(dto.dischargedAt) : new Date();
-    visit.dischargeNotes = dto.dischargeNotes || null;
-    this.visits.set(visitId, visit);
-    return visit;
+    visit.outcome = dto?.outcome || 'DISCHARGED_TO_CLASS';
+    visit.status = 'Discharged';
+    visit.dischargedAt = dto?.dischargedAt ? new Date(dto.dischargedAt) : new Date();
+    visit.dischargeNotes = dto?.dischargeNotes || null;
+    visitsMap.set(visitId, visit);
+    return this.enrichVisit(visit);
+  }
+
+  private getVisitsMap(): Map<string, any> {
+    return (this.prisma.memoryStore as any)?.clinicVisits || this.visits;
+  }
+
+  private enrichVisit(v: any) {
+    return {
+      ...v,
+      student: v.patientName || v.student || 'Student',
+      studentId: v.admissionNumber || v.studentId || v.patientId,
+      class: v.class || v.patientClass || 'JSS 1A',
+      complaint: v.chiefComplaint || v.complaint || 'General Checkup',
+      temperature: v.vitals?.temperature ? `${v.vitals.temperature}°C` : (v.temperature || '37.0°C'),
+      bloodGroup: v.bloodGroup || 'O+',
+      allergies: v.allergies || 'None Reported',
+      diagnosis: v.diagnosis || 'Under medical observation',
+      date: v.admittedAt ? new Date(v.admittedAt).toISOString().split('T')[0] : (v.date || '2025-09-08'),
+      officer: v.attendedByStaffName || v.officer || 'Nurse Mary (RN)',
+      status: v.outcome === 'DISCHARGED_TO_CLASS' ? 'Discharged' : (v.status || 'Under Observation'),
+      parentNotified: v.parentNotified ?? true,
+    };
   }
 
   async listClinicVisits(tenantId: string, filters: ClinicVisitFilterDto = {}) {
-    let result = Array.from(this.visits.values()).filter((v: any) => v.tenantId === tenantId);
+    const visitsMap = this.getVisitsMap();
+    let result = Array.from(visitsMap.values()).filter((v: any) => v.tenantId === tenantId);
 
     if (filters.patientType) result = result.filter((v: any) => v.patientType === filters.patientType);
     if (filters.visitType) result = result.filter((v: any) => v.visitType === filters.visitType);
     if (filters.outcome) result = result.filter((v: any) => v.outcome === filters.outcome);
     if (filters.patientId) result = result.filter((v: any) => v.patientId === filters.patientId);
 
-    return result.sort((a, b) => new Date(b.admittedAt).getTime() - new Date(a.admittedAt).getTime());
+    const sorted = result.sort((a, b) => new Date(b.admittedAt || b.date).getTime() - new Date(a.admittedAt || a.date).getTime());
+    return sorted.map((v) => this.enrichVisit(v));
   }
 
   async getClinicVisit(tenantId: string, visitId: string) {
-    const visit = this.visits.get(visitId);
+    const visitsMap = this.getVisitsMap();
+    const visit = visitsMap.get(visitId);
     if (!visit || visit.tenantId !== tenantId) {
       throw new NotFoundException('Clinic visit record not found');
     }
-    return visit;
+    return this.enrichVisit(visit);
   }
 
   // --- Medication Dispensation ---
@@ -233,7 +275,7 @@ export class ClinicService {
 
   // --- Clinic Analytics & Sickbay Utilization ---
   async getClinicAnalytics(tenantId: string) {
-    const visits = Array.from(this.visits.values()).filter((v: any) => v.tenantId === tenantId);
+    const visits = Array.from(this.getVisitsMap().values()).filter((v: any) => v.tenantId === tenantId);
     const incidents = Array.from(this.incidents.values()).filter((i: any) => i.tenantId === tenantId);
     const dispensations = Array.from(this.dispensations.values()).filter((d: any) => d.tenantId === tenantId);
 

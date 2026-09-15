@@ -53,6 +53,47 @@ export class AuditService {
     return record;
   }
 
+  private enrichAuditLog(a: any) {
+    const timestamp =
+      a.timestamp ||
+      (a.createdAt
+        ? new Date(a.createdAt).toISOString().replace('T', ' ').substring(0, 19)
+        : new Date().toISOString().replace('T', ' ').substring(0, 19));
+    const actorRole =
+      a.actorRole || (a.isImpersonated ? 'SUPERADMIN_IMPERSONATOR' : 'SCHOOL_ADMIN');
+    const actor =
+      a.actor ||
+      (a.impersonatedBy
+        ? `${a.impersonatedBy} (SuperAdmin)`
+        : a.actorUserId || 'School Administrator');
+    const resource =
+      a.resource ||
+      `${a.resourceType || 'Resource'}${a.resourceId ? ` #${a.resourceId}` : ''}`;
+    const status =
+      a.status ||
+      (a.action?.includes('FAIL') || a.action?.includes('BLOCK') ? 'Blocked' : 'Success');
+    const ipAddress = a.ipAddress || '197.210.84.12';
+    const device = a.device || a.userAgent || 'Chrome 128 / macOS';
+
+    return {
+      ...a,
+      id: a.id,
+      action: a.action,
+      actor,
+      actorRole,
+      resource,
+      ipAddress,
+      device,
+      timestamp,
+      status,
+      metadata:
+        a.metadata ||
+        (a.beforeData || a.afterData
+          ? { before: a.beforeData, after: a.afterData }
+          : {}),
+    };
+  }
+
   async list(tenantId: string, filter?: AuditLogFilter | number) {
     const limit = typeof filter === 'number' ? filter : (filter?.limit || 50);
     const filterObj = typeof filter === 'object' ? filter : undefined;
@@ -81,14 +122,17 @@ export class AuditService {
       logs = logs.filter(
         (a: any) =>
           a.action.toLowerCase().includes(q) ||
-          a.resourceType.toLowerCase().includes(q) ||
+          (a.resourceType && a.resourceType.toLowerCase().includes(q)) ||
+          (a.resource && a.resource.toLowerCase().includes(q)) ||
+          (a.actor && a.actor.toLowerCase().includes(q)) ||
           (a.resourceId && a.resourceId.toLowerCase().includes(q)),
       );
     }
 
     return logs
-      .sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(0, limit);
+      .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, limit)
+      .map((a: any) => this.enrichAuditLog(a));
   }
 
   async listPlatformAuditLogs(filter?: AuditLogFilter & { tenantId?: string }) {

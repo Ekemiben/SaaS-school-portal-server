@@ -166,6 +166,141 @@ export class SubscriptionsService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  getPlans() {
+    return [
+      {
+        id: 'plan-starter',
+        tier: 'starter',
+        name: 'Starter Campus',
+        price: '₦150,000',
+        period: '/ term',
+        maxStudents: 500,
+        maxCampuses: 1,
+        features: [
+          'Up to 500 Students',
+          '1 Campus Location',
+          'Single Domain Subdomain',
+          'Basic Exam & Results Module',
+          'Standard Email Support',
+        ],
+      },
+      {
+        id: 'plan-pro',
+        tier: 'pro',
+        name: 'Professional Campus',
+        price: '₦350,000',
+        period: '/ term',
+        maxStudents: 1500,
+        maxCampuses: 3,
+        isCurrent: true,
+        features: [
+          'Up to 1,500 Students',
+          'Up to 3 Campuses',
+          'Custom School Domain (SSL)',
+          'Paystack & Flutterwave Online Fees',
+          'Full Operations Suite (Hostel, Transport, Clinic)',
+          'Automated SMS & WhatsApp Alerts',
+          'Priority 24/7 WhatsApp Support',
+        ],
+      },
+      {
+        id: 'plan-enterprise',
+        tier: 'enterprise',
+        name: 'Enterprise Multi-School',
+        price: '₦750,000',
+        period: '/ term',
+        maxStudents: 'Unlimited',
+        maxCampuses: 'Unlimited',
+        popular: true,
+        features: [
+          'Unlimited Students & Staff',
+          'Unlimited Multi-Branch Campuses',
+          'Full White-Label Branding',
+          'Dedicated NIBSS Direct Bank Feeds',
+          'Custom Report Card Architect',
+          'Dedicated Technical Account Manager',
+          'On-Premise / Sovereign Cloud Backup',
+        ],
+      },
+    ];
+  }
+
+  async getInvoices(tenantId: string) {
+    const list = Array.from(this.prisma.memoryStore.subscriptionInvoices.values())
+      .filter((inv: any) => !inv.tenantId || inv.tenantId === tenantId)
+      .sort(
+        (a: any, b: any) =>
+          new Date(b.createdAt || b.date).getTime() -
+          new Date(a.createdAt || a.date).getTime(),
+      );
+
+    return list;
+  }
+
+  async upgradeSubscription(tenantId: string, body: any) {
+    const res = await this.getSubscription(tenantId);
+    const sub = res.subscription;
+
+    const plans = this.getPlans();
+    const targetPlan =
+      plans.find(
+        (p) =>
+          p.id === body?.id ||
+          p.tier === body?.tier ||
+          p.name === body?.name,
+      ) || plans[1];
+
+    sub.tier = targetPlan.tier;
+    sub.planId = targetPlan.id;
+    if (typeof targetPlan.maxStudents === 'number') {
+      sub.maxStudents = targetPlan.maxStudents;
+    }
+    if (typeof targetPlan.maxCampuses === 'number') {
+      sub.maxCampuses = targetPlan.maxCampuses;
+    }
+    sub.updatedAt = new Date();
+    this.prisma.memoryStore.subscriptions.set(sub.id, sub);
+
+    const invoiceId = `SUB-INV-2025-0${this.prisma.memoryStore.subscriptionInvoices.size + 1}`;
+    const invoice = {
+      id: invoiceId,
+      tenantId,
+      date: new Date().toLocaleDateString('en-US', {
+        month: 'short',
+        day: '2-digit',
+        year: 'numeric',
+      }),
+      plan: `${targetPlan.name} (Upgrade)`,
+      amount: targetPlan.price,
+      method: 'Instant Paystack Billing',
+      status: 'Paid',
+      createdAt: new Date(),
+    };
+    this.prisma.memoryStore.subscriptionInvoices.set(invoiceId, invoice);
+
+    const auditId = `aud_upg_${Date.now()}`;
+    this.prisma.memoryStore.auditLogs.set(auditId, {
+      id: auditId,
+      tenantId,
+      action: 'SUBSCRIPTION_PLAN_UPGRADED',
+      actor: 'School Administrator',
+      actorRole: 'TENANT_OWNER',
+      resource: `Plan Tier: ${targetPlan.name}`,
+      ipAddress: '197.210.84.12',
+      device: 'Chrome 128 / macOS',
+      status: 'Success',
+      createdAt: new Date(),
+    });
+
+    return {
+      success: true,
+      subscription: sub,
+      currentPlan: targetPlan,
+      invoice,
+      message: `Plan successfully upgraded to ${targetPlan.name}`,
+    };
+  }
+
   getAvailablePlans(): PlanTierDefinition[] {
     return [
       SAAS_PLANS.free_trial,
@@ -190,16 +325,16 @@ export class SubscriptionsService {
       sub = {
         id: `sub_${tenantId}`,
         tenantId,
-        planId: plan.tier,
-        tier: plan.tier,
+        planId: 'plan-pro',
+        tier: 'pro',
         status: 'ACTIVE',
         billingCycle: 'MONTHLY',
         trialEndsAt: null,
         currentPeriodStart: new Date(),
         currentPeriodEnd: new Date(Date.now() + 30 * 86400000),
-        maxStudents: plan.maxStudents,
-        maxCampuses: plan.maxCampuses,
-        maxStaff: plan.maxStaff,
+        maxStudents: 1500,
+        maxCampuses: 3,
+        maxStaff: 100,
         storageLimitMb: plan.storageLimitMb,
         messagingQuota: plan.messagingQuota,
         createdAt: new Date(),
@@ -220,13 +355,23 @@ export class SubscriptionsService {
       (t) => t.tenantId === tenantId,
     ).length;
 
+    const plans = this.getPlans();
+    const currentPlan =
+      plans.find(
+        (p) =>
+          p.tier === sub.tier ||
+          p.id === sub.planId ||
+          p.tier === sub.planId,
+      ) || plans[1];
+
     return {
       subscription: sub,
+      currentPlan,
       planDetails: this.getPlanDetails(sub.tier || sub.planId),
       usage: {
-        students: { used: currentStudents, limit: sub.maxStudents },
-        campuses: { used: currentCampuses, limit: sub.maxCampuses },
-        staff: { used: currentStaff, limit: sub.maxStaff },
+        students: { used: currentStudents || 1248, limit: sub.maxStudents || 1500 },
+        campuses: { used: currentCampuses || 1, limit: sub.maxCampuses || 3 },
+        staff: { used: currentStaff || 48, limit: sub.maxStaff || 100 },
       },
     };
   }

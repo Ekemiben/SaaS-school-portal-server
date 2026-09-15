@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Post, Body } from '@nestjs/common';
 import { SubscriptionsService } from './subscriptions.service.js';
 import { UsageMeteringService } from './usage-metering.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
@@ -16,6 +16,26 @@ export class SubscriptionsController {
   @Get()
   async getSubscription(@CurrentTenant() tenant: TenantContext) {
     return this.subscriptionsService.getSubscription(tenant.tenantId);
+  }
+
+  @Get('plans')
+  async getPlans() {
+    return this.subscriptionsService.getPlans();
+  }
+
+  @Get('invoices')
+  @RequirePermissions(SystemPermissions.BILLING_VIEW)
+  async getInvoices(@CurrentTenant() tenant: TenantContext) {
+    return this.subscriptionsService.getInvoices(tenant.tenantId);
+  }
+
+  @Post('upgrade')
+  @RequirePermissions(SystemPermissions.SETTINGS_MANAGE)
+  async upgradeSubscription(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() body: any,
+  ) {
+    return this.subscriptionsService.upgradeSubscription(tenant.tenantId, body);
   }
 
   @Get('usage')

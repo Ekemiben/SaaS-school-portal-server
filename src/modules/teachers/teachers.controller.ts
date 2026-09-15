@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query } from '@nestjs/common';
 import { TeachersService } from './teachers.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
@@ -34,5 +34,24 @@ export class TeachersController {
     @Body() body: any,
   ) {
     return this.teachersService.create(tenant.tenantId, body);
+  }
+
+  @RequirePermissions(SystemPermissions.TEACHERS_MANAGE)
+  @Patch(':id')
+  async updateTeacher(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    return this.teachersService.update(tenant.tenantId, id, body);
+  }
+
+  @RequirePermissions(SystemPermissions.TEACHERS_MANAGE)
+  @Delete(':id')
+  async deleteTeacher(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.teachersService.delete(tenant.tenantId, id);
   }
 }

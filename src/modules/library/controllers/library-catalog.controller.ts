@@ -64,6 +64,26 @@ export class LibraryCatalogController {
     return this.catalogService.updateBook(tenant.tenantId, id, dto);
   }
 
+  @Post('books/:id/borrow')
+  @RequirePermissions(SystemPermissions.LIBRARY_MANAGE)
+  borrowBook(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: any,
+  ) {
+    return this.catalogService.borrowBook(tenant.tenantId, id, dto);
+  }
+
+  @Post('books/:id/return')
+  @RequirePermissions(SystemPermissions.LIBRARY_MANAGE)
+  returnBook(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() dto: any,
+  ) {
+    return this.catalogService.returnBookLoan(tenant.tenantId, id, dto?.loanIndex ?? 0);
+  }
+
   // --- Physical Copies / Barcodes ---
 
   @Post('copies')

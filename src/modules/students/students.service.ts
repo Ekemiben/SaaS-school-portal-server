@@ -11,6 +11,7 @@ export class StudentsService {
     filters: {
       campusId?: string;
       classId?: string;
+      status?: string;
       search?: string;
       page?: number;
       limit?: number;
@@ -20,20 +21,38 @@ export class StudentsService {
     const limit = Math.min(Math.max(Number(filters.limit) || 20, 1), 100);
 
     let all = Array.from(this.prisma.memoryStore.students.values()).filter(
-      (s) => s.tenantId === tenantId,
+      (s: any) => s.tenantId === tenantId,
     );
 
     if (filters.campusId) {
-      all = all.filter((s) => s.campusId === filters.campusId);
+      all = all.filter((s: any) => s.campusId === filters.campusId);
+    }
+
+    if (filters.classId) {
+      const targetClass = filters.classId.toLowerCase();
+      all = all.filter(
+        (s: any) =>
+          (s.classId && s.classId.toLowerCase() === targetClass) ||
+          (s.classLevel && s.classLevel.toLowerCase() === targetClass),
+      );
+    }
+
+    if (filters.status) {
+      const targetStatus = filters.status.toLowerCase();
+      all = all.filter(
+        (s: any) => s.status && s.status.toLowerCase() === targetStatus,
+      );
     }
 
     if (filters.search) {
       const q = filters.search.toLowerCase();
       all = all.filter(
-        (s) =>
-          s.firstName.toLowerCase().includes(q) ||
-          s.lastName.toLowerCase().includes(q) ||
-          s.admissionNumber.toLowerCase().includes(q),
+        (s: any) =>
+          (s.firstName || '').toLowerCase().includes(q) ||
+          (s.lastName || '').toLowerCase().includes(q) ||
+          (s.middleName || '').toLowerCase().includes(q) ||
+          (s.admissionNumber || '').toLowerCase().includes(q) ||
+          (s.guardianName || '').toLowerCase().includes(q),
       );
     }
 
@@ -85,35 +104,42 @@ export class StudentsService {
       address?: string;
       classId?: string;
       academicYearId?: string;
+      status?: string;
+      [key: string]: any;
     },
   ) {
+    // Ensure admission number is set
+    const admissionNumber =
+      data.admissionNumber ||
+      `SCH/${new Date().getFullYear()}/${Math.floor(1000 + Math.random() * 9000)}`;
+
     // Check admission number collision in this tenant
     const existing = Array.from(this.prisma.memoryStore.students.values()).find(
-      (s) => s.tenantId === tenantId && s.admissionNumber === data.admissionNumber,
+      (s: any) => s.tenantId === tenantId && s.admissionNumber === admissionNumber,
     );
     if (existing) {
       throw new ConflictException(
-        `A student with admission number "${data.admissionNumber}" already exists in this school.`,
+        `A student with admission number "${admissionNumber}" already exists in this school.`,
       );
     }
 
     const studentId = `std_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
     const student = {
+      ...data,
       id: studentId,
       tenantId,
-      campusId: data.campusId,
-      admissionNumber: data.admissionNumber,
+      campusId: data.campusId || 'campus_001',
+      admissionNumber,
       firstName: data.firstName,
       middleName: data.middleName || null,
       lastName: data.lastName,
-      gender: data.gender,
+      gender: data.gender || 'Male',
       dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : null,
       bloodGroup: data.bloodGroup || null,
       email: data.email || null,
       phone: data.phone || null,
       address: data.address || null,
-      photoUrl: null,
-      status: 'ACTIVE',
+      status: data.status ? data.status.toUpperCase() : 'ACTIVE',
       createdAt: new Date(),
       updatedAt: new Date(),
     };

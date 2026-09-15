@@ -42,15 +42,32 @@ export class TransportService {
 
     const allocations = Array.from(this.prisma.memoryStore.studentTransportAllocations.values());
 
-    return routes.map((r) => {
-      const enrolled = allocations.filter(
-        (a) => a.tenantId === tenantId && a.routeId === r.id && a.status === AllocationStatus.ACTIVE,
-      ).length;
-      return {
-        ...r,
-        enrolled,
-      };
-    });
+    return routes.map((r) => this.enrichRoute(r, allocations));
+  }
+
+  private enrichRoute(r: any, allocations: any[] = []) {
+    const enrolled =
+      r.enrolled ??
+      allocations.filter(
+        (a) => a.tenantId === r.tenantId && a.routeId === r.id && a.status === AllocationStatus.ACTIVE,
+      ).length ??
+      (r.passengers ? r.passengers.length : 0);
+
+    return {
+      ...r,
+      name: r.name || r.routeName || 'Bus Route',
+      routeName: r.routeName || r.name || 'Bus Route',
+      vehicle: r.vehicle || (r.vehicleNumber ? `Bus (${r.vehicleNumber})` : 'Toyota Coaster (Bus 01)'),
+      plateNumber: r.plateNumber || r.vehicleNumber || 'KJA-892-XA',
+      driver: r.driver || r.driverName || 'Designated Driver',
+      driverPhone: r.driverPhone || '+234 800 000 0000',
+      capacity: Number(r.capacity || 35),
+      enrolled,
+      feePerTerm: Number(r.feePerTerm || r.fee || 45000),
+      status: r.status || 'Active',
+      stops: r.stops || (r.routeStops ? r.routeStops.map((s: any) => s.stopName) : ['Campus Arrival (7:30 AM)']),
+      passengers: r.passengers || [],
+    };
   }
 
   async getRouteById(tenantId: string, routeId: string) {
@@ -81,11 +98,7 @@ export class TransportService {
     if (!route) throw new NotFoundException('Transport route not found.');
 
     const allocations = Array.from(this.prisma.memoryStore.studentTransportAllocations.values());
-    const enrolled = allocations.filter(
-      (a) => a.tenantId === tenantId && a.routeId === route.id && a.status === AllocationStatus.ACTIVE,
-    ).length;
-
-    return { ...route, enrolled };
+    return this.enrichRoute(route, allocations);
   }
 
   async createRoute(tenantId: string, data: CreateTransportRouteDto) {
@@ -125,31 +138,37 @@ export class TransportService {
       });
     }
 
-    const id = `route_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
+    const id = `RT-0${this.prisma.memoryStore.transportRoutes.size + 1}`;
     const route = {
       id,
       tenantId,
-      campusId: data.campusId,
-      routeName: data.routeName,
-      vehicleNumber: data.vehicleNumber,
-      driverName: data.driverName,
-      driverPhone: data.driverPhone,
-      capacity: data.capacity ?? 30,
-      fee: Number(data.fee || 0),
-      stops: data.stops || [],
-      routeStops: (data.stops || []).map((s, idx) => ({
+      campusId: data.campusId || 'campus_main_01',
+      name: (data as any).name || data.routeName || 'New Route',
+      routeName: (data as any).name || data.routeName || 'New Route',
+      vehicle: (data as any).vehicle || 'Toyota HiAce',
+      plateNumber: (data as any).plateNumber || data.vehicleNumber || 'APP-101-XY',
+      vehicleNumber: (data as any).plateNumber || data.vehicleNumber || 'APP-101-XY',
+      driver: (data as any).driver || data.driverName || 'Designated Driver',
+      driverName: (data as any).driver || data.driverName || 'Designated Driver',
+      driverPhone: (data as any).driverPhone || data.driverPhone || '+234 800 000 0000',
+      capacity: Number((data as any).capacity || data.capacity || 30),
+      enrolled: 0,
+      feePerTerm: Number((data as any).feePerTerm || data.fee || 40000),
+      fee: Number((data as any).feePerTerm || data.fee || 40000),
+      status: 'Active',
+      stops: (data as any).stops || ['Campus Arrival (7:30 AM)'],
+      passengers: [],
+      routeStops: ((data as any).stops || []).map((s: any, idx: number) => ({
         id: `stop_${randomUUID().replace(/-/g, '').substring(0, 8)}`,
         routeId: id,
-        stopName: s.stopName,
-        stopOrder: s.stopOrder ?? idx + 1,
-        pickupTime: s.pickupTime,
-        dropoffTime: s.dropoffTime,
+        stopName: typeof s === 'string' ? s : s.stopName,
+        stopOrder: idx + 1,
       })),
       createdAt: new Date(),
       updatedAt: new Date(),
     };
     this.prisma.memoryStore.transportRoutes.set(id, route);
-    return route;
+    return this.enrichRoute(route);
   }
 
   async updateRoute(tenantId: string, routeId: string, data: UpdateTransportRouteDto) {

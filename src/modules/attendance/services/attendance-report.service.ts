@@ -6,16 +6,22 @@ export class AttendanceReportService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getDailyClassReport(tenantId: string, classId: string, date: string) {
-    const targetClass = this.prisma.memoryStore.classes.get(classId);
+    let targetClass = this.prisma.memoryStore.classes.get(classId);
+    if (!targetClass) {
+      targetClass = Array.from(this.prisma.memoryStore.classes.values()).find(
+        (c: any) => c.tenantId === tenantId && (c.id === classId || c.name === classId),
+      );
+    }
     if (!targetClass || targetClass.tenantId !== tenantId) {
       throw new NotFoundException(`Class ${classId} not found in this school.`);
     }
+    const resolvedClassId = targetClass.id;
 
     const dateKey = new Date(date).toISOString().split('T')[0];
     const records = Array.from(this.prisma.memoryStore.attendance.values()).filter(
       (a: any) =>
         a.tenantId === tenantId &&
-        a.classId === classId &&
+        (a.classId === resolvedClassId || a.classId === targetClass.name) &&
         (!a.subjectId || a.sessionType === 'DAILY') &&
         new Date(a.date).toISOString().split('T')[0] === dateKey,
     );

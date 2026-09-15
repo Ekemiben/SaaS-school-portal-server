@@ -14,7 +14,9 @@ export class AuditController {
   async list(
     @CurrentTenant() tenant: TenantContext,
     @Query('limit') limit?: number,
+    @Query('search') search?: string,
+    @Query('action') action?: string,
   ) {
-    return this.auditService.list(tenant.tenantId, limit);
+    return this.auditService.list(tenant.tenantId, { limit, search, action });
   }
 }

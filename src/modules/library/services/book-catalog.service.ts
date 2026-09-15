@@ -25,7 +25,8 @@ export class BookCatalogService {
   async createBook(tenantId: string, campusId: string, dto: CreateBookDto) {
     const targetCampusId = dto.campusId || campusId;
     const id = `bk_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const copiesCount = dto.initialCopies || 1;
+    const copiesCount = Number((dto as any).copies || dto.initialCopies || 1);
+    const shelf = (dto as any).shelf || dto.shelfLocation || 'Aisle 1 - Bay A';
 
     const book = {
       id,
@@ -39,15 +40,19 @@ export class BookCatalogService {
       publisher: dto.publisher || null,
       publicationYear: dto.publicationYear || null,
       edition: dto.edition || null,
-      category: dto.category || 'GENERAL_KNOWLEDGE',
+      category: dto.category || 'Sciences',
       deweyDecimal: dto.deweyDecimal || null,
-      shelfLocation: dto.shelfLocation || null,
+      shelf,
+      shelfLocation: shelf,
       description: dto.description || null,
       coverImageUrl: dto.coverImageUrl || null,
+      copies: copiesCount,
       totalCopies: copiesCount,
+      available: copiesCount,
       availableCopies: copiesCount,
       reservedCopies: 0,
       status: copiesCount > 0 ? 'IN_STOCK' : 'OUT_OF_STOCK',
+      loans: [],
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -83,6 +88,22 @@ export class BookCatalogService {
     return book;
   }
 
+  enrichBook(b: any) {
+    const totalCopies = Number(b.totalCopies ?? b.copies ?? 1);
+    const availableCopies = Number(b.availableCopies ?? b.available ?? totalCopies);
+    return {
+      ...b,
+      shelf: b.shelf || b.shelfLocation || 'Aisle 1 - Bay A',
+      shelfLocation: b.shelfLocation || b.shelf || 'Aisle 1 - Bay A',
+      copies: totalCopies,
+      totalCopies,
+      available: availableCopies,
+      availableCopies,
+      status: b.status || (availableCopies > 0 ? 'IN_STOCK' : 'OUT_OF_STOCK'),
+      loans: b.loans || [],
+    };
+  }
+
   async listBooks(tenantId: string, filter?: BookFilterDto) {
     let list = Array.from(this.prisma.memoryStore.books.values()).filter(
       (b) => b.tenantId === tenantId,
@@ -105,7 +126,7 @@ export class BookCatalogService {
       );
     }
 
-    return list.sort((a, b) => a.title.localeCompare(b.title));
+    return list.sort((a, b) => a.title.localeCompare(b.title)).map((b) => this.enrichBook(b));
   }
 
   async getBookById(tenantId: string, bookId: string) {
@@ -125,11 +146,56 @@ export class BookCatalogService {
     );
 
     return {
-      ...book,
+      ...this.enrichBook(book),
       copies,
       activeLoans,
       activeReservations,
     };
+  }
+
+  async borrowBook(tenantId: string, bookId: string, loanData: any) {
+    const book = this.prisma.memoryStore.books.get(bookId);
+    if (!book || book.tenantId !== tenantId) {
+      throw new NotFoundException(`Book with ID ${bookId} not found`);
+    }
+
+    const currentAvailable = Number(book.available ?? book.availableCopies ?? 1);
+    if (currentAvailable <= 0) {
+      throw new BadRequestException('No copies available to borrow');
+    }
+
+    const newLoan = {
+      id: `ln_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      student: loanData.student || 'Student',
+      class: loanData.class || 'JSS 1A',
+      issueDate: new Date().toISOString().split('T')[0],
+      dueDate: loanData.dueDate || new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
+      status: 'Active',
+    };
+
+    book.available = Math.max(0, currentAvailable - 1);
+    book.availableCopies = book.available;
+    book.loans = [newLoan, ...(book.loans || [])];
+    book.updatedAt = new Date();
+    this.prisma.memoryStore.books.set(bookId, book);
+    return this.enrichBook(book);
+  }
+
+  async returnBookLoan(tenantId: string, bookId: string, loanIndex: number) {
+    const book = this.prisma.memoryStore.books.get(bookId);
+    if (!book || book.tenantId !== tenantId) {
+      throw new NotFoundException(`Book with ID ${bookId} not found`);
+    }
+
+    if (book.loans && book.loans[loanIndex]) {
+      book.loans[loanIndex].status = 'Returned';
+      const total = Number(book.copies ?? book.totalCopies ?? 1);
+      book.available = Math.min(total, (Number(book.available ?? 0)) + 1);
+      book.availableCopies = book.available;
+      book.updatedAt = new Date();
+      this.prisma.memoryStore.books.set(bookId, book);
+    }
+    return this.enrichBook(book);
   }
 
   async updateBook(tenantId: string, bookId: string, dto: UpdateBookDto) {
@@ -253,7 +319,9 @@ export class BookCatalogService {
     const available = copies.filter((c) => c.status === 'AVAILABLE').length;
     const reserved = copies.filter((c) => c.status === 'RESERVED').length;
 
+    book.copies = total;
     book.totalCopies = total;
+    book.available = available;
     book.availableCopies = available;
     book.reservedCopies = reserved;
     book.status = available > 0 ? 'IN_STOCK' : total > 0 ? 'LOW_STOCK' : 'OUT_OF_STOCK';
