@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Query } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Param, Body, Query } from '@nestjs/common';
 import { ExpensesService } from './expenses.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
@@ -19,11 +19,29 @@ export class ExpensesController {
   }
 
   @RequirePermissions(SystemPermissions.EXPENSES_MANAGE)
+  @Get(':id')
+  async getById(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.expensesService.getExpenseById(tenant.tenantId, id);
+  }
+
+  @RequirePermissions(SystemPermissions.EXPENSES_MANAGE)
   @Post()
   async create(
     @CurrentTenant() tenant: TenantContext,
     @Body() body: any,
   ) {
     return this.expensesService.createExpense(tenant.tenantId, body);
+  }
+
+  @RequirePermissions(SystemPermissions.EXPENSES_MANAGE)
+  @Delete(':id')
+  async delete(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.expensesService.deleteExpense(tenant.tenantId, id);
   }
 }

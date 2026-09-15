@@ -28,6 +28,24 @@ export class HostelAllocationService {
     userId: string,
     dto: AllocateBedDto,
   ) {
+    if ((dto as any).student) {
+      const targetHostelId = dto.hostelId || (dto as any).hostelId;
+      const targetHostel = this.prisma.memoryStore.hostels.get(targetHostelId);
+      if (targetHostel) {
+        targetHostel.occupiedBeds = (targetHostel.occupiedBeds || 0) + 1;
+        if (!targetHostel.residents) targetHostel.residents = [];
+        targetHostel.residents.push({
+          student: (dto as any).student,
+          class: (dto as any).class || 'JSS 1A',
+          roomNumber: (dto as any).roomNumber || 'Room 101',
+          bedSpace: (dto as any).bedSpace || 'Bed A (Lower)',
+          dateJoined: new Date().toISOString().split('T')[0],
+        });
+        this.prisma.memoryStore.hostels.set(targetHostelId, targetHostel);
+        return { success: true, message: 'Bed space allocated successfully', hostel: targetHostel };
+      }
+    }
+
     const student = this.prisma.memoryStore.students.get(dto.studentId);
     if (!student || student.tenantId !== tenantId) {
       throw new NotFoundException(`Student with ID ${dto.studentId} not found in this school`);

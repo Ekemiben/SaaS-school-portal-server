@@ -60,22 +60,60 @@ export class AcademicsService {
     );
   }
 
-  async createClass(tenantId: string, data: { campusId: string; academicYearId: string; name: string; gradeLevel: string; stream?: string; capacity?: number }) {
+  async createClass(tenantId: string, data: any) {
     const id = `cls_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
     const newClass = {
       id,
       tenantId,
-      campusId: data.campusId,
-      academicYearId: data.academicYearId,
+      campusId: data.campusId || 'campus_main_01',
+      academicYearId: data.academicYearId || 'ay_2026_2027',
       name: data.name,
       gradeLevel: data.gradeLevel,
       stream: data.stream || null,
-      capacity: data.capacity || 40,
+      classTeacher: data.classTeacher || null,
+      roomLocation: data.roomLocation || null,
+      capacity: Number(data.capacity) || 40,
+      enrolledCount: 0,
+      status: data.status || 'Active',
+      subjects: Array.isArray(data.subjects)
+        ? data.subjects
+        : data.subjects
+        ? data.subjects.split(',').map((s: string) => s.trim()).filter(Boolean)
+        : [],
       createdAt: new Date(),
       updatedAt: new Date(),
     };
     this.prisma.memoryStore.classes.set(id, newClass);
     return newClass;
+  }
+
+  async updateClass(tenantId: string, classId: string, data: any) {
+    const cls = this.prisma.memoryStore.classes.get(classId);
+    if (!cls || cls.tenantId !== tenantId) {
+      throw new Error('Class not found');
+    }
+    const updated = {
+      ...cls,
+      ...data,
+      capacity: data.capacity !== undefined ? Number(data.capacity) : cls.capacity,
+      subjects: Array.isArray(data.subjects)
+        ? data.subjects
+        : typeof data.subjects === 'string'
+        ? data.subjects.split(',').map((s: string) => s.trim()).filter(Boolean)
+        : cls.subjects,
+      updatedAt: new Date(),
+    };
+    this.prisma.memoryStore.classes.set(classId, updated);
+    return updated;
+  }
+
+  async deleteClass(tenantId: string, classId: string) {
+    const cls = this.prisma.memoryStore.classes.get(classId);
+    if (!cls || cls.tenantId !== tenantId) {
+      throw new Error('Class not found');
+    }
+    this.prisma.memoryStore.classes.delete(classId);
+    return { success: true, message: 'Class removed successfully' };
   }
 
   // --- Subjects ---

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Query, Param } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Query, Param } from '@nestjs/common';
 import { AcademicsService } from './academics.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
@@ -55,6 +55,25 @@ export class AcademicsController {
     @Body() body: any,
   ) {
     return this.academicsService.createClass(tenant.tenantId, body);
+  }
+
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Patch('classes/:id')
+  async updateClass(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    return this.academicsService.updateClass(tenant.tenantId, id, body);
+  }
+
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Delete('classes/:id')
+  async deleteClass(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.academicsService.deleteClass(tenant.tenantId, id);
   }
 
   @Get('subjects')

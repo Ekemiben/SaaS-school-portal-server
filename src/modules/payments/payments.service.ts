@@ -45,9 +45,137 @@ export class PaymentsService {
   }
 
   async listPayments(tenantId: string, studentId?: string) {
-    return Array.from(this.prisma.memoryStore.payments.values()).filter(
-      (p: any) => p.tenantId === tenantId && (!studentId || p.studentId === studentId),
-    );
+    return Array.from(this.prisma.memoryStore.payments.values())
+      .filter((p: any) => p.tenantId === tenantId && (!studentId || p.studentId === studentId))
+      .map((p: any) => {
+        const student =
+          this.prisma.memoryStore.students.get(p.studentId) ||
+          Array.from(this.prisma.memoryStore.students.values()).find(
+            (s: any) =>
+              s.tenantId === tenantId &&
+              (s.admissionNumber === p.studentId || s.id === p.studentId),
+          );
+
+        const invoice = p.invoiceId
+          ? this.prisma.memoryStore.invoices.get(p.invoiceId) ||
+            Array.from(this.prisma.memoryStore.invoices.values()).find(
+              (inv: any) =>
+                inv.tenantId === tenantId &&
+                (inv.invoiceNumber === p.invoiceId || inv.id === p.invoiceId),
+            )
+          : null;
+
+        const dateStr =
+          typeof p.paidAt === 'string'
+            ? p.paidAt
+            : (p.paidAt || p.createdAt)?.toISOString?.().split('T')[0] ||
+              new Date().toISOString().split('T')[0];
+
+        return {
+          ...p,
+          id: p.id,
+          student:
+            p.studentName ||
+            (student ? `${student.firstName} ${student.lastName}` : 'Student'),
+          studentId: student ? student.admissionNumber || student.id : p.studentId || 'STD-001',
+          class: student?.currentClass || 'JSS 1A',
+          amount: Number(p.amount || 0),
+          gateway: p.provider || p.channel || 'Direct Bank Transfer',
+          reference: p.reference || p.id,
+          date: dateStr,
+          status:
+            p.status === 'SUCCESSFUL' || p.status === 'Success'
+              ? 'Success'
+              : p.status === 'PENDING'
+              ? 'Pending'
+              : 'Failed',
+          invoiceId: invoice?.invoiceNumber || p.invoiceId || 'N/A',
+          feesCovered: invoice?.notes || p.notes || 'Term Tuition & Levies',
+          payerName:
+            p.payerName || (student?.guardians?.[0]?.name) || 'Parent/Guardian',
+          payerEmail: p.payerEmail || 'parent@school.edu.ng',
+          channel: p.channel || p.provider || 'Direct Card / Transfer',
+        };
+      });
+  }
+
+  async recordOfflinePayment(tenantId: string, data: any) {
+    const id = `pmt_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+    const reference =
+      data.reference || `PAY-${Date.now()}-${randomUUID().substring(0, 6).toUpperCase()}`;
+
+    let invoice: any = null;
+    if (data.invoiceId) {
+      invoice = this.prisma.memoryStore.invoices.get(data.invoiceId);
+      if (!invoice) {
+        invoice = Array.from(this.prisma.memoryStore.invoices.values()).find(
+          (inv: any) =>
+            inv.tenantId === tenantId &&
+            (inv.invoiceNumber === data.invoiceId || inv.id === data.invoiceId),
+        );
+      }
+    }
+
+    const studentId = data.studentId || invoice?.studentId;
+    let student: any = null;
+    if (studentId) {
+      student =
+        this.prisma.memoryStore.students.get(studentId) ||
+        Array.from(this.prisma.memoryStore.students.values()).find(
+          (s: any) =>
+            s.tenantId === tenantId && (s.admissionNumber === studentId || s.id === studentId),
+        );
+    }
+
+    const amount = Number(data.amount || 0);
+
+    const payment: any = {
+      id,
+      tenantId,
+      invoiceId: invoice?.id || data.invoiceId || null,
+      studentId: student?.id || studentId || 'std_adhoc',
+      studentName:
+        data.student || (student ? `${student.firstName} ${student.lastName}` : 'Student'),
+      reference,
+      transactionId: `TXN_${randomUUID().substring(0, 8).toUpperCase()}`,
+      amount,
+      currency: data.currency || invoice?.currency || 'NGN',
+      provider: data.gateway || data.channel || 'Direct Bank Transfer',
+      channel: data.channel || data.gateway || 'NIBSS Instant Payment',
+      status: 'SUCCESSFUL',
+      paidAt: new Date(data.date || Date.now()),
+      payerName: data.payerName || (student?.guardians?.[0]?.name) || 'Parent/Guardian',
+      payerEmail: data.payerEmail || 'parent@school.edu.ng',
+      notes: data.note || data.notes || data.feesCovered || 'Fee payment',
+      createdAt: new Date(),
+    };
+
+    this.prisma.memoryStore.payments.set(id, payment);
+
+    if (invoice) {
+      invoice.paidAmount = Number(((invoice.paidAmount || 0) + amount).toFixed(2));
+      invoice.balanceAmount = Math.max(
+        0,
+        Number(((invoice.totalAmount || 0) - invoice.paidAmount).toFixed(2)),
+      );
+      invoice.status = invoice.balanceAmount === 0 ? 'PAID' : 'PARTIALLY_PAID';
+      invoice.updatedAt = new Date();
+      this.prisma.memoryStore.invoices.set(invoice.id, invoice);
+    }
+
+    return {
+      success: true,
+      message: 'Payment recorded and invoice credited successfully.',
+      payment: {
+        ...payment,
+        id: payment.id,
+        student: payment.studentName,
+        class: data.class || student?.currentClass || 'JSS 1A',
+        gateway: payment.provider,
+        date: payment.paidAt.toISOString().split('T')[0],
+        status: 'Success',
+      },
+    };
   }
 
   async initializePayment(tenantId: string, dto: InitializePaymentDto) {

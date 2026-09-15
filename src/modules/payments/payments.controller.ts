@@ -100,6 +100,15 @@ export class PaymentsController {
   }
 
   @RequirePermissions(SystemPermissions.FEES_MANAGE)
+  @Post('record')
+  async recordOfflinePayment(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() dto: any,
+  ) {
+    return this.paymentsService.recordOfflinePayment(tenant.tenantId, dto);
+  }
+
+  @RequirePermissions(SystemPermissions.FEES_MANAGE)
   @Post('reconcile')
   async reconcilePendingPayments(@CurrentTenant() tenant: TenantContext) {
     return this.paymentsService.reconcilePendingPayments(tenant.tenantId);

@@ -101,6 +101,12 @@ export class ResultsService {
     return struct;
   }
 
+  async deleteAssessmentStructure(tenantId: string, id: string) {
+    const struct = await this.getAssessmentStructure(tenantId, id);
+    this.prisma.memoryStore.assessmentStructures.delete(id);
+    return { success: true, message: 'Assessment rubric deleted successfully' };
+  }
+
   // --- Assessment Evaluation & Preview ---
   async evaluateScore(tenantId: string, dto: EvaluateAssessmentDto) {
     let components: AssessmentComponentDto[] = dto.components || [];

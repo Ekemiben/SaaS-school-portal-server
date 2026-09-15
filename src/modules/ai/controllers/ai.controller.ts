@@ -4,17 +4,12 @@ import {
   Body,
   Req,
   Query,
-  UseGuards,
 } from '@nestjs/common';
-import { AuthGuard } from '../../../common/guards/auth.guard.js';
-import { TenantGuard } from '../../../common/guards/tenant.guard.js';
-import { PermissionsGuard } from '../../../common/guards/permissions.guard.js';
 import { Permissions } from '../../../common/decorators/permissions.decorator.js';
 import { AiService } from '../services/ai.service.js';
 import { AiPromptDto, AiSummarizeDto } from '../dto/ai-request.dto.js';
 
 @Controller('api/v1/ai')
-@UseGuards(AuthGuard, TenantGuard, PermissionsGuard)
 export class AiController {
   constructor(private readonly aiService: AiService) {}
 

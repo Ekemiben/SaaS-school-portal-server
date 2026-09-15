@@ -6,19 +6,35 @@ export class CreateAnnouncementDto {
   title!: string;
 
   @IsString()
-  @IsNotEmpty()
-  content!: string;
+  @IsOptional()
+  content?: string;
 
-  @IsEnum(['ALL', 'STAFF', 'PARENTS', 'STUDENTS'])
-  audience!: 'ALL' | 'STAFF' | 'PARENTS' | 'STUDENTS';
+  @IsString()
+  @IsOptional()
+  message?: string;
+
+  @IsString()
+  @IsOptional()
+  audience?: string;
+
+  @IsString()
+  @IsOptional()
+  recipientGroup?: string;
+
+  @IsString()
+  @IsOptional()
+  channel?: string;
+
+  @IsString()
+  @IsOptional()
+  sender?: string;
 
   @IsString()
   @IsOptional()
   campusId?: string;
 
-  @IsArray()
   @IsOptional()
-  channels?: string[]; // e.g. ['PORTAL', 'EMAIL', 'SMS']
+  channels?: any; // e.g. ['PORTAL', 'EMAIL', 'SMS'] or string
 
   @IsString()
   @IsOptional()

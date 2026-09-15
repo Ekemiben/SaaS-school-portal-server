@@ -14,25 +14,19 @@ export class CreateSchoolAssetDto {
   campusId?: string;
 
   @IsString()
-  @IsNotEmpty()
-  name: string;
-
-  @IsString()
-  @IsNotEmpty()
-  assetTag: string;
+  @IsOptional()
+  name?: string;
 
   @IsString()
   @IsOptional()
-  @IsIn([
-    'LAB_EQUIPMENT',
-    'ICT_HARDWARE',
-    'FURNITURE',
-    'VEHICLES',
-    'SPORTS_FACILITIES',
-    'BUILDING_INFRASTRUCTURE',
-    'KITCHEN_CAFETERIA',
-    'GENERAL',
-  ])
+  item?: string;
+
+  @IsString()
+  @IsOptional()
+  assetTag?: string;
+
+  @IsString()
+  @IsOptional()
   category?: string;
 
   @IsString()
@@ -52,9 +46,24 @@ export class CreateSchoolAssetDto {
   purchaseDate?: string;
 
   @IsNumber()
-  @IsNotEmpty()
-  @Min(0)
-  purchaseCost: number;
+  @IsOptional()
+  purchaseCost?: number;
+
+  @IsNumber()
+  @IsOptional()
+  unitCost?: number;
+
+  @IsNumber()
+  @IsOptional()
+  qty?: number;
+
+  @IsNumber()
+  @IsOptional()
+  quantity?: number;
+
+  @IsString()
+  @IsOptional()
+  custodian?: string;
 
   @IsString()
   @IsOptional()
@@ -101,6 +110,34 @@ export class UpdateSchoolAssetDto {
   @IsString()
   @IsOptional()
   name?: string;
+
+  @IsString()
+  @IsOptional()
+  item?: string;
+
+  @IsNumber()
+  @IsOptional()
+  qty?: number;
+
+  @IsNumber()
+  @IsOptional()
+  quantity?: number;
+
+  @IsNumber()
+  @IsOptional()
+  unitCost?: number;
+
+  @IsNumber()
+  @IsOptional()
+  purchaseCost?: number;
+
+  @IsString()
+  @IsOptional()
+  custodian?: string;
+
+  @IsString()
+  @IsOptional()
+  lastAudited?: string;
 
   @IsString()
   @IsOptional()

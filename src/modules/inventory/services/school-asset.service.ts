@@ -17,22 +17,42 @@ export class SchoolAssetService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  enrichAsset(a: any) {
+    const qty = Number(a.qty ?? a.quantity ?? 1);
+    const unitCost = Number(a.unitCost ?? a.purchaseCost ?? 0);
+    return {
+      ...a,
+      item: a.item || a.name || 'Asset',
+      name: a.name || a.item || 'Asset',
+      qty,
+      quantity: qty,
+      unitCost,
+      purchaseCost: unitCost,
+      custodian: a.custodian || 'Estate Department',
+      location: a.location || 'Main Campus',
+      condition: a.condition || 'Good',
+      status: a.status === 'IN_SERVICE' ? 'In Use' : (a.status || 'In Use'),
+      lastAudited: a.lastAudited || (a.updatedAt ? new Date(a.updatedAt).toISOString().split('T')[0] : '2025-09-01'),
+    };
+  }
+
   async createAsset(
     tenantId: string,
     campusId: string | undefined,
     dto: CreateSchoolAssetDto,
   ) {
     const targetCampusId = dto.campusId || campusId || null;
+    const resolvedTag = (dto.assetTag || `AST-${Math.floor(100 + Math.random() * 900)}`).toUpperCase();
 
     const existingTag = Array.from(
       this.prisma.memoryStore.schoolAssets.values(),
     ).find(
       (a: any) =>
         a.tenantId === tenantId &&
-        a.assetTag.toLowerCase() === dto.assetTag.toLowerCase(),
+        a.assetTag.toLowerCase() === resolvedTag.toLowerCase(),
     );
 
-    if (existingTag) {
+    if (existingTag && dto.assetTag) {
       throw new BadRequestException(
         `School asset with tag '${dto.assetTag}' already exists`,
       );
@@ -45,8 +65,11 @@ export class SchoolAssetService {
       }
     }
 
-    const id = `ast_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const purchaseCost = Number(dto.purchaseCost) || 0.0;
+    const id = `AST-00${this.prisma.memoryStore.schoolAssets.size + 1}`;
+    const name = dto.name || (dto as any).item || 'School Asset';
+    const unitCost = Number((dto as any).unitCost || dto.purchaseCost || 0.0);
+    const purchaseCost = unitCost;
+    const qty = Number((dto as any).qty || (dto as any).quantity || 1);
     const salvageValue = Number(dto.salvageValue) || 0.0;
     const usefulLifeYears = Number(dto.usefulLifeYears) || 5;
 
@@ -54,14 +77,18 @@ export class SchoolAssetService {
       id,
       tenantId,
       campusId: targetCampusId,
-      name: dto.name,
-      assetTag: dto.assetTag.toUpperCase(),
-      category: dto.category || 'FURNITURE',
+      name,
+      item: name,
+      assetTag: resolvedTag,
+      category: dto.category || 'Classroom Furniture',
       serialNumber: dto.serialNumber || null,
       model: dto.model || null,
       manufacturer: dto.manufacturer || null,
       purchaseDate: dto.purchaseDate ? new Date(dto.purchaseDate) : new Date(),
       purchaseCost,
+      unitCost,
+      qty,
+      quantity: qty,
       vendorId: dto.vendorId || null,
       warrantyExpiry: dto.warrantyExpiry ? new Date(dto.warrantyExpiry) : null,
       usefulLifeYears,
@@ -70,31 +97,40 @@ export class SchoolAssetService {
       currentBookValue: purchaseCost,
       accumulatedDepreciation: 0.0,
       lastDepreciationDate: null,
-      location: dto.location || null,
+      location: dto.location || 'Main Campus Block A',
       assignedToStaffId: dto.assignedToStaffId || null,
-      condition: dto.condition || 'GOOD',
-      status: 'IN_SERVICE',
+      custodian: (dto as any).custodian || 'Estate Department',
+      condition: dto.condition || 'Good',
+      status: 'In Use',
+      lastAudited: new Date().toISOString().split('T')[0],
       notes: dto.notes || null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
 
     this.prisma.memoryStore.schoolAssets.set(id, asset);
-    return asset;
+    return this.enrichAsset(asset);
   }
 
   async updateAsset(tenantId: string, assetId: string, dto: UpdateSchoolAssetDto) {
     const asset = await this.getAssetById(tenantId, assetId);
 
+    const newQty = (dto as any).qty !== undefined
+      ? Number((dto as any).qty)
+      : ((dto as any).quantity !== undefined ? Number((dto as any).quantity) : asset.qty);
+
     const updated = {
       ...asset,
       ...dto,
+      qty: newQty,
+      quantity: newQty,
+      lastAudited: new Date().toISOString().split('T')[0],
       warrantyExpiry: dto.warrantyExpiry ? new Date(dto.warrantyExpiry) : asset.warrantyExpiry,
       updatedAt: new Date(),
     };
 
     this.prisma.memoryStore.schoolAssets.set(assetId, updated);
-    return updated;
+    return this.enrichAsset(updated);
   }
 
   async getAssetById(tenantId: string, assetId: string) {
@@ -159,7 +195,9 @@ export class SchoolAssetService {
       );
     }
 
-    return list.sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
+    return list
+      .sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime())
+      .map((a: any) => this.enrichAsset(a));
   }
 
   async deleteAsset(tenantId: string, assetId: string) {
