@@ -1,6 +1,6 @@
 import { databaseConfig } from './database.config.js';
 import { jwtConfig } from './jwt.config.js';
-import { redisConfig } from './redis.config.js';
+import { queuesConfig } from './queues.config.js';
 import { storageConfig } from './storage.config.js';
 import { paymentConfig } from './payment.config.js';
 
@@ -10,7 +10,7 @@ export default () => ({
   appUrl: process.env.APP_URL || 'http://localhost:3000',
   ...databaseConfig(),
   ...jwtConfig(),
-  ...redisConfig(),
+  ...queuesConfig(),
   ...storageConfig(),
   ...paymentConfig(),
 });

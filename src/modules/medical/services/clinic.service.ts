@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, Logger, Optional } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service.js';
-import { BullmqService } from '../../../jobs/bullmq.service.js';
+import { QueueService } from '../../../jobs/queue.service.js';
 import { QUEUES, JOB_TYPES } from '../../../jobs/queue.constants.js';
 import {
   CreateClinicVisitDto,
@@ -27,7 +27,7 @@ export class ClinicService {
 
   constructor(
     private readonly prisma: PrismaService,
-    @Optional() private readonly bullmqService?: BullmqService,
+    @Optional() private readonly queueService?: QueueService,
   ) {}
 
   // --- Clinic Visits & Consultations ---
@@ -96,8 +96,8 @@ export class ClinicService {
 
     this.getVisitsMap().set(visitId, record);
 
-    if (dto.notifyParents && parentEmail && this.bullmqService) {
-      await this.bullmqService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
+    if (dto.notifyParents && parentEmail && this.queueService) {
+      await this.queueService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
         tenantId,
         data: {
           recipientEmail: parentEmail,
@@ -239,7 +239,7 @@ export class ClinicService {
     this.incidents.set(incidentId, record);
 
     // If major/critical or referred to hospital, dispatch immediate parent notification
-    if (dto.notifyParents && this.bullmqService) {
+    if (dto.notifyParents && this.queueService) {
       const memory = this.prisma.memoryStore as any;
       const sp = Array.from(memory.studentParents?.values() || []).find(
         (item: any) => item.studentId === student.id,
@@ -248,7 +248,7 @@ export class ClinicService {
       if (sp) {
         const parent = this.prisma.memoryStore.parents.get(sp.parentId);
         if (parent?.email) {
-          await this.bullmqService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
+          await this.queueService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
             tenantId,
             data: {
               recipientEmail: parent.email,

@@ -1,6 +1,5 @@
 import { Global, Module } from '@nestjs/common';
 import { JobsController } from './jobs.controller.js';
-import { RedisConnectionService } from './redis-connection.service.js';
 import { QueueService } from './queue.service.js';
 import { QueueWorkersService } from './queue-workers.service.js';
 import { BullmqService } from './bullmq.service.js';
@@ -11,12 +10,13 @@ import { PaymentReconcileProcessor } from './processors/payment-reconcile.proces
 import { EmailAdapter } from '../modules/notifications/adapters/email.adapter.js';
 import { SmsAdapter } from '../modules/notifications/adapters/sms.adapter.js';
 import { WhatsAppAdapter } from '../modules/notifications/adapters/whatsapp.adapter.js';
+import { PgBossModule } from '../infrastructure/queues/pg-boss/pg-boss.module.js';
 
 @Global()
 @Module({
+  imports: [PgBossModule],
   controllers: [JobsController],
   providers: [
-    RedisConnectionService,
     QueueService,
     QueueWorkersService,
     EmailAdapter,
@@ -29,7 +29,6 @@ import { WhatsAppAdapter } from '../modules/notifications/adapters/whatsapp.adap
     BullmqService,
   ],
   exports: [
-    RedisConnectionService,
     QueueService,
     QueueWorkersService,
     EmailAdapter,

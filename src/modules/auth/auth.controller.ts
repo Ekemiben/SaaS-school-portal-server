@@ -11,6 +11,27 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Public()
+  @Post('platform/login')
+  async platformLogin(
+    @Body() body: { email: string; password: string },
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.authService.platformLogin(
+      body.email,
+      body.password,
+    );
+
+    res.cookie('accessToken', result.accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 3600 * 1000,
+    });
+
+    return result;
+  }
+
+  @Public()
   @Post('login')
   async login(
     @CurrentTenant() tenant: TenantContext,
@@ -90,7 +111,7 @@ export class AuthController {
     @CurrentUser() user: any,
     @CurrentTenant() tenant: TenantContext,
   ) {
-    return this.authService.getProfile(user.id, tenant.tenantId);
+    return this.authService.getProfile(user?.id || user?.sub, tenant?.tenantId);
   }
 
   @Public()

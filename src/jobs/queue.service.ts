@@ -1,6 +1,4 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Logger, BadRequestException } from '@nestjs/common';
-import { Queue } from 'bullmq';
-import { RedisConnectionService } from './redis-connection.service.js';
+import { Injectable, Logger, BadRequestException, Inject, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { QUEUES } from './queue.constants.js';
 import {
   BaseJobPayload,
@@ -9,34 +7,44 @@ import {
   DeadLetterJobRecord,
   JobState,
 } from './job.interface.js';
+import { IJobDispatcher, JOB_DISPATCHER } from '../infrastructure/queues/contracts/job-dispatcher.interface.js';
+import { PgBossService } from '../infrastructure/queues/pg-boss/pg-boss.service.js';
+import { PgBossDispatcher } from '../infrastructure/queues/pg-boss/pg-boss.dispatcher.js';
 
 @Injectable()
 export class QueueService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(QueueService.name);
-  public queues: Map<string, Queue> = new Map();
   public deadLetterJobs: Map<string, DeadLetterJobRecord> = new Map();
-  public inMemoryJobs: Map<string, any> = new Map();
+  public dispatcher: IJobDispatcher;
+  public pgBossService: PgBossService;
 
-  constructor(private readonly redisConn: RedisConnectionService) {}
+  constructor(
+    @Optional() @Inject(JOB_DISPATCHER) dispatcherOrFirstArg?: any,
+    @Optional() pgBossServiceOrSecondArg?: any,
+  ) {
+    if (dispatcherOrFirstArg && typeof dispatcherOrFirstArg.dispatch === 'function') {
+      this.dispatcher = dispatcherOrFirstArg;
+    }
+    if (pgBossServiceOrSecondArg && typeof pgBossServiceOrSecondArg.start === 'function') {
+      this.pgBossService = pgBossServiceOrSecondArg;
+    }
+    if (!this.pgBossService) {
+      const mockConfig = { get: () => undefined } as any;
+      this.pgBossService = new PgBossService(mockConfig);
+    }
+    if (!this.dispatcher) {
+      this.dispatcher = new PgBossDispatcher(this.pgBossService);
+    }
+  }
 
   async onModuleInit() {
-    if (this.redisConn.isRedisConnected && this.redisConn.client) {
-      for (const queueName of Object.values(QUEUES)) {
-        const queue = new Queue(queueName, {
-          connection: this.redisConn.client.duplicate(),
-          defaultJobOptions: {
-            attempts: 3,
-            backoff: { type: 'exponential', delay: 1000 },
-            removeOnComplete: { count: 1000 },
-            removeOnFail: false,
-          },
-        });
-        this.queues.set(queueName, queue);
-      }
-      this.logger.log(`Initialized ${this.queues.size} BullMQ queues backed by Redis.`);
-    } else {
-      this.logger.log('QueueService initialized with resilient persistent fallback queue store.');
+    if (!this.pgBossService.isStarted) {
+      await this.pgBossService.start();
     }
+  }
+
+  async onModuleDestroy() {
+    await this.pgBossService.onModuleDestroy();
   }
 
   async addJob<T extends BaseJobPayload>(
@@ -45,90 +53,74 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
     data: T,
     options?: EnqueueJobOptions,
   ): Promise<{ jobId: string; queueName: string; status: string }> {
-    if (!data || !data.tenantId || typeof data.tenantId !== 'string') {
+    if (!data || !data.tenantId || typeof data.tenantId !== 'string' || !data.tenantId.trim()) {
       throw new BadRequestException('Security violation: Tenant context (tenantId) is required for all queue jobs.');
     }
 
-    const payload = {
-      ...data,
-      createdAt: data.createdAt || new Date().toISOString(),
-    };
-
-    const bullQueue = this.queues.get(queueName);
-    if (this.redisConn.isRedisConnected && bullQueue) {
-      const job = await bullQueue.add(jobName, payload, {
-        attempts: options?.attempts ?? 3,
-        backoff: { type: 'exponential', delay: options?.backoffDelay ?? 1000 },
+    const tenantId = data.tenantId.trim();
+    const jobId = await this.dispatcher.dispatch(
+      queueName,
+      jobName,
+      data,
+      tenantId,
+      {
+        retryLimit: options?.attempts ?? 3,
+        retryDelay: options?.backoffDelay ? Math.max(1, Math.round(options.backoffDelay / 1000)) : 2,
         priority: options?.priority,
-        delay: options?.delay,
+        delay: options?.delay ? Math.max(1, Math.round(options.delay / 1000)) : undefined,
         jobId: options?.jobId,
-        removeOnComplete: { count: 1000 },
-        removeOnFail: false,
-      });
+      },
+    );
 
-      this.logger.log(`Enqueued BullMQ persistent job [${job.id}] on [${queueName}] for tenant ${payload.tenantId}`);
-      return { jobId: String(job.id), queueName, status: 'ENQUEUED' };
+    this.logger.log(`Enqueued pg-boss job [${jobId}] on [${queueName}] for tenant ${tenantId}`);
+    return { jobId, queueName, status: 'ENQUEUED' };
+  }
+
+  async dispatch<T = any>(
+    queueName: string,
+    jobName: string,
+    payload: { tenantId?: string; [key: string]: any },
+    customOptions?: Record<string, any>,
+  ): Promise<{ jobId: string; queue: string }> {
+    if (!payload || !payload.tenantId || typeof payload.tenantId !== 'string' || !payload.tenantId.trim()) {
+      throw new BadRequestException('Tenant context required: Tenant context (tenantId) is required for all queue jobs.');
     }
 
-    // Resilient fallback storage
-    const id = options?.jobId || `job_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const memoryJob = {
-      id,
-      name: jobName,
+    const tenantId = payload.tenantId.trim();
+    const jobId = await this.dispatcher.dispatch(
       queueName,
-      tenantId: payload.tenantId,
-      data: payload,
-      state: 'waiting',
-      attemptsMade: 0,
-      maxAttempts: options?.attempts ?? 3,
-      backoffDelay: options?.backoffDelay ?? 1000,
-      timestamp: Date.now(),
-    };
-    this.inMemoryJobs.set(id, memoryJob);
+      jobName,
+      payload,
+      tenantId,
+      {
+        retryLimit: customOptions?.attempts ?? 3,
+        retryDelay: customOptions?.backoff?.delay ? Math.max(1, Math.round(customOptions.backoff.delay / 1000)) : 2,
+        priority: customOptions?.priority,
+        delay: customOptions?.delay ? Math.max(1, Math.round(customOptions.delay / 1000)) : undefined,
+      },
+    );
 
-    return { jobId: id, queueName, status: 'ENQUEUED' };
+    this.logger.log(`Dispatched pg-boss job [${jobName}] #${jobId} to queue "${queueName}" for tenant "${tenantId}"`);
+    return { jobId, queue: queueName };
   }
 
   async getJobStatus(queueName: string, jobId: string): Promise<JobStatusResponse | null> {
-    const bullQueue = this.queues.get(queueName);
-    if (this.redisConn.isRedisConnected && bullQueue) {
-      const job = await bullQueue.getJob(jobId);
-      if (!job) return null;
-
-      const state = await job.getState();
-      return {
-        id: String(job.id),
-        name: job.name,
-        queueName,
-        tenantId: job.data?.tenantId,
-        state: state as JobState,
-        attemptsMade: job.attemptsMade,
-        maxAttempts: job.opts?.attempts ?? 3,
-        failedReason: job.failedReason,
-        stacktrace: job.stacktrace || undefined,
-        timestamp: job.timestamp,
-        finishedOn: job.finishedOn,
-        data: job.data,
-        returnvalue: job.returnvalue,
-      };
-    }
-
-    const memJob = this.inMemoryJobs.get(jobId);
-    if (!memJob) return null;
+    const info = await this.dispatcher.getJobStatus(queueName, jobId);
+    if (!info) return null;
 
     return {
-      id: memJob.id,
-      name: memJob.name,
-      queueName: memJob.queueName,
-      tenantId: memJob.tenantId,
-      state: memJob.state,
-      attemptsMade: memJob.attemptsMade,
-      maxAttempts: memJob.maxAttempts,
-      failedReason: memJob.failedReason,
-      timestamp: memJob.timestamp,
-      finishedOn: memJob.finishedOn,
-      data: memJob.data,
-      returnvalue: memJob.returnvalue,
+      id: info.id,
+      name: info.name,
+      queueName: info.queue || queueName,
+      tenantId: info.data?.tenantId || (info.data?.data && info.data.data.tenantId) || 'unknown',
+      state: (info.state === 'created' ? 'waiting' : info.state) as JobState,
+      attemptsMade: info.retryCount,
+      maxAttempts: info.retryLimit,
+      failedReason: info.failedReason,
+      timestamp: info.createdOn ? new Date(info.createdOn).getTime() : Date.now(),
+      finishedOn: info.completedOn ? new Date(info.completedOn).getTime() : undefined,
+      data: info.data?.data || info.data,
+      returnvalue: info.output,
     };
   }
 
@@ -158,16 +150,6 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
 
     this.deadLetterJobs.delete(jobId);
     await this.addJob(dlqJob.queueName, dlqJob.name, dlqJob.data);
-    return { success: true, message: `Job [${jobId}] successfully re-queued from DLQ.` };
-  }
-
-  async onModuleDestroy() {
-    for (const [name, queue] of this.queues.entries()) {
-      try {
-        await queue.close();
-      } catch (err: any) {
-        this.logger.warn(`Error closing queue ${name}: ${err.message}`);
-      }
-    }
+    return { success: true, message: `Job [${jobId}] successfully re-queued from DLQ via pg-boss.` };
   }
 }

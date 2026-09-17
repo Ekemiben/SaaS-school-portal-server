@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException, Logger, Optional } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service.js';
 import { CloudflareR2StorageProvider } from '../../files/storage.provider.js';
-import { BullmqService } from '../../../jobs/bullmq.service.js';
+import { QueueService } from '../../../jobs/queue.service.js';
 import { QUEUES, JOB_TYPES } from '../../../jobs/queue.constants.js';
 import {
   BulkGenerateInvoicesDto,
@@ -24,7 +24,7 @@ export class BulkInvoicingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storageProvider: CloudflareR2StorageProvider,
-    @Optional() private readonly bullmqService?: BullmqService,
+    @Optional() private readonly queueService?: QueueService,
   ) {}
 
   async getSiblingDiscountConfig(tenantId: string): Promise<SiblingDiscountConfigDto> {
@@ -182,9 +182,9 @@ export class BulkInvoicingService {
         const presigned = await this.storageProvider.generatePresignedDownload(storageKey, `${invoiceNumber}.html`);
         invoiceRecord.downloadUrl = presigned.downloadUrl;
 
-        if (dto.notifyParents && this.bullmqService) {
+        if (dto.notifyParents && this.queueService) {
           const parent = this.getParentForStudent(student.id, studentParentMap);
-          await this.bullmqService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
+          await this.queueService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
             tenantId,
             data: {
               recipientEmail: parent?.email || 'parent@school.edu.ng',

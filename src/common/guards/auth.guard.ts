@@ -48,16 +48,26 @@ export class AuthGuard implements CanActivate {
         secret: process.env.JWT_ACCESS_SECRET || 'dev_access_secret_key_change_in_production_123',
       });
 
-      request.user = payload;
+      request.user = {
+        ...payload,
+        id: payload.sub || payload.id,
+        tenantId: payload.tenantId || null,
+        scope: payload.scope || (payload.tenantId ? 'TENANT' : 'PLATFORM'),
+        role: payload.role || (payload.roles && payload.roles[0]) || (payload.isPlatformAdmin ? 'SUPER_ADMIN' : 'User'),
+        roles: payload.roles || (payload.role ? [payload.role] : []),
+        permissions: payload.permissions || payload.permissionIds || [],
+        permissionIds: payload.permissionIds || payload.permissions || [],
+        isPlatformAdmin: payload.scope === 'PLATFORM' || !payload.tenantId || !!payload.isPlatformAdmin,
+      };
 
       // Update tenant context with user identity if available
       if (request.tenantContext) {
-        request.tenantContext.userId = payload.sub || payload.id;
+        request.tenantContext.userId = request.user.id;
         request.tenantContext.email = payload.email;
         request.tenantContext.roleIds = payload.roleIds || [];
-        request.tenantContext.permissionIds = payload.permissionIds || [];
+        request.tenantContext.permissionIds = request.user.permissions;
         request.tenantContext.campusIds = payload.campusIds || [];
-        request.tenantContext.isPlatformAdmin = !!payload.isPlatformAdmin;
+        request.tenantContext.isPlatformAdmin = request.user.isPlatformAdmin;
       }
 
       return true;

@@ -3,7 +3,7 @@ import { PrismaService } from '../../database/prisma.service.js';
 import { randomUUID } from 'crypto';
 
 export interface AuditLogEntry {
-  tenantId: string;
+  tenantId?: string | null;
   actorUserId?: string;
   action: string;
   resourceType: string;

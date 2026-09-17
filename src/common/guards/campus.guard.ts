@@ -12,6 +12,18 @@ export class CampusGuard implements CanActivate {
     const request = context.switchToHttp().getRequest();
     const user = request.user;
 
+    // Identify requested campusId from query, body, params, or x-campus-id header per Constitution Section 41
+    const headerCampusId = request.headers['x-campus-id'];
+    const requestedCampusId =
+      request.params?.campusId ||
+      request.query?.campusId ||
+      request.body?.campusId ||
+      (typeof headerCampusId === 'string' && headerCampusId.trim() ? headerCampusId.trim() : undefined);
+
+    if (requestedCampusId) {
+      request.campusId = requestedCampusId;
+    }
+
     if (!user) {
       return true;
     }
@@ -20,21 +32,19 @@ export class CampusGuard implements CanActivate {
       return true;
     }
 
-    // Identify requested campusId from query, body, or params
-    const requestedCampusId =
-      request.params?.campusId ||
-      request.query?.campusId ||
-      request.body?.campusId;
-
     if (!requestedCampusId) {
       return true;
     }
 
-    const userRoles: string[] = user.roles || [];
+    const userRoles: string[] = (user.roles || []).map((r: any) =>
+      typeof r === 'string' ? r : r?.name || '',
+    );
     const isSchoolLevelAdmin =
       userRoles.includes('School Owner') ||
       userRoles.includes('School Admin') ||
-      userRoles.includes('Super Admin');
+      userRoles.includes('Super Admin') ||
+      userRoles.includes('Owner') ||
+      userRoles.includes('Admin');
 
     if (isSchoolLevelAdmin) {
       return true;

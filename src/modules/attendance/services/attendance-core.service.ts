@@ -1,5 +1,6 @@
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger, Optional } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service.js';
+import { OutboxService } from '../../../infrastructure/outbox/outbox.service.js';
 import { randomUUID } from 'crypto';
 import { MarkAttendanceDto, AttendanceFilterDto } from '../dto/mark-attendance.dto.js';
 import { CorrectAttendanceDto } from '../dto/attendance-correction.dto.js';
@@ -15,6 +16,7 @@ export class AttendanceCoreService {
     private readonly prisma: PrismaService,
     private readonly truancyService: AttendanceTruancyService,
     private readonly deviceRegistry: DeviceAdapterRegistryService,
+    @Optional() private readonly outboxService?: OutboxService,
   ) {}
 
   async markAttendance(
@@ -101,16 +103,20 @@ export class AttendanceCoreService {
         savedRecords.push(newRecord);
       }
 
-      // If marked ABSENT, evaluate truancy and alert parents asynchronously
+      // If marked ABSENT, evaluate truancy and alert parents with fault isolation
       if (recordDto.status === 'ABSENT') {
-        this.truancyService.evaluateStudentAbsence(
-          tenantId,
-          effectiveCampusId,
-          recordDto.studentId,
-          dto.classId,
-          attendanceDate,
-          recordDto.remarks,
-        ).catch(() => {});
+        try {
+          await this.truancyService.evaluateStudentAbsence(
+            tenantId,
+            effectiveCampusId,
+            recordDto.studentId,
+            dto.classId,
+            attendanceDate,
+            recordDto.remarks,
+          );
+        } catch (err: any) {
+          this.logger.warn(`Truancy evaluation warning: ${err?.message}`);
+        }
       }
     }
 
@@ -195,6 +201,23 @@ export class AttendanceCoreService {
     };
     this.prisma.memoryStore.attendanceCorrections.set(correctionId, correction);
     this.logger.log(`Audited attendance correction ${correctionId} for record ${recordId}: ${previousStatus} -> ${dto.status}`);
+
+    if (this.outboxService) {
+      await this.outboxService.recordEvent(
+        tenantId,
+        'ATTENDANCE_CORRECTED',
+        {
+          correctionId,
+          recordId,
+          studentId: record.studentId,
+          previousStatus,
+          newStatus: dto.status,
+          reason: dto.reason,
+          changedByUserId: actorUserId,
+          correctedAt: new Date().toISOString(),
+        },
+      );
+    }
 
     return { record, correction };
   }

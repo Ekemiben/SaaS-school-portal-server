@@ -2,8 +2,9 @@ import { Injectable, BadRequestException, NotFoundException, Logger, Optional } 
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service.js';
 import { CloudflareR2StorageProvider } from '../files/storage.provider.js';
-import { BullmqService } from '../../jobs/bullmq.service.js';
+import { QueueService } from '../../jobs/queue.service.js';
 import { QUEUES, JOB_TYPES } from '../../jobs/queue.constants.js';
+import { OutboxService } from '../../infrastructure/outbox/outbox.service.js';
 import { PaystackPaymentAdapter } from './adapters/paystack.adapter.js';
 import { FlutterwavePaymentAdapter } from './adapters/flutterwave.adapter.js';
 import {
@@ -25,7 +26,8 @@ export class PaymentsService {
     private readonly paystackAdapter: PaystackPaymentAdapter,
     private readonly flutterwaveAdapter: FlutterwavePaymentAdapter,
     private readonly storageProvider: CloudflareR2StorageProvider,
-    @Optional() private readonly bullmqService?: BullmqService,
+    @Optional() private readonly queueService?: QueueService,
+    @Optional() private readonly outboxService?: OutboxService,
   ) {}
 
   async getGatewayConfig(tenantId: string): Promise<TenantPaymentConfigDto> {
@@ -312,9 +314,26 @@ export class PaymentsService {
       }
     }
 
+    // Record outbox event for reliable asynchronous processing per Constitution Section 57 & 64
+    if (this.outboxService) {
+      await this.outboxService.recordEvent(
+        tenantId,
+        'PAYMENT_VERIFIED',
+        {
+          paymentId: payment.id,
+          reference: payment.reference,
+          amount: payment.amount,
+          currency: payment.currency,
+          invoiceId: payment.invoiceId,
+          channel: payment.channel,
+          verifiedAt: new Date().toISOString(),
+        },
+      );
+    }
+
     // Queue parent receipt notification
-    if (this.bullmqService) {
-      await this.bullmqService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
+    if (this.queueService) {
+      await this.queueService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
         tenantId,
         data: {
           title: `Payment Receipt: ${payment.reference}`,

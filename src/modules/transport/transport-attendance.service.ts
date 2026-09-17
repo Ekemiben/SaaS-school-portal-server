@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
-import { BullmqService } from '../../jobs/bullmq.service.js';
+import { QueueService } from '../../jobs/queue.service.js';
 import { QUEUES } from '../../jobs/queue.constants.js';
 import { RecordBoardingDto, BoardingStatus } from './dto/fleet-and-trip.dto.js';
 import { QueryTransportAttendanceDto } from './dto/transport-attendance.dto.js';
@@ -12,7 +12,7 @@ export class TransportAttendanceService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly bullmqService: BullmqService,
+    private readonly queueService: QueueService,
     private readonly tripService: TripManagementService,
   ) {}
 
@@ -66,7 +66,7 @@ export class TransportAttendanceService {
       for (const parent of parents) {
         try {
           if (parent.phone) {
-            await this.bullmqService.dispatch(
+            await this.queueService.dispatch(
               QUEUES.NOTIFICATIONS,
               'send-transport-sms',
               {
@@ -84,7 +84,7 @@ export class TransportAttendanceService {
           }
 
           if (parent.email) {
-            await this.bullmqService.dispatch(
+            await this.queueService.dispatch(
               QUEUES.NOTIFICATIONS,
               'send-transport-email',
               {

@@ -29,12 +29,16 @@ export class RolesGuard implements CanActivate {
       return false;
     }
 
-    if (user.isPlatformAdmin) {
+    const userRole = user.role || (user.roles && user.roles[0]);
+    if (
+      userRole === 'SUPER_ADMIN' ||
+      (user.roles && (user.roles.includes('SUPER_ADMIN') || (user.roles.includes('Super Admin') && user.scope === 'PLATFORM')))
+    ) {
       return true;
     }
 
-    const userRoles: string[] = user.roles || [];
-    const hasRole = requiredRoles.some((role) => userRoles.includes(role));
+    const userRoles: string[] = user.roles || (userRole ? [userRole] : []);
+    const hasRole = requiredRoles.some((role) => userRoles.includes(role) || userRole === role);
 
     if (!hasRole) {
       throw new ForbiddenException({

@@ -1,13 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
-import { BullmqService } from '../../jobs/bullmq.service.js';
+import { QueueService } from '../../jobs/queue.service.js';
 import { QUEUES, JOB_TYPES } from '../../jobs/queue.constants.js';
 
 @Injectable()
 export class ReportsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly bullmqService: BullmqService,
+    private readonly queueService: QueueService,
   ) {}
 
   async getExecutiveDashboard(tenantId: string) {
@@ -141,7 +141,7 @@ export class ReportsService {
     userId: string,
     dto: { reportType: 'report-card' | 'fee-summary' | 'attendance-sheet'; campusId?: string; parameters?: any },
   ) {
-    const result = await this.bullmqService.dispatch(
+    const result = await this.queueService.dispatch(
       QUEUES.REPORTS,
       JOB_TYPES.GENERATE_REPORT_CARD,
       {

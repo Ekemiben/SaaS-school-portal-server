@@ -108,6 +108,7 @@ export function defaultMemoryStoreData() {
     impersonationSessions: new Map<string, any>(),
     dataImportJobs: new Map<string, any>(),
     dataExportJobs: new Map<string, any>(),
+    outboxEvents: new Map<string, any>(),
     clinicVisits: new Map<string, any>(),
   };
 

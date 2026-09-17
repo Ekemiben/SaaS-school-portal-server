@@ -7,10 +7,12 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module.js';
 // Services
 import { PlatformAdminService } from './services/platform-admin.service.js';
 import { ImpersonationService } from './services/impersonation.service.js';
+import { PlatformUserService } from './services/platform-user.service.js';
 
 // Controllers
 import { PlatformAdminController } from './controllers/platform-admin.controller.js';
 import { ImpersonationController } from './controllers/impersonation.controller.js';
+import { PlatformUserController } from './controllers/platform-user.controller.js';
 
 @Module({
   imports: [
@@ -25,14 +27,17 @@ import { ImpersonationController } from './controllers/impersonation.controller.
   controllers: [
     PlatformAdminController,
     ImpersonationController,
+    PlatformUserController,
   ],
   providers: [
     PlatformAdminService,
     ImpersonationService,
+    PlatformUserService,
   ],
   exports: [
     PlatformAdminService,
     ImpersonationService,
+    PlatformUserService,
   ],
 })
 export class PlatformModule {}

@@ -55,7 +55,7 @@ async function bootstrap() {
     exposedHeaders: ['X-Request-Id', 'X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'],
   });
 
-  const port = process.env.PORT || 3000;
+  const port = process.env.PORT || 5000;
   await app.listen(port, '0.0.0.0');
   console.log(`SaaS Multi-Tenant School Portal Server running on http://0.0.0.0:${port}`);
 }

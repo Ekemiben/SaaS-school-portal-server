@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException, Logger, Optional } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service.js';
 import { CloudflareR2StorageProvider } from '../../files/storage.provider.js';
-import { BullmqService } from '../../../jobs/bullmq.service.js';
+import { QueueService } from '../../../jobs/queue.service.js';
 import { QUEUES, JOB_TYPES } from '../../../jobs/queue.constants.js';
 import { AcademicSummaryService } from './academic-summary.service.js';
 import {
@@ -22,7 +22,7 @@ export class ReportCardService {
     private readonly prisma: PrismaService,
     private readonly storageProvider: CloudflareR2StorageProvider,
     private readonly academicSummaryService: AcademicSummaryService,
-    @Optional() private readonly bullmqService?: BullmqService,
+    @Optional() private readonly queueService?: QueueService,
   ) {}
 
   /**
@@ -208,11 +208,11 @@ export class ReportCardService {
         results.push(published);
 
         // Queue parent notification if requested
-        if (dto.notifyParents && this.bullmqService) {
+        if (dto.notifyParents && this.queueService) {
           const parent = Array.from(this.prisma.memoryStore.parents.values()).find(
             (p: any) => p.tenantId === tenantId && p.studentId === student.id,
           );
-          await this.bullmqService.dispatch(
+          await this.queueService.dispatch(
             QUEUES.NOTIFICATIONS,
             JOB_TYPES.SEND_EMAIL,
             {

@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service.js';
-import { BullmqService } from '../../../jobs/bullmq.service.js';
 import { TrackingMode, IngestTelemetryDto } from '../dto/fleet-and-trip.dto.js';
 import { ITrackingProvider, LiveLocationStatus, LocationTelemetryResult } from './tracking-provider.interface.js';
 import { randomUUID } from 'crypto';
@@ -38,10 +37,7 @@ export class PhoneTrackingProvider implements ITrackingProvider {
   private readonly logger = new Logger(PhoneTrackingProvider.name);
   private readonly memoryCache = new Map<string, any>();
 
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly bullmqService: BullmqService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   getMode(): TrackingMode {
     return TrackingMode.PHONE;
@@ -64,24 +60,13 @@ export class PhoneTrackingProvider implements ITrackingProvider {
       routeId: telemetry.routeId,
     };
 
-    // 1. Transient cache in Redis
+    // 1. Transient memory cache
     const cacheKey = `tenant:${tenantId}:vehicle:${telemetry.vehicleNumber}:latest`;
     const tripCacheKey = telemetry.tripId ? `tenant:${tenantId}:trip:${telemetry.tripId}:latest` : null;
 
-    try {
-      const redis = this.bullmqService.getRedisClient();
-      if (redis) {
-        await redis.set(cacheKey, JSON.stringify(payload), 'EX', 900); // 15 min TTL
-        if (tripCacheKey) {
-          await redis.set(tripCacheKey, JSON.stringify(payload), 'EX', 900);
-        }
-      } else {
-        this.memoryCache.set(cacheKey, payload);
-        if (tripCacheKey) this.memoryCache.set(tripCacheKey, payload);
-      }
-    } catch {
-      this.memoryCache.set(cacheKey, payload);
-      if (tripCacheKey) this.memoryCache.set(tripCacheKey, payload);
+    this.memoryCache.set(cacheKey, payload);
+    if (tripCacheKey) {
+      this.memoryCache.set(tripCacheKey, payload);
     }
 
     // 2. Persistent storage in PostgreSQL
@@ -140,20 +125,7 @@ export class PhoneTrackingProvider implements ITrackingProvider {
       ? `tenant:${tenantId}:trip:${identifier.tripId}:latest`
       : `tenant:${tenantId}:vehicle:${identifier.vehicleNumber}:latest`;
 
-    let cached: any = null;
-    try {
-      const redis = this.bullmqService.getRedisClient();
-      if (redis) {
-        const raw = await redis.get(key);
-        if (raw) cached = JSON.parse(raw);
-      }
-    } catch {
-      // Redis fallback
-    }
-
-    if (!cached) {
-      cached = this.memoryCache.get(key);
-    }
+    let cached = this.memoryCache.get(key);
 
     // If not in cache, fallback to latest log from DB
     if (!cached && this.prisma.isDbConnected) {
