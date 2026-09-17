@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service.js';
-import { BullmqService } from '../../../jobs/bullmq.service.js';
+import { QueueService } from '../../../jobs/queue.service.js';
 import { QUEUES, JOB_TYPES } from '../../../jobs/queue.constants.js';
 import { AttendanceConfigService } from './attendance-config.service.js';
 import { randomUUID } from 'crypto';
@@ -11,7 +11,7 @@ export class AttendanceTruancyService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly bullmqService: BullmqService,
+    private readonly queueService: QueueService,
     private readonly configService: AttendanceConfigService,
   ) {}
 
@@ -140,7 +140,7 @@ export class AttendanceTruancyService {
         ? `Dear Parent, please be notified that ${student.firstName} ${student.lastName} was marked ABSENT on ${details.date}. Remarks: ${details.remarks || 'None'}.`
         : `Dear Parent, urgent attendance alert: ${student.firstName} ${student.lastName} has triggered a truancy flag on ${details.date}. ${details.details || ''}`;
 
-      await this.bullmqService.dispatch(
+      await this.queueService.dispatch(
         QUEUES.NOTIFICATIONS,
         channel === 'sms' ? JOB_TYPES.SEND_SMS : JOB_TYPES.SEND_EMAIL,
         {

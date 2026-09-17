@@ -98,9 +98,39 @@ export const SystemPermissions = {
   DATA_EXPORT: 'data.export',
   DATA_BACKUP: 'data.backup',
 
-  // Platform Administration
+  // Platform Administration (Granular)
   PLATFORM_ADMIN: 'platform.admin',
   IMPERSONATE_USER: 'impersonate.user',
+  PLATFORM_TENANT_VIEW: 'platform.tenant.view',
+  PLATFORM_TENANT_CREATE: 'platform.tenant.create',
+  PLATFORM_TENANT_UPDATE: 'platform.tenant.update',
+  PLATFORM_TENANT_SUSPEND: 'platform.tenant.suspend',
+  PLATFORM_USER_VIEW: 'platform.user.view',
+  PLATFORM_USER_CREATE: 'platform.user.create',
+  PLATFORM_USER_UPDATE: 'platform.user.update',
+  PLATFORM_USER_DEACTIVATE: 'platform.user.deactivate',
+  PLATFORM_ROLE_VIEW: 'platform.role.view',
+  PLATFORM_ROLE_ASSIGN: 'platform.role.assign',
+  PLATFORM_PERMISSION_ASSIGN: 'platform.permission.assign',
+  PLATFORM_AUDIT_VIEW: 'platform.audit.view',
+  PLATFORM_IMPERSONATION_START: 'platform.impersonation.start',
+  PLATFORM_SETTINGS_VIEW: 'platform.settings.view',
+  PLATFORM_SETTINGS_UPDATE: 'platform.settings.update',
 } as const;
 
 export type SystemPermission = typeof SystemPermissions[keyof typeof SystemPermissions];
+
+export const PlatformRoles = {
+  SUPER_ADMIN: 'SUPER_ADMIN',
+  PLATFORM_ADMIN: 'PLATFORM_ADMIN',
+  PLATFORM_SUPPORT: 'PLATFORM_SUPPORT',
+} as const;
+
+export type PlatformRole = typeof PlatformRoles[keyof typeof PlatformRoles];
+
+export const ScopeTypes = {
+  PLATFORM: 'PLATFORM',
+  TENANT: 'TENANT',
+} as const;
+
+export type ScopeType = typeof ScopeTypes[keyof typeof ScopeTypes];

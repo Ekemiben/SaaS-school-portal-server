@@ -13,6 +13,7 @@ import { AuthGuard } from './common/guards/auth.guard.js';
 import { TenantGuard } from './common/guards/tenant.guard.js';
 import { PermissionsGuard } from './common/guards/permissions.guard.js';
 import { RolesGuard } from './common/guards/roles.guard.js';
+import { CampusGuard } from './common/guards/campus.guard.js';
 
 // Interceptors & Filters
 import { TransformInterceptor } from './common/interceptors/transform.interceptor.js';
@@ -21,7 +22,10 @@ import { AuditInterceptor } from './common/interceptors/audit.interceptor.js';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter.js';
 import { RateLimitMiddleware } from './common/middleware/rate-limit.middleware.js';
 
-// Asynchronous Queues & Background Processors
+// Asynchronous Queues & Background Processors (PostgreSQL + pg-boss + Outbox)
+import { PgBossModule } from './infrastructure/queues/pg-boss/pg-boss.module.js';
+import { OutboxModule } from './infrastructure/outbox/outbox.module.js';
+import { WorkersModule } from './infrastructure/queues/workers/workers.module.js';
 import { QueuesModule } from './jobs/queues.module.js';
 
 // Business Domain Modules
@@ -77,6 +81,9 @@ import { AiModule } from './modules/ai/ai.module.js';
     PlatformModule,
     DataExchangeModule,
     PrismaModule,
+    PgBossModule,
+    OutboxModule,
+    WorkersModule,
     QueuesModule,
     TenancyModule,
     AuthModule,
@@ -123,6 +130,10 @@ import { AiModule } from './modules/ai/ai.module.js';
     {
       provide: APP_GUARD,
       useClass: PermissionsGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: CampusGuard,
     },
     {
       provide: APP_INTERCEPTOR,

@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { RedisConnectionService } from './redis-connection.service.js';
 import { QueueService } from './queue.service.js';
 import { QueueWorkersService } from './queue-workers.service.js';
 import { QUEUES, JOB_TYPES } from './queue.constants.js';
@@ -7,10 +6,14 @@ import { NotificationProcessor } from './processors/notification.processor.js';
 import { ReportProcessor } from './processors/report.processor.js';
 import { ImportExportProcessor } from './processors/import-export.processor.js';
 import { PaymentReconcileProcessor } from './processors/payment-reconcile.processor.js';
+import { PgBossService } from '../infrastructure/queues/pg-boss/pg-boss.service.js';
+import { PgBossDispatcher } from '../infrastructure/queues/pg-boss/pg-boss.dispatcher.js';
 import { BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
-describe('Distributed Job Processing (Task 3: Redis + BullMQ)', () => {
-  let redisConn: RedisConnectionService;
+describe('PostgreSQL + pg-boss Job Processing Architecture', () => {
+  let pgBossService: PgBossService;
+  let dispatcher: PgBossDispatcher;
   let queueService: QueueService;
   let queueWorkers: QueueWorkersService;
 
@@ -22,10 +25,20 @@ describe('Distributed Job Processing (Task 3: Redis + BullMQ)', () => {
   const originalEnv = process.env;
   const TEST_TENANT = 'tenant_greenfield_100';
 
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env = { ...originalEnv };
-    redisConn = new RedisConnectionService();
-    queueService = new QueueService(redisConn);
+    const mockConfigService = {
+      get: vi.fn((key: string) => {
+        if (key === 'database.url') return undefined; // trigger memory fallback
+        if (key === 'queues.schema') return 'pgboss';
+        return undefined;
+      }),
+    } as unknown as ConfigService;
+
+    pgBossService = new PgBossService(mockConfigService);
+    await pgBossService.start();
+    dispatcher = new PgBossDispatcher(pgBossService);
+    queueService = new QueueService(dispatcher, pgBossService);
 
     notifProcessor = new NotificationProcessor(
       { send: vi.fn().mockResolvedValue({ success: true, messageId: 'msg_1' }) } as any,
@@ -37,7 +50,6 @@ describe('Distributed Job Processing (Task 3: Redis + BullMQ)', () => {
     reconcileProcessor = new PaymentReconcileProcessor({} as any);
 
     queueWorkers = new QueueWorkersService(
-      redisConn,
       queueService,
       notifProcessor,
       reportProcessor,
@@ -49,56 +61,13 @@ describe('Distributed Job Processing (Task 3: Redis + BullMQ)', () => {
   afterEach(async () => {
     process.env = originalEnv;
     await queueWorkers.onModuleDestroy();
-    await queueService.onModuleDestroy();
-    await redisConn.onModuleDestroy();
+    await pgBossService.onModuleDestroy();
   });
 
-  describe('1. Redis Connection & Production Fail-Fast Enforcement', () => {
-    it('should fail fast in production mode if Redis connection fails', async () => {
-      process.env.NODE_ENV = 'production';
-      vi.spyOn(redisConn, 'getClientOptions').mockReturnValue({
-        options: {
-          lazyConnect: true,
-          maxRetriesPerRequest: null,
-          retryStrategy: () => null,
-        },
-      });
-
-      await expect(redisConn.onModuleInit()).rejects.toThrow(
-        /CRITICAL: Redis connection failed in production mode/,
-      );
-      expect(redisConn.isRedisConnected).toBe(false);
-    });
-
-    it('should fail fast when REQUIRE_REDIS=true and Redis is unreachable', async () => {
-      process.env.REQUIRE_REDIS = 'true';
-      process.env.NODE_ENV = 'development';
-      vi.spyOn(redisConn, 'getClientOptions').mockReturnValue({
-        options: {
-          lazyConnect: true,
-          maxRetriesPerRequest: null,
-          retryStrategy: () => null,
-        },
-      });
-
-      await expect(redisConn.onModuleInit()).rejects.toThrow(
-        /CRITICAL: Redis connection failed in production mode/,
-      );
-    });
-
-    it('should gracefully fallback in non-production development/test mode without crashing', async () => {
-      process.env.NODE_ENV = 'development';
-      delete process.env.REQUIRE_REDIS;
-      vi.spyOn(redisConn, 'getClientOptions').mockReturnValue({
-        options: {
-          lazyConnect: true,
-          maxRetriesPerRequest: null,
-          retryStrategy: () => null,
-        },
-      });
-
-      await expect(redisConn.onModuleInit()).resolves.toBeUndefined();
-      expect(redisConn.isRedisConnected).toBe(false);
+  describe('1. pg-boss Engine Initialization & In-Memory Resilient Fallback', () => {
+    it('should initialize and run in resilient fallback mode when DB is unavailable', async () => {
+      expect(pgBossService).toBeDefined();
+      expect(dispatcher).toBeDefined();
     });
   });
 
@@ -113,7 +82,7 @@ describe('Distributed Job Processing (Task 3: Redis + BullMQ)', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('should successfully enqueue job with tenant context and default retry options', async () => {
+    it('should successfully enqueue job with tenant context and retrieve job status', async () => {
       const result = await queueService.addJob(
         QUEUES.NOTIFICATIONS,
         JOB_TYPES.SEND_EMAIL,
@@ -221,10 +190,9 @@ describe('Distributed Job Processing (Task 3: Redis + BullMQ)', () => {
       expect(res.downloadUrl).toContain('tenants/tenant_greenfield_100/reports');
     });
 
-    it('should gracefully clean up workers and queues on shutdown', async () => {
+    it('should gracefully clean up workers and pg-boss on shutdown', async () => {
       await expect(queueWorkers.onModuleDestroy()).resolves.toBeUndefined();
-      await expect(queueService.onModuleDestroy()).resolves.toBeUndefined();
-      await expect(redisConn.onModuleDestroy()).resolves.toBeUndefined();
+      await expect(pgBossService.onModuleDestroy()).resolves.toBeUndefined();
     });
   });
 });

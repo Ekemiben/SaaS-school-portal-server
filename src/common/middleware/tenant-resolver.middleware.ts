@@ -64,8 +64,9 @@ export class TenantResolverMiddleware implements NestMiddleware {
           }
         }
 
-        // Default development / test tenant fallback if none found
-        if (!tenant) {
+        // Default development / test tenant fallback if none found (only for non-platform routes)
+        const isPlatformRoute = req.originalUrl?.includes('/api/v1/platform') || req.originalUrl?.includes('/api/v1/auth/platform');
+        if (!tenant && !isPlatformRoute) {
           tenant = await this.prisma.tenant.findFirst({
             where: { status: 'ACTIVE' },
           });
@@ -79,6 +80,7 @@ export class TenantResolverMiddleware implements NestMiddleware {
 
     // In-memory fallback if not found or DB not connected
     if (!tenant) {
+      const isPlatformRoute = req.originalUrl?.includes('/api/v1/platform') || req.originalUrl?.includes('/api/v1/auth/platform');
       if (headerTenantId) {
         tenant = this.prisma.memoryStore.tenants.get(headerTenantId);
       } else if (headerTenantSlug) {
@@ -108,8 +110,8 @@ export class TenantResolverMiddleware implements NestMiddleware {
         }
       }
 
-      // Default fallback demo tenant
-      if (!tenant) {
+      // Default fallback demo tenant (only for non-platform routes)
+      if (!tenant && !isPlatformRoute) {
         tenant = Array.from(this.prisma.memoryStore.tenants.values())[0] || null;
       }
     }

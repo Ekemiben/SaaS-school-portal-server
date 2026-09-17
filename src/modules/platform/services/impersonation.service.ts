@@ -152,6 +152,7 @@ export class ImpersonationService {
         id: superAdminUser?.id || 'superadmin_system',
         email: superAdminUser?.email || 'admin@platform.io',
       },
+      session,
     };
   }
 

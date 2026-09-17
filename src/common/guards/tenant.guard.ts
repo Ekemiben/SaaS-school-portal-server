@@ -31,8 +31,14 @@ export class TenantGuard implements CanActivate {
       return true;
     }
 
-    // Platform admin bypass
-    if (user.isPlatformAdmin) {
+    // Platform scope / Platform admin bypass
+    if (
+      user.scope === 'PLATFORM' ||
+      user.role === 'SUPER_ADMIN' ||
+      user.role === 'PLATFORM_ADMIN' ||
+      user.role === 'PLATFORM_SUPPORT' ||
+      user.isPlatformAdmin
+    ) {
       return true;
     }
 

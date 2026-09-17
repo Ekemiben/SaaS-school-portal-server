@@ -1,14 +1,16 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
 import { CreateAnnouncementDto, SendDirectMessageDto } from './dto/create-announcement.dto.js';
 import { QueueService } from '../../jobs/queue.service.js';
 import { QUEUES, JOB_TYPES } from '../../jobs/queue.constants.js';
+import { OutboxService } from '../../infrastructure/outbox/outbox.service.js';
 
 @Injectable()
 export class CommunicationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly queueService: QueueService,
+    @Optional() private readonly outboxService?: OutboxService,
   ) {}
 
   private enrichAnnouncement(c: any) {
@@ -71,6 +73,22 @@ export class CommunicationsService {
     });
 
     this.prisma.memoryStore.communications.set(id, announcement);
+
+    // Record outbox event for reliable asynchronous delivery per Constitution Section 64
+    if (this.outboxService) {
+      await this.outboxService.recordEvent(
+        tenantId,
+        'COMMUNICATION_BROADCAST',
+        {
+          announcementId: id,
+          title: announcement.title,
+          audience: announcement.audience,
+          channel: announcement.channel,
+          authorId: authorUserId,
+          createdAt: announcement.createdAt,
+        },
+      );
+    }
 
     // If email or SMS channels requested, dispatch notifications to persistent queue
     const channelStr = (announcement.channel || '').toUpperCase();

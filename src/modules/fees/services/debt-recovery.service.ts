@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, Logger, Optional } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service.js';
-import { BullmqService } from '../../../jobs/bullmq.service.js';
+import { QueueService } from '../../../jobs/queue.service.js';
 import { QUEUES, JOB_TYPES } from '../../../jobs/queue.constants.js';
 import {
   DefaulterFilterDto,
@@ -20,7 +20,7 @@ export class DebtRecoveryService {
 
   constructor(
     private readonly prisma: PrismaService,
-    @Optional() private readonly bullmqService?: BullmqService,
+    @Optional() private readonly queueService?: QueueService,
   ) {}
 
   // --- Exam Clearance Policy ---
@@ -199,9 +199,9 @@ export class DebtRecoveryService {
         this.prisma.memoryStore.invoices.set(inv.id, inv);
       }
 
-      if (this.bullmqService && d.parent?.email) {
+      if (this.queueService && d.parent?.email) {
         const defaultMsg = `Dear ${d.parent.name}, this is a reminder regarding outstanding school fees of ${d.currency} ${d.balanceAmount} for ${d.studentName} (${d.admissionNumber}).`;
-        await this.bullmqService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
+        await this.queueService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
           tenantId,
           data: {
             recipientEmail: d.parent.email,

@@ -1,6 +1,4 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
-import { Worker, Job } from 'bullmq';
-import { RedisConnectionService } from './redis-connection.service.js';
 import { QueueService } from './queue.service.js';
 import { QUEUES } from './queue.constants.js';
 import { NotificationProcessor } from './processors/notification.processor.js';
@@ -11,10 +9,8 @@ import { PaymentReconcileProcessor } from './processors/payment-reconcile.proces
 @Injectable()
 export class QueueWorkersService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(QueueWorkersService.name);
-  public workers: Map<string, Worker> = new Map();
 
   constructor(
-    private readonly redisConn: RedisConnectionService,
     private readonly queueService: QueueService,
     private readonly notificationProcessor: NotificationProcessor,
     private readonly reportProcessor: ReportProcessor,
@@ -23,63 +19,7 @@ export class QueueWorkersService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit() {
-    if (!this.redisConn.isRedisConnected || !this.redisConn.client) {
-      this.logger.log('QueueWorkersService running in local dispatch mode for dev/test.');
-      return;
-    }
-
-    const processors: Record<string, (job: any) => Promise<any>> = {
-      [QUEUES.NOTIFICATIONS]: (job) => this.notificationProcessor.process(job),
-      [QUEUES.REPORTS]: (job) => this.reportProcessor.process(job),
-      [QUEUES.IMPORT_EXPORT]: (job) => this.importExportProcessor.process(job),
-      [QUEUES.PAYMENT_RECONCILE]: (job) => this.paymentReconcileProcessor.process(job),
-    };
-
-    for (const [queueName, processorFn] of Object.entries(processors)) {
-      const worker = new Worker(
-        queueName,
-        async (job: Job) => {
-          this.logger.log(`Worker starting job [${job.id}] (${job.name}) on queue [${queueName}] for tenant [${job.data.tenantId}]`);
-          return await processorFn({ id: String(job.id), data: job.data });
-        },
-        {
-          connection: this.redisConn.client.duplicate(),
-          concurrency: parseInt(process.env.QUEUE_CONCURRENCY || '5', 10),
-        },
-      );
-
-      worker.on('completed', (job: Job) => {
-        this.logger.log(`Job [${job.id}] (${job.name}) completed successfully on queue [${queueName}]`);
-      });
-
-      worker.on('failed', (job: Job | undefined, err: Error) => {
-        if (!job) return;
-        this.logger.warn(`Job [${job.id}] failed attempt ${job.attemptsMade}/${job.opts?.attempts ?? 3}: ${err.message}`);
-
-        const maxAttempts = job.opts?.attempts ?? 3;
-        if (job.attemptsMade >= maxAttempts) {
-          this.queueService.recordDeadLetter({
-            id: String(job.id),
-            queueName,
-            name: job.name,
-            tenantId: job.data?.tenantId,
-            data: job.data,
-            failedReason: err.message,
-            attemptsMade: job.attemptsMade,
-            failedAt: new Date().toISOString(),
-            stacktrace: job.stacktrace || undefined,
-          });
-        }
-      });
-
-      worker.on('error', (err: Error) => {
-        this.logger.error(`Worker error on queue [${queueName}]: ${err.message}`);
-      });
-
-      this.workers.set(queueName, worker);
-    }
-
-    this.logger.log(`Spawned ${this.workers.size} background BullMQ queue workers.`);
+    this.logger.log('QueueWorkersService: background job processing delegating to pg-boss workers with tenant context.');
   }
 
   /**
@@ -102,14 +42,6 @@ export class QueueWorkersService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy() {
-    this.logger.log('Gracefully stopping all BullMQ workers...');
-    for (const [name, worker] of this.workers.entries()) {
-      try {
-        await worker.close();
-      } catch (err: any) {
-        this.logger.warn(`Error stopping worker for ${name}: ${err.message}`);
-      }
-    }
-    this.workers.clear();
+    this.logger.log('QueueWorkersService stopped.');
   }
 }

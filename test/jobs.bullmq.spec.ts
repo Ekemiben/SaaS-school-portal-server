@@ -105,13 +105,13 @@ describe('Redis + BullMQ Distributed Job Processing (Task 3)', () => {
     expect(result.queue).toBe(QUEUES.REPORTS);
   });
 
-  it('6. Production Fail-Fast: Refuses to silently bypass Redis in production mode', async () => {
+  it('6. Production Fail-Fast: Refuses to silently bypass Queue DB in production mode', async () => {
     const prevEnv = process.env.NODE_ENV;
-    const prevPort = process.env.REDIS_PORT;
+    const prevDb = process.env.DATABASE_URL;
 
     try {
       process.env.NODE_ENV = 'production';
-      process.env.REDIS_PORT = '9998'; // offline port
+      process.env.DATABASE_URL = 'postgresql://invalid_user:invalid_pass@localhost:9998/invalid_db';
 
       const emailAdapter = new EmailAdapter();
       const smsAdapter = new SmsAdapter();
@@ -122,10 +122,10 @@ describe('Redis + BullMQ Distributed Job Processing (Task 3)', () => {
       const payProc = new PaymentReconcileProcessor(prisma);
 
       const prodService = new BullmqService(notifProc, repProc, impProc, payProc);
-      await expect(prodService.onModuleInit()).rejects.toThrow(/Production Redis connection failure/);
+      await expect(prodService.onModuleInit()).rejects.toThrow(/Production queue connection failure/);
     } finally {
       process.env.NODE_ENV = prevEnv;
-      process.env.REDIS_PORT = prevPort;
+      process.env.DATABASE_URL = prevDb;
     }
   });
 

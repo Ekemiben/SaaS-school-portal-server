@@ -6,6 +6,7 @@ import {
   Body,
   Query,
   Req,
+  UseGuards,
 } from '@nestjs/common';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator.js';
 import { RequirePermissions } from '../../../common/decorators/permissions.decorator.js';
@@ -17,8 +18,12 @@ import {
   TerminateImpersonationDto,
   ImpersonationFilterDto,
 } from '../dto/impersonation.dto.js';
+import { AuthGuard } from '../../../common/guards/auth.guard.js';
+import { PlatformAdminGuard } from '../../../common/guards/platform-admin.guard.js';
+import { PermissionsGuard } from '../../../common/guards/permissions.guard.js';
 
 @Controller('api/v1/platform/impersonation')
+@UseGuards(AuthGuard, PlatformAdminGuard, PermissionsGuard)
 export class ImpersonationController {
   constructor(
     private readonly impersonationService: ImpersonationService,
@@ -26,7 +31,7 @@ export class ImpersonationController {
   ) {}
 
   @Post('start')
-  @RequirePermissions(SystemPermissions.PLATFORM_ADMIN)
+  @RequirePermissions(SystemPermissions.PLATFORM_IMPERSONATION_START)
   startImpersonation(
     @CurrentUser() user: any,
     @Body() dto: StartImpersonationDto,
@@ -39,13 +44,13 @@ export class ImpersonationController {
   }
 
   @Get('sessions')
-  @RequirePermissions(SystemPermissions.PLATFORM_ADMIN)
+  @RequirePermissions(SystemPermissions.PLATFORM_IMPERSONATION_START)
   listSessions(@Query() filter: ImpersonationFilterDto) {
     return this.impersonationService.listSessions(filter);
   }
 
   @Post('sessions/:id/terminate')
-  @RequirePermissions(SystemPermissions.PLATFORM_ADMIN)
+  @RequirePermissions(SystemPermissions.PLATFORM_IMPERSONATION_START)
   terminateSession(
     @Param('id') sessionId: string,
     @CurrentUser() user: any,
@@ -59,7 +64,7 @@ export class ImpersonationController {
   }
 
   @Get('audit-logs')
-  @RequirePermissions(SystemPermissions.PLATFORM_ADMIN)
+  @RequirePermissions(SystemPermissions.PLATFORM_AUDIT_VIEW)
   getImpersonationAuditLogs(
     @Query('tenantId') tenantId?: string,
     @Query('impersonatedBy') impersonatedBy?: string,

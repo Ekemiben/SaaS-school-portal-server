@@ -29,12 +29,31 @@ export class PermissionsGuard implements CanActivate {
       return false;
     }
 
-    if (user.isPlatformAdmin) {
+    // SUPER_ADMIN has unrestricted platform authority
+    const userRole = user.role || (user.roles && user.roles[0]);
+    if (
+      userRole === 'SUPER_ADMIN' ||
+      (user.roles && (user.roles.includes('SUPER_ADMIN') || (user.roles.includes('Super Admin') && user.scope === 'PLATFORM')))
+    ) {
       return true;
     }
 
+    const isPlatformUser = user.scope === 'PLATFORM' || user.tenantId === null || user.tenantId === undefined;
+    const isPlatformPermission = requiredPermissions.some(
+      (perm) => perm.startsWith('platform.') || perm === 'impersonate.user',
+    );
+
+    // Tenant users can never access platform-scoped permissions
+    if (isPlatformPermission && !isPlatformUser) {
+      throw new ForbiddenException({
+        code: ErrorCodes.FORBIDDEN,
+        message: 'You do not have the required permissions to perform this action.',
+      });
+    }
+
+    // School Owner has full access to tenant-scoped permissions
     const userRoles: string[] = user.roles || [];
-    if (userRoles.includes('School Owner') || userRoles.includes('Super Admin')) {
+    if (!isPlatformPermission && userRoles.includes('School Owner')) {
       return true;
     }
 

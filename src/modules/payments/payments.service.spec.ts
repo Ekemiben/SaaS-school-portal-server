@@ -5,7 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { PaystackPaymentAdapter } from './adapters/paystack.adapter.js';
 import { FlutterwavePaymentAdapter } from './adapters/flutterwave.adapter.js';
 import { CloudflareR2StorageProvider } from '../files/storage.provider.js';
-import { BullmqService } from '../../jobs/bullmq.service.js';
+import { QueueService } from '../../jobs/queue.service.js';
 import { createHmac } from 'crypto';
 
 describe('PaymentsService Webhooks and Receipts', () => {
@@ -21,15 +21,15 @@ describe('PaymentsService Webhooks and Receipts', () => {
     const paystackAdapter = new PaystackPaymentAdapter(configService);
     const flutterwaveAdapter = new FlutterwavePaymentAdapter(configService);
     const storageProvider = new CloudflareR2StorageProvider(configService as any);
-    const bullmqService = new BullmqService(configService as any);
-    vi.spyOn(bullmqService, 'dispatch').mockResolvedValue('mock-job' as any);
+    const queueService = new QueueService();
+    vi.spyOn(queueService, 'dispatch').mockResolvedValue({ jobId: 'mock-job', queue: 'notifications' } as any);
 
     paymentsService = new PaymentsService(
       prisma,
       paystackAdapter,
       flutterwaveAdapter,
       storageProvider,
-      bullmqService,
+      queueService,
     );
   });
 
