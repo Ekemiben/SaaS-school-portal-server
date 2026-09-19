@@ -28,9 +28,16 @@ export class AuthGuard implements CanActivate {
 
     const request = context.switchToHttp().getRequest();
     const authHeader = request.headers.authorization;
+    const impersonationHeader = request.headers['x-impersonation-token'];
+    const isPlatformRoute =
+      request.originalUrl?.includes('/api/v1/platform') ||
+      request.originalUrl?.includes('/api/v1/auth/platform');
+
     let token: string | undefined;
 
-    if (authHeader && authHeader.startsWith('Bearer ')) {
+    if (!isPlatformRoute && impersonationHeader && typeof impersonationHeader === 'string' && impersonationHeader.trim()) {
+      token = impersonationHeader.trim();
+    } else if (authHeader && authHeader.startsWith('Bearer ')) {
       token = authHeader.substring(7);
     } else if (request.cookies && request.cookies.accessToken) {
       token = request.cookies.accessToken;
@@ -58,16 +65,30 @@ export class AuthGuard implements CanActivate {
         permissions: payload.permissions || payload.permissionIds || [],
         permissionIds: payload.permissionIds || payload.permissions || [],
         isPlatformAdmin: payload.scope === 'PLATFORM' || !payload.tenantId || !!payload.isPlatformAdmin,
+        isImpersonating: !!payload.isImpersonating,
       };
 
-      // Update tenant context with user identity if available
-      if (request.tenantContext) {
+      // Update or establish tenant context
+      if (!request.tenantContext && payload.tenantId) {
+        request.tenantContext = {
+          tenantId: payload.tenantId,
+          userId: request.user.id,
+          email: payload.email,
+          roleIds: payload.roleIds || [],
+          permissionIds: request.user.permissions,
+          campusIds: payload.campusIds || [],
+          isPlatformAdmin: false,
+          isImpersonating: !!payload.isImpersonating,
+        };
+        request.tenantId = payload.tenantId;
+      } else if (request.tenantContext) {
         request.tenantContext.userId = request.user.id;
         request.tenantContext.email = payload.email;
         request.tenantContext.roleIds = payload.roleIds || [];
         request.tenantContext.permissionIds = request.user.permissions;
         request.tenantContext.campusIds = payload.campusIds || [];
         request.tenantContext.isPlatformAdmin = request.user.isPlatformAdmin;
+        request.tenantContext.isImpersonating = !!payload.isImpersonating;
       }
 
       return true;

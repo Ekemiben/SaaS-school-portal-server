@@ -28,9 +28,16 @@ async function bootstrap() {
     .map((o) => o.trim())
     .filter(Boolean);
 
+  const devOrigins = [
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:3001',
+  ];
+
   app.enableCors({
     origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-      if (!origin || process.env.NODE_ENV !== 'production') {
+      if (!origin || process.env.NODE_ENV !== 'production' || (origin && devOrigins.includes(origin))) {
         return callback(null, true);
       }
       if (
@@ -51,6 +58,8 @@ async function bootstrap() {
       'X-Tenant-Slug',
       'X-Tenant-Domain',
       'X-Request-Id',
+      'X-Campus-Id',
+      'X-Impersonation-Token',
     ],
     exposedHeaders: ['X-Request-Id', 'X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'],
   });

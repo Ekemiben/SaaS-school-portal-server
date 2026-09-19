@@ -150,6 +150,21 @@ export class TenancyService {
         },
         include: { domains: true },
       });
+
+      this.prisma.memoryStore.tenants.set(tenant.id, tenant);
+      const subDomainId = `domain_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+      this.prisma.memoryStore.domains.set(subDomainId, {
+        id: subDomainId,
+        tenantId: tenant.id,
+        domain: `${slug}.yoursaas.com`,
+        type: 'SUBDOMAIN',
+        isPrimary: true,
+        isVerified: true,
+        sslStatus: 'ACTIVE',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
       return this.sanitizeTenantConfig(tenant);
     }
 
@@ -204,6 +219,40 @@ export class TenancyService {
     Object.assign(tenant, data, { updatedAt: new Date() });
     this.prisma.memoryStore.tenants.set(tenantId, tenant);
     return this.sanitizeTenantConfig(tenant);
+  }
+
+  async listPublicSchools() {
+    if (this.prisma.isDbConnected) {
+      const tenants = await this.prisma.tenant.findMany({
+        where: { status: { in: ['ACTIVE', 'TRIAL'] } },
+        include: {
+          domains: true,
+          campuses: true,
+          _count: { select: { students: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      return tenants.map((t) => ({
+        id: t.id,
+        name: t.name,
+        slug: t.slug,
+        domain: t.domains?.[0]?.domain || `${t.slug}.yoursaas.com`,
+        location: t.campuses?.[0]
+          ? [t.campuses[0].city, t.campuses[0].country].filter(Boolean).join(', ') || 'Nigeria'
+          : 'Nigeria',
+        students: `${t._count?.students || 0} students`,
+      }));
+    }
+
+    return Array.from(this.prisma.memoryStore.tenants.values()).map((t: any) => ({
+      id: t.id,
+      name: t.name,
+      slug: t.slug,
+      domain: `${t.slug}.yoursaas.com`,
+      location: 'Nigeria',
+      students: '0 students',
+    }));
   }
 
   private sanitizeTenantConfig(tenant: any) {

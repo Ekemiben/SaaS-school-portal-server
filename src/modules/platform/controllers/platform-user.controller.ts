@@ -17,6 +17,7 @@ import {
   UpdatePlatformUserStatusDto,
   UpdatePlatformUserPermissionsDto,
   UpdatePlatformUserRoleDto,
+  ResetPlatformUserPasswordDto,
   PlatformUserFilterDto,
 } from '../dto/platform-user.dto.js';
 import { AuthGuard } from '../../../common/guards/auth.guard.js';
@@ -77,5 +78,15 @@ export class PlatformUserController {
     @Body() dto: UpdatePlatformUserRoleDto,
   ) {
     return this.platformUserService.updateRole(user, id, dto);
+  }
+
+  @Patch(':id/reset-password')
+  @RequirePermissions(SystemPermissions.PLATFORM_USER_CREATE)
+  resetPassword(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+    @Body() dto: ResetPlatformUserPasswordDto,
+  ) {
+    return this.platformUserService.resetPassword(user, id, dto);
   }
 }

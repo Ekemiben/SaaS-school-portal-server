@@ -46,6 +46,19 @@ export class CampusesService {
     email?: string;
     isMain?: boolean;
   }) {
+    if (this.prisma.isDbConnected) {
+      try {
+        const existingDb = await this.prisma.campus.findFirst({
+          where: { tenantId, code: data.code.toUpperCase() },
+        });
+        if (existingDb) {
+          throw new ConflictException(`Campus code "${data.code}" already exists in this school.`);
+        }
+      } catch (err: any) {
+        if (err instanceof ConflictException) throw err;
+      }
+    }
+
     const existing = Array.from(this.prisma.memoryStore.campuses.values()).find(
       (c) => c.tenantId === tenantId && c.code.toUpperCase() === data.code.toUpperCase(),
     );
@@ -70,11 +83,42 @@ export class CampusesService {
       updatedAt: new Date(),
     };
 
+    if (this.prisma.isDbConnected) {
+      try {
+        const dbCampus = await this.prisma.campus.create({
+          data: {
+            id: campusId,
+            tenantId,
+            name: data.name,
+            code: data.code.toUpperCase(),
+            address: data.address || null,
+            city: data.city || null,
+            state: data.state || null,
+            country: data.country || null,
+            phone: data.phone || null,
+            email: data.email || null,
+            isMain: !!data.isMain,
+          },
+        });
+        this.prisma.memoryStore.campuses.set(campusId, dbCampus);
+        return dbCampus;
+      } catch {}
+    }
+
     this.prisma.memoryStore.campuses.set(campusId, newCampus);
     return newCampus;
   }
 
   async update(tenantId: string, campusId: string, data: Partial<any>) {
+    if (this.prisma.isDbConnected) {
+      try {
+        await this.prisma.campus.updateMany({
+          where: { id: campusId, tenantId },
+          data,
+        });
+      } catch {}
+    }
+
     const campus = await this.findById(tenantId, campusId);
     Object.assign(campus, data, { updatedAt: new Date() });
     this.prisma.memoryStore.campuses.set(campusId, campus);

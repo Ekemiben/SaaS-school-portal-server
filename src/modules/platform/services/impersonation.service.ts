@@ -13,6 +13,7 @@ import {
   TerminateImpersonationDto,
   ImpersonationFilterDto,
 } from '../dto/impersonation.dto.js';
+import { SystemPermissions } from '../../../common/constants/permissions.js';
 
 @Injectable()
 export class ImpersonationService {
@@ -33,38 +34,99 @@ export class ImpersonationService {
       throw new BadRequestException('A mandatory justification/reason (min 5 chars) is required for support impersonation.');
     }
 
-    const tenant = this.prisma.memoryStore.tenants.get(dto.targetTenantId);
+    const targetTenantId = dto.targetTenantId || dto.tenantId;
+    if (!targetTenantId) {
+      throw new BadRequestException('Target tenant ID is required to start impersonation.');
+    }
+
+    let tenant: any = null;
+    if (this.prisma.isDbConnected) {
+      try {
+        tenant = await this.prisma.tenant.findUnique({
+          where: { id: targetTenantId },
+        });
+      } catch {
+        tenant = null;
+      }
+    }
+
     if (!tenant) {
-      throw new NotFoundException(`Target tenant with ID '${dto.targetTenantId}' not found`);
+      tenant = this.prisma.memoryStore.tenants.get(targetTenantId);
+    }
+
+    if (!tenant) {
+      throw new NotFoundException(`Target tenant with ID '${targetTenantId}' not found`);
     }
 
     // Resolve target user
-    let targetUser = null;
+    let targetUser: any = null;
     if (dto.targetUserId) {
-      targetUser = this.prisma.memoryStore.users.get(dto.targetUserId);
-      if (!targetUser || targetUser.tenantId !== dto.targetTenantId) {
+      if (this.prisma.isDbConnected) {
+        try {
+          targetUser = await this.prisma.user.findUnique({
+            where: { id: dto.targetUserId },
+          });
+        } catch {
+          targetUser = null;
+        }
+      }
+      if (!targetUser) {
+        targetUser = this.prisma.memoryStore.users.get(dto.targetUserId);
+      }
+      if (!targetUser || targetUser.tenantId !== targetTenantId) {
         throw new NotFoundException(
-          `Target user '${dto.targetUserId}' not found in tenant '${dto.targetTenantId}'`,
+          `Target user '${dto.targetUserId}' not found in tenant '${targetTenantId}'`,
         );
       }
     } else {
       // Find an active admin or owner in the tenant
-      targetUser = Array.from(this.prisma.memoryStore.users.values()).find(
-        (u: any) => u.tenantId === dto.targetTenantId && u.isActive,
-      );
+      if (this.prisma.isDbConnected) {
+        try {
+          targetUser = await this.prisma.user.findFirst({
+            where: { tenantId: targetTenantId, isActive: true },
+          });
+        } catch {
+          targetUser = null;
+        }
+      }
       if (!targetUser) {
-        // Create demo admin representation if needed for testing
+        targetUser = Array.from(this.prisma.memoryStore.users.values()).find(
+          (u: any) => u.tenantId === targetTenantId && u.isActive,
+        );
+      }
+      if (!targetUser) {
         targetUser = {
-          id: `user_admin_${dto.targetTenantId}`,
-          tenantId: dto.targetTenantId,
+          id: `usr_owner_${targetTenantId.replace(/-/g, '').substring(0, 16)}`,
+          tenantId: targetTenantId,
           email: `admin@${tenant.slug || 'school'}.portal.io`,
-          firstName: 'School',
-          lastName: 'Admin',
+          firstName: tenant.name,
+          lastName: 'Administrator',
           isActive: true,
-          role: 'school_admin',
+          role: 'School Owner',
+          roles: ['School Owner', 'Admin'],
         };
         this.prisma.memoryStore.users.set(targetUser.id, targetUser);
       }
+    }
+
+    // Load full tenant-level permissions
+    let tenantPermissions: string[] = [];
+    if (this.prisma.isDbConnected) {
+      try {
+        const perms = await this.prisma.permission.findMany({
+          where: {
+            NOT: { module: 'PLATFORM' },
+          },
+        });
+        tenantPermissions = perms.map((p) => p.name);
+      } catch {
+        tenantPermissions = [];
+      }
+    }
+    if (tenantPermissions.length === 0) {
+      tenantPermissions = Object.values(SystemPermissions).filter(
+        (p) => !p.startsWith('platform.'),
+      );
     }
 
     const durationMinutes = Math.min(120, Math.max(5, dto.durationMinutes || 30));
@@ -73,24 +135,32 @@ export class ImpersonationService {
 
     const sessionId = `imp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-    // Generate time-bound impersonation JWT token
+    // Generate time-bound impersonation JWT token with full school owner authority
     const tokenPayload = {
       sub: targetUser.id,
-      tenantId: dto.targetTenantId,
+      id: targetUser.id,
+      tenantId: targetTenantId,
       email: targetUser.email,
-      role: targetUser.role || 'school_admin',
+      role: 'School Owner',
+      roles: ['SCHOOL_OWNER', 'School Owner', 'Admin'],
+      permissions: ['*'],
+      scope: 'TENANT',
       isImpersonating: true,
       impersonatorUserId: superAdminUser?.id || 'superadmin_system',
       impersonatorEmail: superAdminUser?.email || 'admin@platform.io',
       impersonationSessionId: sessionId,
-      exp: Math.floor(expiresAt.getTime() / 1000),
+      firstName: targetUser.firstName || 'School',
+      lastName: targetUser.lastName || 'Administrator',
     };
 
-    const token = this.jwtService.sign(tokenPayload);
+    const token = this.jwtService.sign(tokenPayload, {
+      secret: process.env.JWT_ACCESS_SECRET || 'dev_access_secret_key_change_in_production_123',
+      expiresIn: `${durationMinutes}m`,
+    });
 
     const session = {
       id: sessionId,
-      tenantId: dto.targetTenantId,
+      tenantId: targetTenantId,
       superAdminUserId: superAdminUser?.id || 'superadmin_system',
       targetUserId: targetUser.id,
       reason: dto.reason,
@@ -109,7 +179,7 @@ export class ImpersonationService {
 
     // Write audit log for starting impersonation
     await this.auditService.log({
-      tenantId: dto.targetTenantId,
+      tenantId: targetTenantId,
       actorUserId: targetUser.id,
       impersonatedBy: superAdminUser?.id || 'superadmin_system',
       impersonationSessionId: sessionId,
@@ -129,7 +199,7 @@ export class ImpersonationService {
     });
 
     this.logger.warn(
-      `[IMPERSONATION] Superadmin ${superAdminUser?.email || superAdminUser?.id} initiated impersonation into ${tenant.name} (${dto.targetTenantId}) as user ${targetUser.email}. Reason: ${dto.reason}`,
+      `[IMPERSONATION] Superadmin ${superAdminUser?.email || superAdminUser?.id} initiated impersonation into ${tenant.name} (${targetTenantId}) as user ${targetUser.email}. Reason: ${dto.reason}`,
     );
 
     return {
@@ -147,6 +217,7 @@ export class ImpersonationService {
         email: targetUser.email,
         firstName: targetUser.firstName,
         lastName: targetUser.lastName,
+        role: 'School Owner',
       },
       impersonator: {
         id: superAdminUser?.id || 'superadmin_system',

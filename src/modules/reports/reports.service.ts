@@ -11,6 +11,61 @@ export class ReportsService {
   ) {}
 
   async getExecutiveDashboard(tenantId: string) {
+    if (this.prisma.isDbConnected) {
+      const [
+        totalStudents,
+        activeStudents,
+        totalCampuses,
+        totalTeachers,
+        totalClasses,
+        invoicesAggregate,
+        paymentsAggregate,
+        campusesList,
+      ] = await Promise.all([
+        this.prisma.student.count({ where: { tenantId } }),
+        this.prisma.student.count({ where: { tenantId, status: 'ACTIVE' } }),
+        this.prisma.campus.count({ where: { tenantId } }),
+        this.prisma.teacher.count({ where: { tenantId } }),
+        this.prisma.class.count({ where: { tenantId } }),
+        this.prisma.invoice.aggregate({
+          where: { tenantId },
+          _sum: { totalAmount: true },
+        }),
+        this.prisma.payment.aggregate({
+          where: { tenantId, status: 'SUCCESSFUL' },
+          _sum: { amount: true },
+        }),
+        this.prisma.campus.findMany({
+          where: { tenantId },
+          include: { _count: { select: { students: true } } },
+        }),
+      ]);
+
+      const totalBilled = Number(invoicesAggregate._sum?.totalAmount || 0);
+      const totalCollected = Number(paymentsAggregate._sum?.amount || 0);
+      const outstandingFees = Math.max(0, totalBilled - totalCollected);
+
+      return {
+        metrics: {
+          totalStudents,
+          activeStudents,
+          totalCampuses,
+          totalTeachers,
+          totalClasses,
+          totalBilled,
+          totalCollected,
+          outstandingFees,
+          collectionRate: totalBilled > 0 ? Number(((totalCollected / totalBilled) * 100).toFixed(1)) : 100,
+        },
+        campuses: campusesList.map((c) => ({
+          id: c.id,
+          name: c.name,
+          code: c.code,
+          studentCount: c._count.students,
+        })),
+      };
+    }
+
     const students = Array.from(this.prisma.memoryStore.students.values()).filter(
       (s) => s.tenantId === tenantId,
     );
@@ -19,6 +74,9 @@ export class ReportsService {
     );
     const teachers = Array.from(this.prisma.memoryStore.teachers.values()).filter(
       (t) => t.tenantId === tenantId,
+    );
+    const classes = Array.from(this.prisma.memoryStore.classes?.values() || []).filter(
+      (cl: any) => cl.tenantId === tenantId,
     );
     const invoices = Array.from(this.prisma.memoryStore.invoices.values()).filter(
       (i) => i.tenantId === tenantId,
@@ -39,6 +97,7 @@ export class ReportsService {
         activeStudents,
         totalCampuses: campuses.length,
         totalTeachers: teachers.length,
+        totalClasses: classes.length,
         totalBilled,
         totalCollected,
         outstandingFees,
@@ -54,6 +113,43 @@ export class ReportsService {
   }
 
   async getFinancialSummary(tenantId: string) {
+    if (this.prisma.isDbConnected) {
+      const [
+        invoicesAggregate,
+        paymentsAggregate,
+        waiversAggregate,
+        invoicesCount,
+        paidInvoicesCount,
+        pendingInvoicesCount,
+        feeStructuresCount,
+      ] = await Promise.all([
+        this.prisma.invoice.aggregate({ where: { tenantId }, _sum: { totalAmount: true } }),
+        this.prisma.payment.aggregate({ where: { tenantId, status: 'SUCCESSFUL' }, _sum: { amount: true } }),
+        this.prisma.feeWaiver.aggregate({ where: { tenantId }, _sum: { waiverAmount: true } }),
+        this.prisma.invoice.count({ where: { tenantId } }),
+        this.prisma.invoice.count({ where: { tenantId, status: 'PAID' } }),
+        this.prisma.invoice.count({ where: { tenantId, status: { in: ['PENDING', 'PARTIALLY_PAID'] } } }),
+        this.prisma.feeStructure.count({ where: { tenantId } }),
+      ]);
+
+      const totalBilled = Number(invoicesAggregate._sum?.totalAmount || 0);
+      const totalCollected = Number(paymentsAggregate._sum?.amount || 0);
+      const totalWaivers = Number(waiversAggregate._sum?.waiverAmount || 0);
+      const outstanding = Math.max(0, totalBilled - totalCollected);
+
+      return {
+        totalBilled,
+        totalCollected,
+        totalWaivers,
+        outstanding,
+        collectionRate: totalBilled > 0 ? Number(((totalCollected / totalBilled) * 100).toFixed(2)) : 100,
+        invoicesCount,
+        paidInvoicesCount,
+        pendingInvoicesCount,
+        feeStructuresCount,
+      };
+    }
+
     const invoices = Array.from(this.prisma.memoryStore.invoices.values()).filter(
       (i) => i.tenantId === tenantId,
     );
@@ -117,6 +213,24 @@ export class ReportsService {
   }
 
   async getAttendanceSummary(tenantId: string) {
+    if (this.prisma.isDbConnected) {
+      const [totalRecords, present, absent] = await Promise.all([
+        this.prisma.attendance.count({ where: { tenantId } }),
+        this.prisma.attendance.count({ where: { tenantId, status: 'PRESENT' } }),
+        this.prisma.attendance.count({ where: { tenantId, status: 'ABSENT' } }),
+      ]);
+
+      if (totalRecords === 0) {
+        return { totalRecords: 0, presentRate: 100, absentRate: 0 };
+      }
+
+      return {
+        totalRecords,
+        presentRate: Number(((present / totalRecords) * 100).toFixed(1)),
+        absentRate: Number(((absent / totalRecords) * 100).toFixed(1)),
+      };
+    }
+
     const attendance = Array.from(this.prisma.memoryStore.attendance.values()).filter(
       (a) => a.tenantId === tenantId,
     );

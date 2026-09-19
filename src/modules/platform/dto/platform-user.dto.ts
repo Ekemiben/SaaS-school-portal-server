@@ -58,6 +58,12 @@ export class UpdatePlatformUserRoleDto {
   role!: 'PLATFORM_ADMIN' | 'PLATFORM_SUPPORT';
 }
 
+export class ResetPlatformUserPasswordDto {
+  @IsString()
+  @MinLength(8)
+  newPassword!: string;
+}
+
 export class PlatformUserFilterDto {
   @IsOptional()
   @IsString()

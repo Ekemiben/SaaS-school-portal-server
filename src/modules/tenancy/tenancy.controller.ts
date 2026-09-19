@@ -7,6 +7,7 @@ import {
   Body,
   Headers,
   Param,
+  Query,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
@@ -28,12 +29,21 @@ export class TenancyController {
     @Headers('host') host: string,
     @Headers('x-tenant-domain') customDomain?: string,
     @Headers('x-tenant-slug') slug?: string,
+    @Query('slug') querySlug?: string,
+    @Query('domain') queryDomain?: string,
   ) {
-    if (slug) {
-      return this.tenancyService.findBySlug(slug);
+    const effectiveSlug = slug || querySlug;
+    if (effectiveSlug) {
+      return this.tenancyService.findBySlug(effectiveSlug);
     }
-    const targetHost = customDomain || host || 'localhost';
+    const targetHost = customDomain || queryDomain || host || 'localhost';
     return this.tenancyService.resolveByHostname(targetHost);
+  }
+
+  @Public()
+  @Get('public-list')
+  async listPublicSchools() {
+    return this.tenancyService.listPublicSchools();
   }
 
   @Public()
@@ -53,6 +63,9 @@ export class TenancyController {
 
   @Get('current')
   async getCurrentTenant(@CurrentTenant() tenant: TenantContext) {
+    if (!tenant?.tenantId) {
+      return this.tenancyService.getDefaultTenant();
+    }
     return this.tenancyService.resolveCurrentTenant(tenant.tenantId);
   }
 

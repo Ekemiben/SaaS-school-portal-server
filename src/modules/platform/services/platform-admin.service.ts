@@ -24,6 +24,38 @@ export class PlatformAdminService {
   ) {}
 
   async getGlobalStats() {
+    if (this.prisma.isDbConnected) {
+      try {
+        const totalTenants = await this.prisma.tenant.count();
+        const activeTenants = await this.prisma.tenant.count({ where: { status: 'ACTIVE' } });
+        const trialTenants = await this.prisma.tenant.count({ where: { status: 'TRIAL' } });
+        const suspendedTenants = await this.prisma.tenant.count({ where: { status: 'SUSPENDED' } });
+        const totalCampuses = await this.prisma.campus.count();
+        const totalStudents = await this.prisma.student.count();
+        const totalUsers = await this.prisma.user.count();
+
+        return {
+          tenants: {
+            total: totalTenants,
+            active: activeTenants,
+            trial: trialTenants,
+            suspended: suspendedTenants,
+          },
+          infrastructure: {
+            totalCampuses,
+            totalStudents,
+            totalUsers,
+          },
+          financials: {
+            estimatedMrr: activeTenants * 50000,
+            estimatedArr: activeTenants * 50000 * 12,
+          },
+        };
+      } catch (err: any) {
+        this.logger.warn(`Could not load stats from DB, falling back to memory: ${err.message}`);
+      }
+    }
+
     const tenants = Array.from(this.prisma.memoryStore.tenants.values());
     const campuses = Array.from(this.prisma.memoryStore.campuses.values());
     const students = Array.from(this.prisma.memoryStore.students.values());
@@ -62,6 +94,52 @@ export class PlatformAdminService {
   }
 
   async listTenants(filter?: PlatformTenantFilterDto) {
+    if (this.prisma.isDbConnected) {
+      try {
+        const where: any = {};
+        if (filter?.status) {
+          where.status = filter.status;
+        }
+        if (filter?.plan) {
+          where.plan = { equals: filter.plan, mode: 'insensitive' };
+        }
+        if (filter?.search) {
+          where.OR = [
+            { name: { contains: filter.search, mode: 'insensitive' } },
+            { slug: { contains: filter.search, mode: 'insensitive' } },
+            { id: { contains: filter.search, mode: 'insensitive' } },
+          ];
+        }
+
+        const dbTenants = await this.prisma.tenant.findMany({
+          where,
+          include: {
+            domains: true,
+            campuses: true,
+            _count: {
+              select: {
+                students: true,
+                campuses: true,
+              },
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (dbTenants.length > 0) {
+          return dbTenants.map((t) => ({
+            ...t,
+            studentCount: t._count?.students ?? 0,
+            campusCount: t._count?.campuses ?? t.campuses?.length ?? 0,
+            subscriptionTier: t.plan || 'starter',
+            subscriptionStatus: t.status || 'TRIAL',
+          }));
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not load tenants from DB, falling back to memory: ${err.message}`);
+      }
+    }
+
     let list = Array.from(this.prisma.memoryStore.tenants.values());
 
     if (filter?.status) {
@@ -102,6 +180,41 @@ export class PlatformAdminService {
   }
 
   async getTenantDetail(tenantId: string) {
+    if (this.prisma.isDbConnected) {
+      try {
+        const dbTenant = await this.prisma.tenant.findUnique({
+          where: { id: tenantId },
+          include: {
+            domains: true,
+            campuses: true,
+            _count: {
+              select: {
+                students: true,
+                users: true,
+              },
+            },
+          },
+        });
+        if (dbTenant) {
+          return {
+            tenant: dbTenant,
+            campuses: dbTenant.campuses || [],
+            studentsCount: dbTenant._count?.students ?? 0,
+            usersCount: dbTenant._count?.users ?? 0,
+            domains: dbTenant.domains || [],
+            subscription: {
+              planId: dbTenant.plan,
+              tier: dbTenant.plan,
+              status: dbTenant.status,
+            },
+            recentAuditLogs: [],
+          };
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not load tenant detail from DB: ${err.message}`);
+      }
+    }
+
     const tenant = this.prisma.memoryStore.tenants.get(tenantId);
     if (!tenant) {
       throw new NotFoundException(`Tenant with ID '${tenantId}' not found`);
@@ -134,15 +247,28 @@ export class PlatformAdminService {
   }
 
   async updateTenantStatus(tenantId: string, dto: UpdateTenantStatusDto, superAdminId: string) {
+    if (this.prisma.isDbConnected) {
+      try {
+        await this.prisma.tenant.update({
+          where: { id: tenantId },
+          data: { status: dto.status as any },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Could not update tenant status in DB: ${err.message}`);
+      }
+    }
+
     const tenant = this.prisma.memoryStore.tenants.get(tenantId);
-    if (!tenant) {
+    if (!tenant && !this.prisma.isDbConnected) {
       throw new NotFoundException(`Tenant with ID '${tenantId}' not found`);
     }
 
-    const previousStatus = tenant.status;
-    tenant.status = dto.status;
-    tenant.updatedAt = new Date();
-    this.prisma.memoryStore.tenants.set(tenantId, tenant);
+    const previousStatus = tenant ? tenant.status : 'TRIAL';
+    if (tenant) {
+      tenant.status = dto.status;
+      tenant.updatedAt = new Date();
+      this.prisma.memoryStore.tenants.set(tenantId, tenant);
+    }
 
     // Update subscription status in sync
     const sub = Array.from(this.prisma.memoryStore.subscriptions.values()).find(
@@ -172,25 +298,38 @@ export class PlatformAdminService {
   }
 
   async updateTenantPlan(tenantId: string, dto: UpdateTenantPlanDto, superAdminId: string) {
+    const plan = SAAS_PLANS[dto.plan.toLowerCase()] || SAAS_PLANS.growth;
+
+    if (this.prisma.isDbConnected) {
+      try {
+        await this.prisma.tenant.update({
+          where: { id: tenantId },
+          data: { plan: plan.tier },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Could not update tenant plan in DB: ${err.message}`);
+      }
+    }
+
     const tenant = this.prisma.memoryStore.tenants.get(tenantId);
-    if (!tenant) {
+    if (!tenant && !this.prisma.isDbConnected) {
       throw new NotFoundException(`Tenant with ID '${tenantId}' not found`);
     }
 
-    const plan = SAAS_PLANS[dto.plan.toLowerCase()] || SAAS_PLANS.growth;
-    const previousPlan = tenant.plan;
-
-    tenant.plan = plan.tier;
-    if (dto.features) {
-      tenant.features = { ...tenant.features, ...dto.features };
-    } else {
-      tenant.features = plan.features.reduce((acc: any, f: string) => {
-        acc[f] = true;
-        return acc;
-      }, {});
+    const previousPlan = tenant ? tenant.plan : 'starter';
+    if (tenant) {
+      tenant.plan = plan.tier;
+      if (dto.features) {
+        tenant.features = { ...tenant.features, ...dto.features };
+      } else {
+        tenant.features = plan.features.reduce((acc: any, f: string) => {
+          acc[f] = true;
+          return acc;
+        }, {});
+      }
+      tenant.updatedAt = new Date();
+      this.prisma.memoryStore.tenants.set(tenantId, tenant);
     }
-    tenant.updatedAt = new Date();
-    this.prisma.memoryStore.tenants.set(tenantId, tenant);
 
     // Sync subscription
     const sub = Array.from(this.prisma.memoryStore.subscriptions.values()).find(
