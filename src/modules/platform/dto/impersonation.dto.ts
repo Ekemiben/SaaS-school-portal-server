@@ -9,8 +9,12 @@ import {
 
 export class StartImpersonationDto {
   @IsString()
-  @IsNotEmpty()
-  targetTenantId: string;
+  @IsOptional()
+  targetTenantId?: string;
+
+  @IsString()
+  @IsOptional()
+  tenantId?: string;
 
   @IsString()
   @IsOptional()

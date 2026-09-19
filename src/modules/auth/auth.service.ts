@@ -2,46 +2,82 @@ import {
   Injectable,
   UnauthorizedException,
   ConflictException,
+  Logger,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../database/prisma.service.js';
 import * as bcrypt from 'bcryptjs';
 import { randomUUID } from 'crypto';
 import { ErrorCodes } from '../../common/constants/error-codes.js';
+import { SystemPermissions } from '../../common/constants/permissions.js';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
   ) {}
 
-  async login(tenantId: string, email: string, passwordPlain: string) {
+  async login(tenantId: string | undefined | null, email: string, passwordPlain: string) {
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Section 4 & 25: Always search within tenantId + normalizedEmail
-    let user = Array.from(this.prisma.memoryStore.users.values()).find(
-      (u) => u.tenantId === tenantId && u.email === normalizedEmail,
-    );
+    let user: any = null;
 
-    // If not found in tenant context, check if this is a Platform Administrator (Super Admin)
-    if (!user) {
-      if (this.prisma.isDbConnected) {
-        try {
+    // 1. Check PostgreSQL first if DB connected
+    if (this.prisma.isDbConnected) {
+      try {
+        if (tenantId) {
+          user = await this.prisma.user.findFirst({
+            where: { tenantId, email: normalizedEmail },
+            include: { tenant: { include: { domains: true } } },
+          });
+        }
+
+        // Check if platform user
+        if (!user) {
           const dbPlatUser = await this.prisma.user.findFirst({
             where: { email: normalizedEmail, tenantId: null },
           });
           if (dbPlatUser) {
             return this.platformLogin(email, passwordPlain);
           }
-        } catch {}
+        }
+
+        // If still not found and tenantId wasn't passed, find user across tenants
+        if (!user && !tenantId) {
+          user = await this.prisma.user.findFirst({
+            where: { email: normalizedEmail },
+            include: { tenant: { include: { domains: true } } },
+          });
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not query user from DB during login: ${err.message}`);
+      }
+    }
+
+    // 2. Fall back to memoryStore
+    if (!user) {
+      if (tenantId) {
+        user = Array.from(this.prisma.memoryStore.users.values()).find(
+          (u) => u.tenantId === tenantId && u.email === normalizedEmail,
+        );
       }
 
-      const memPlatUser = Array.from(this.prisma.memoryStore.users.values()).find(
-        (u) => (u.tenantId === null || u.tenantId === undefined) && u.email === normalizedEmail,
-      );
-      if (memPlatUser) {
-        return this.platformLogin(email, passwordPlain);
+      if (!user) {
+        const memPlatUser = Array.from(this.prisma.memoryStore.users.values()).find(
+          (u) => (u.tenantId === null || u.tenantId === undefined) && u.email === normalizedEmail,
+        );
+        if (memPlatUser) {
+          return this.platformLogin(email, passwordPlain);
+        }
+      }
+
+      if (!user && !tenantId) {
+        user = Array.from(this.prisma.memoryStore.users.values()).find(
+          (u) => u.email === normalizedEmail,
+        );
       }
     }
 
@@ -83,6 +119,19 @@ export class AuthService {
       try {
         user = await this.prisma.user.findFirst({
           where: { email: normalizedEmail, tenantId: null },
+          include: {
+            userRoles: {
+              include: {
+                role: {
+                  include: {
+                    permissions: {
+                      include: { permission: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
         });
       } catch {
         user = null;
@@ -131,10 +180,96 @@ export class AuthService {
       });
     }
 
+    // Extract or auto-seed platform permissions
+    let permissions: string[] = [];
+    if (userRole === 'SUPER_ADMIN') {
+      permissions = Object.values(SystemPermissions);
+    } else {
+      permissions = (user.userRoles || []).flatMap((ur: any) =>
+        (ur.role?.permissions || []).map((rp: any) => rp.permission?.name).filter(Boolean),
+      );
+
+      if (permissions.length === 0) {
+        const defaultPerms = userRole === 'PLATFORM_ADMIN'
+          ? [
+              SystemPermissions.PLATFORM_ADMIN,
+              SystemPermissions.PLATFORM_TENANT_VIEW,
+              SystemPermissions.PLATFORM_TENANT_CREATE,
+              SystemPermissions.PLATFORM_TENANT_UPDATE,
+              SystemPermissions.PLATFORM_TENANT_SUSPEND,
+              SystemPermissions.PLATFORM_USER_VIEW,
+              SystemPermissions.PLATFORM_AUDIT_VIEW,
+              SystemPermissions.PLATFORM_SETTINGS_VIEW,
+              SystemPermissions.IMPERSONATE_USER,
+              SystemPermissions.PLATFORM_IMPERSONATION_START,
+            ]
+          : [
+              SystemPermissions.PLATFORM_TENANT_VIEW,
+              SystemPermissions.PLATFORM_USER_VIEW,
+              SystemPermissions.PLATFORM_AUDIT_VIEW,
+              SystemPermissions.IMPERSONATE_USER,
+              SystemPermissions.PLATFORM_IMPERSONATION_START,
+            ];
+
+        // Seed to PostgreSQL if connected
+        if (this.prisma.isDbConnected && user.id) {
+          try {
+            const roleIdentifier = `PLATFORM_ROLE_${user.id}`;
+            let role = await this.prisma.role.findFirst({
+              where: { name: roleIdentifier, tenantId: null },
+            });
+            if (!role) {
+              role = await this.prisma.role.create({
+                data: {
+                  id: `rol_plat_${randomUUID().replace(/-/g, '').substring(0, 16)}`,
+                  name: roleIdentifier,
+                  description: `Assigned permissions for platform user ${user.id}`,
+                  isSystem: false,
+                  tenantId: null,
+                },
+              });
+            }
+
+            const existingUserRole = await this.prisma.userRole.findFirst({
+              where: { userId: user.id, roleId: role.id },
+            });
+            if (!existingUserRole) {
+              await this.prisma.userRole.create({
+                data: {
+                  id: `ur_${randomUUID().replace(/-/g, '').substring(0, 16)}`,
+                  userId: user.id,
+                  roleId: role.id,
+                },
+              });
+            }
+
+            const matchingPermissions = await this.prisma.permission.findMany({
+              where: { name: { in: defaultPerms } },
+            });
+            if (matchingPermissions.length > 0) {
+              await this.prisma.rolePermission.createMany({
+                data: matchingPermissions.map((p) => ({
+                  id: `rp_${randomUUID().replace(/-/g, '').substring(0, 16)}`,
+                  roleId: role.id,
+                  permissionId: p.id,
+                })),
+                skipDuplicates: true,
+              });
+            }
+          } catch (e: any) {
+            this.logger.warn(`Could not auto-seed platform permissions on login: ${e.message}`);
+          }
+        }
+        permissions = defaultPerms;
+      }
+    }
+
     return this.generateTokens({
       ...user,
       scope: 'PLATFORM',
       platformRole: userRole || 'SUPER_ADMIN',
+      permissions,
+      permissionIds: permissions,
     });
   }
 
@@ -149,6 +284,19 @@ export class AuthService {
     },
   ) {
     const normalizedEmail = data.email.toLowerCase().trim();
+
+    if (this.prisma.isDbConnected) {
+      try {
+        const existingDb = await this.prisma.user.findFirst({
+          where: { tenantId, email: normalizedEmail },
+        });
+        if (existingDb) {
+          throw new ConflictException('A user with this email address already exists in this school.');
+        }
+      } catch (err: any) {
+        if (err instanceof ConflictException) throw err;
+      }
+    }
 
     const existing = Array.from(this.prisma.memoryStore.users.values()).find(
       (u) => u.tenantId === tenantId && u.email === normalizedEmail,
@@ -192,9 +340,42 @@ export class AuthService {
       updatedAt: new Date(),
     };
 
+    if (this.prisma.isDbConnected) {
+      try {
+        await this.prisma.user.create({
+          data: {
+            id: userId,
+            tenantId,
+            email: normalizedEmail,
+            passwordHash,
+            firstName: data.firstName,
+            lastName: data.lastName,
+            phone: data.phone || null,
+            isActive: true,
+            isPlatformAdmin: false,
+          },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Could not persist school owner to DB: ${err.message}`);
+      }
+    }
+
     this.prisma.memoryStore.users.set(userId, newUser);
 
-    return this.generateTokens(newUser);
+    let tenant: any = null;
+    if (this.prisma.isDbConnected) {
+      try {
+        tenant = await this.prisma.tenant.findUnique({
+          where: { id: tenantId },
+          include: { domains: true },
+        });
+      } catch {}
+    }
+    if (!tenant) {
+      tenant = this.prisma.memoryStore.tenants.get(tenantId);
+    }
+
+    return this.generateTokens({ ...newUser, tenant });
   }
 
   async refreshToken(refreshToken: string) {
@@ -250,8 +431,43 @@ export class AuthService {
       throw new UnauthorizedException('User not found or does not match school context.');
     }
 
+    let tenant: any = null;
+    if (user.tenantId) {
+      if (this.prisma.isDbConnected) {
+        try {
+          tenant = await this.prisma.tenant.findUnique({
+            where: { id: user.tenantId },
+            include: { domains: true },
+          });
+        } catch {}
+      }
+      if (!tenant) {
+        tenant = this.prisma.memoryStore.tenants.get(user.tenantId);
+      }
+    }
+
     const { passwordHash: _, ...safeUser } = user;
-    return safeUser;
+    return {
+      user: safeUser,
+      ...safeUser,
+      tenant: tenant
+        ? {
+            id: tenant.id,
+            name: tenant.name,
+            slug: tenant.slug,
+            logoUrl: tenant.logoUrl,
+            faviconUrl: tenant.faviconUrl,
+            primaryColor: tenant.primaryColor,
+            secondaryColor: tenant.secondaryColor,
+            timezone: tenant.timezone,
+            locale: tenant.locale,
+            currency: tenant.currency,
+            status: tenant.status,
+            features: tenant.features || {},
+            domains: tenant.domains || [],
+          }
+        : null,
+    };
   }
 
   async forgotPassword(tenantId: string, email: string) {
@@ -391,6 +607,16 @@ export class AuthService {
       ? (user.platformRole || user.role || user.roles?.[0] || 'SUPER_ADMIN')
       : (user.role || user.roles?.[0] || 'School Member');
 
+    const effectivePermissions = isPlatformUser && role === 'SUPER_ADMIN'
+      ? Object.values(SystemPermissions)
+      : (user.permissionIds || user.permissions || []);
+
+    // Keep JWT payload compact to never exceed browser 4096-byte cookie limit.
+    // SUPER_ADMIN inherently possesses full platform authority.
+    const tokenPermissions = isPlatformUser && role === 'SUPER_ADMIN'
+      ? ['*']
+      : effectivePermissions;
+
     const payload = {
       sub: user.id,
       id: user.id,
@@ -399,8 +625,7 @@ export class AuthService {
       scope,
       role,
       roles: isPlatformUser ? [role] : (user.roles || [role]),
-      permissions: user.permissionIds || user.permissions || [],
-      permissionIds: user.permissionIds || user.permissions || [],
+      permissions: tokenPermissions,
       campusIds: user.campusIds || [],
       activeCampusId: user.activeCampusId || user.campusIds?.[0] || null,
       isPlatformAdmin: isPlatformUser || !!user.isPlatformAdmin,
@@ -423,6 +648,39 @@ export class AuthService {
 
     const { passwordHash: _, ...safeUser } = user;
 
+    let tenant: any = user.tenant || null;
+    if (!tenant && user.tenantId) {
+      if (this.prisma.isDbConnected) {
+        try {
+          tenant = await this.prisma.tenant.findUnique({
+            where: { id: user.tenantId },
+            include: { domains: true },
+          });
+        } catch {}
+      }
+      if (!tenant) {
+        tenant = this.prisma.memoryStore.tenants.get(user.tenantId);
+      }
+    }
+
+    const sanitizedTenant = tenant
+      ? {
+          id: tenant.id,
+          name: tenant.name,
+          slug: tenant.slug,
+          logoUrl: tenant.logoUrl,
+          faviconUrl: tenant.faviconUrl,
+          primaryColor: tenant.primaryColor,
+          secondaryColor: tenant.secondaryColor,
+          timezone: tenant.timezone,
+          locale: tenant.locale,
+          currency: tenant.currency,
+          status: tenant.status,
+          features: tenant.features || {},
+          domains: tenant.domains || [],
+        }
+      : null;
+
     return {
       accessToken,
       refreshToken,
@@ -431,7 +689,10 @@ export class AuthService {
         tenantId: user.tenantId || null,
         scope,
         role,
+        permissions: effectivePermissions,
+        permissionIds: effectivePermissions,
       },
+      tenant: sanitizedTenant,
       expiresIn: 3600,
     };
   }

@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Body, Res } from '@nestjs/common';
+import { Controller, Post, Get, Body, Res, BadRequestException } from '@nestjs/common';
 import { AuthService } from './auth.service.js';
 import { Public } from '../../common/decorators/public.decorator.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
@@ -35,11 +35,12 @@ export class AuthController {
   @Post('login')
   async login(
     @CurrentTenant() tenant: TenantContext,
-    @Body() body: { email: string; password: string },
+    @Body() body: { email: string; password: string; tenantId?: string },
     @Res({ passthrough: true }) res: Response,
   ) {
+    const targetTenantId = body.tenantId || tenant?.tenantId || undefined;
     const result = await this.authService.login(
-      tenant?.tenantId || 'tenant_greenfield_100',
+      targetTenantId,
       body.email,
       body.password,
     );
@@ -61,6 +62,7 @@ export class AuthController {
     @CurrentTenant() tenant: TenantContext,
     @Body()
     body: {
+      tenantId?: string;
       email: string;
       password: string;
       firstName: string;
@@ -69,8 +71,13 @@ export class AuthController {
     },
     @Res({ passthrough: true }) res: Response,
   ) {
+    const targetTenantId = body.tenantId || tenant?.tenantId;
+    if (!targetTenantId) {
+      throw new BadRequestException('A valid school tenantId is required for school owner registration.');
+    }
+
     const result = await this.authService.registerSchoolOwner(
-      tenant?.tenantId || 'tenant_greenfield_100',
+      targetTenantId,
       {
         email: body.email,
         passwordPlain: body.password,
