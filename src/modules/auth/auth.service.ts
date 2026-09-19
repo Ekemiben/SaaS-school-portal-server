@@ -20,18 +20,63 @@ export class AuthService {
     private readonly jwtService: JwtService,
   ) {}
 
-  async login(tenantId: string | undefined | null, email: string, passwordPlain: string) {
+  async login(tenantIdentifier: string | undefined | null, email: string, passwordPlain: string) {
     const normalizedEmail = email.toLowerCase().trim();
+    let targetTenantId: string | undefined = undefined;
+
+    if (tenantIdentifier) {
+      if (this.prisma.isDbConnected) {
+        try {
+          const tenantRecord = await this.prisma.tenant.findFirst({
+            where: {
+              OR: [
+                { id: tenantIdentifier },
+                { slug: tenantIdentifier.toLowerCase().trim() },
+              ],
+            },
+          });
+          if (tenantRecord) {
+            targetTenantId = tenantRecord.id;
+          }
+        } catch {}
+      }
+
+      if (!targetTenantId) {
+        const memTenant = this.prisma.memoryStore.tenants.get(tenantIdentifier) ||
+          Array.from(this.prisma.memoryStore.tenants.values()).find(
+            (t) => t.slug === tenantIdentifier.toLowerCase().trim() || t.id === tenantIdentifier,
+          );
+        if (memTenant) {
+          targetTenantId = memTenant.id;
+        } else {
+          targetTenantId = tenantIdentifier;
+        }
+      }
+    }
 
     let user: any = null;
 
     // 1. Check PostgreSQL first if DB connected
     if (this.prisma.isDbConnected) {
       try {
-        if (tenantId) {
+        if (targetTenantId) {
           user = await this.prisma.user.findFirst({
-            where: { tenantId, email: normalizedEmail },
-            include: { tenant: { include: { domains: true } } },
+            where: { tenantId: targetTenantId, email: normalizedEmail },
+            include: {
+              tenant: { include: { domains: true } },
+              userRoles: {
+                include: {
+                  role: {
+                    include: {
+                      permissions: {
+                        include: { permission: true },
+                      },
+                    },
+                  },
+                },
+              },
+              userCampuses: true,
+            },
           });
         }
 
@@ -39,17 +84,44 @@ export class AuthService {
         if (!user) {
           const dbPlatUser = await this.prisma.user.findFirst({
             where: { email: normalizedEmail, tenantId: null },
+            include: {
+              userRoles: {
+                include: {
+                  role: {
+                    include: {
+                      permissions: {
+                        include: { permission: true },
+                      },
+                    },
+                  },
+                },
+              },
+            },
           });
           if (dbPlatUser) {
             return this.platformLogin(email, passwordPlain);
           }
         }
 
-        // If still not found and tenantId wasn't passed, find user across tenants
-        if (!user && !tenantId) {
+        // If still not found and targetTenantId wasn't passed, find user across tenants
+        if (!user && !targetTenantId) {
           user = await this.prisma.user.findFirst({
             where: { email: normalizedEmail },
-            include: { tenant: { include: { domains: true } } },
+            include: {
+              tenant: { include: { domains: true } },
+              userRoles: {
+                include: {
+                  role: {
+                    include: {
+                      permissions: {
+                        include: { permission: true },
+                      },
+                    },
+                  },
+                },
+              },
+              userCampuses: true,
+            },
           });
         }
       } catch (err: any) {
@@ -59,9 +131,9 @@ export class AuthService {
 
     // 2. Fall back to memoryStore
     if (!user) {
-      if (tenantId) {
+      if (targetTenantId) {
         user = Array.from(this.prisma.memoryStore.users.values()).find(
-          (u) => u.tenantId === tenantId && u.email === normalizedEmail,
+          (u) => u.tenantId === targetTenantId && u.email === normalizedEmail,
         );
       }
 
@@ -74,7 +146,7 @@ export class AuthService {
         }
       }
 
-      if (!user && !tenantId) {
+      if (!user && !targetTenantId) {
         user = Array.from(this.prisma.memoryStore.users.values()).find(
           (u) => u.email === normalizedEmail,
         );
@@ -107,7 +179,103 @@ export class AuthService {
       });
     }
 
-    return this.generateTokens(user);
+    // Auto-heal legacy school users missing UserRole in PostgreSQL
+    if (this.prisma.isDbConnected && user.tenantId && (!user.userRoles || user.userRoles.length === 0)) {
+      try {
+        let role = await this.prisma.role.findFirst({
+          where: { tenantId: user.tenantId, name: 'School Owner' },
+        });
+        if (!role) {
+          role = await this.prisma.role.findFirst({
+            where: { tenantId: user.tenantId, name: 'School Admin' },
+          });
+        }
+        if (!role) {
+          role = await this.prisma.role.create({
+            data: {
+              tenantId: user.tenantId,
+              name: 'School Owner',
+              description: 'Primary owner and administrator of the school',
+              isSystem: true,
+            },
+          });
+        }
+
+        const mainCampus = await this.prisma.campus.findFirst({
+          where: { tenantId: user.tenantId, isMain: true },
+        }) || await this.prisma.campus.findFirst({
+          where: { tenantId: user.tenantId },
+        });
+
+        await this.prisma.userRole.create({
+          data: {
+            userId: user.id,
+            roleId: role.id,
+          },
+        });
+
+        if (mainCampus) {
+          await this.prisma.userCampus.create({
+            data: {
+              userId: user.id,
+              campusId: mainCampus.id,
+              isDefault: true,
+            },
+          }).catch(() => {});
+        }
+
+        const permissions = await this.prisma.permission.findMany();
+        if (permissions.length > 0) {
+          const schoolPerms = permissions.filter((p) => !p.name.startsWith('platform.'));
+          await this.prisma.rolePermission.createMany({
+            data: schoolPerms.map((p) => ({
+              roleId: role.id,
+              permissionId: p.id,
+            })),
+            skipDuplicates: true,
+          });
+        }
+
+        user = await this.prisma.user.findFirst({
+          where: { id: user.id },
+          include: {
+            tenant: { include: { domains: true } },
+            userRoles: {
+              include: {
+                role: {
+                  include: {
+                    permissions: {
+                      include: { permission: true },
+                    },
+                  },
+                },
+              },
+            },
+            userCampuses: true,
+          },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Could not auto-heal legacy user roles in DB: ${err.message}`);
+      }
+    }
+
+    const roles = (user.userRoles || []).map((ur: any) => ur.role?.name).filter(Boolean);
+    const role = user.platformRole || (roles.length > 0 ? roles[0] : (user.role || (user.isPlatformAdmin ? 'SUPER_ADMIN' : 'School Admin')));
+    const permissions = (user.userRoles || []).flatMap((ur: any) =>
+      (ur.role?.permissions || []).map((rp: any) => rp.permission?.name).filter(Boolean),
+    );
+    const campusIds = (user.userCampuses || []).map((uc: any) => uc.campusId);
+
+    const enrichedUser = {
+      ...user,
+      role,
+      roles: roles.length > 0 ? roles : (user.roles || [role]),
+      permissions: permissions.length > 0 ? permissions : (user.permissions || []),
+      permissionIds: permissions.length > 0 ? permissions : (user.permissionIds || []),
+      campusIds: campusIds.length > 0 ? campusIds : (user.campusIds || []),
+    };
+
+    return this.generateTokens(enrichedUser);
   }
 
   async platformLogin(email: string, passwordPlain: string) {
@@ -342,6 +510,26 @@ export class AuthService {
 
     if (this.prisma.isDbConnected) {
       try {
+        let role = await this.prisma.role.findFirst({
+          where: { tenantId, name: 'School Owner' },
+        });
+        if (!role) {
+          role = await this.prisma.role.create({
+            data: {
+              tenantId,
+              name: 'School Owner',
+              description: 'Primary owner and administrator of the school',
+              isSystem: true,
+            },
+          });
+        }
+
+        const mainCampus = await this.prisma.campus.findFirst({
+          where: { tenantId, isMain: true },
+        }) || await this.prisma.campus.findFirst({
+          where: { tenantId },
+        });
+
         await this.prisma.user.create({
           data: {
             id: userId,
@@ -353,10 +541,34 @@ export class AuthService {
             phone: data.phone || null,
             isActive: true,
             isPlatformAdmin: false,
+            userRoles: {
+              create: {
+                roleId: role.id,
+              },
+            },
+            userCampuses: mainCampus ? {
+              create: {
+                campusId: mainCampus.id,
+                isDefault: true,
+              },
+            } : undefined,
           },
         });
+
+        const permissions = await this.prisma.permission.findMany();
+        if (permissions.length > 0) {
+          const schoolPerms = permissions.filter((p) => !p.name.startsWith('platform.'));
+          await this.prisma.rolePermission.createMany({
+            data: schoolPerms.map((p) => ({
+              roleId: role.id,
+              permissionId: p.id,
+            })),
+            skipDuplicates: true,
+          });
+        }
       } catch (err: any) {
-        this.logger.warn(`Could not persist school owner to DB: ${err.message}`);
+        this.logger.error(`Could not persist school owner to DB: ${err.message}`);
+        throw err;
       }
     }
 
@@ -470,24 +682,103 @@ export class AuthService {
     };
   }
 
-  async forgotPassword(tenantId: string, email: string) {
+  async forgotPassword(tenantIdentifier: string | undefined | null, email: string) {
     const normalizedEmail = email.toLowerCase().trim();
-    const user = Array.from(this.prisma.memoryStore.users.values()).find(
-      (u) => u.tenantId === tenantId && u.email === normalizedEmail,
-    );
+    let targetTenantId: string | undefined = undefined;
+
+    if (tenantIdentifier) {
+      if (this.prisma.isDbConnected) {
+        try {
+          const tenantRecord = await this.prisma.tenant.findFirst({
+            where: {
+              OR: [
+                { id: tenantIdentifier },
+                { slug: tenantIdentifier.toLowerCase().trim() },
+              ],
+            },
+          });
+          if (tenantRecord) {
+            targetTenantId = tenantRecord.id;
+          }
+        } catch {}
+      }
+      if (!targetTenantId) {
+        const memTenant = this.prisma.memoryStore.tenants.get(tenantIdentifier) ||
+          Array.from(this.prisma.memoryStore.tenants.values()).find(
+            (t) => t.slug === tenantIdentifier.toLowerCase().trim() || t.id === tenantIdentifier,
+          );
+        if (memTenant) {
+          targetTenantId = memTenant.id;
+        } else {
+          targetTenantId = tenantIdentifier;
+        }
+      }
+    }
+
+    let user: any = null;
+    if (this.prisma.isDbConnected) {
+      try {
+        if (targetTenantId) {
+          user = await this.prisma.user.findFirst({
+            where: { email: normalizedEmail, tenantId: targetTenantId, isActive: true },
+            include: { tenant: true },
+          });
+        } else {
+          user = await this.prisma.user.findFirst({
+            where: { email: normalizedEmail, isActive: true },
+            include: { tenant: true },
+          });
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not query user for password reset in DB: ${err.message}`);
+      }
+    }
 
     if (!user) {
-      // Return ambiguous message to prevent email enumeration
+      if (targetTenantId) {
+        user = Array.from(this.prisma.memoryStore.users.values()).find(
+          (u) => u.tenantId === targetTenantId && u.email === normalizedEmail && u.isActive,
+        );
+      } else {
+        user = Array.from(this.prisma.memoryStore.users.values()).find(
+          (u) => u.email === normalizedEmail && u.isActive,
+        );
+      }
+    }
+
+    if (!user) {
+      // Return ambiguous message to prevent email enumeration (Constitution v2.1 Section 26)
       return { success: true, message: 'If an account exists, a password reset link has been dispatched.' };
     }
 
-    const token = `rst_${randomUUID()}`;
+    const token = `rst_${randomUUID().replace(/-/g, '')}`;
+    const expiresAt = new Date(Date.now() + 3600000); // 1 hour
+
+    // Persist in PostgreSQL PasswordResetToken table
+    if (this.prisma.isDbConnected) {
+      try {
+        await this.prisma.passwordResetToken.create({
+          data: {
+            userId: user.id,
+            token,
+            expiresAt,
+            used: false,
+          },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Could not persist PasswordResetToken to DB: ${err.message}`);
+      }
+    }
+
+    // Mirror in memoryStore
     this.prisma.memoryStore.resetTokens.set(token, {
       token,
       userId: user.id,
-      tenantId,
-      expiresAt: new Date(Date.now() + 3600000), // 1 hour
+      tenantId: user.tenantId,
+      expiresAt,
     });
+
+    this.logger.log(`[PasswordReset] Reset token generated for user ${user.email} (tenant: ${user.tenantId || 'platform'})`);
 
     return {
       success: true,
@@ -496,31 +787,82 @@ export class AuthService {
     };
   }
 
-  async resetPassword(tenantId: string, token: string, newPasswordPlain: string) {
-    const record = this.prisma.memoryStore.resetTokens.get(token);
-    if (!record || record.tenantId !== tenantId || new Date() > record.expiresAt) {
+  async resetPassword(tenantIdentifier: string | undefined | null, token: string, newPasswordPlain: string) {
+    let resetRecord: any = null;
+
+    if (this.prisma.isDbConnected) {
+      try {
+        resetRecord = await this.prisma.passwordResetToken.findUnique({
+          where: { token },
+          include: { user: true },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Could not query PasswordResetToken from DB: ${err.message}`);
+      }
+    }
+
+    if (!resetRecord) {
+      const memRecord = this.prisma.memoryStore.resetTokens.get(token);
+      if (memRecord) {
+        const memUser = this.prisma.memoryStore.users.get(memRecord.userId);
+        resetRecord = { ...memRecord, user: memUser, used: false };
+      }
+    }
+
+    if (!resetRecord || resetRecord.used || new Date() > new Date(resetRecord.expiresAt)) {
       throw new UnauthorizedException({
         code: ErrorCodes.UNAUTHORIZED,
         message: 'Password reset token is invalid or expired.',
       });
     }
 
-    const user = this.prisma.memoryStore.users.get(record.userId);
+    const user = resetRecord.user;
     if (!user) {
       throw new UnauthorizedException('User account no longer exists.');
     }
 
-    user.passwordHash = await bcrypt.hash(newPasswordPlain, 12);
-    user.updatedAt = new Date();
-    this.prisma.memoryStore.users.set(user.id, user);
+    const passwordHash = await bcrypt.hash(newPasswordPlain, 12);
+
+    if (this.prisma.isDbConnected) {
+      try {
+        await this.prisma.user.update({
+          where: { id: user.id },
+          data: { passwordHash, updatedAt: new Date() },
+        });
+        if (resetRecord.id) {
+          await this.prisma.passwordResetToken.update({
+            where: { id: resetRecord.id },
+            data: { used: true },
+          });
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not update reset password in DB: ${err.message}`);
+      }
+    }
+
+    const memUser = this.prisma.memoryStore.users.get(user.id);
+    if (memUser) {
+      memUser.passwordHash = passwordHash;
+      memUser.updatedAt = new Date();
+      this.prisma.memoryStore.users.set(user.id, memUser);
+    }
     this.prisma.memoryStore.resetTokens.delete(token);
 
     return { success: true, message: 'Password has been reset successfully. Please log in.' };
   }
 
   async changePassword(userId: string, tenantId: string, currentPasswordPlain: string, newPasswordPlain: string) {
-    const user = this.prisma.memoryStore.users.get(userId);
-    if (!user || user.tenantId !== tenantId) {
+    let user: any = null;
+    if (this.prisma.isDbConnected) {
+      try {
+        user = await this.prisma.user.findUnique({ where: { id: userId } });
+      } catch {}
+    }
+    if (!user) {
+      user = this.prisma.memoryStore.users.get(userId);
+    }
+
+    if (!user || (tenantId && user.tenantId && user.tenantId !== tenantId)) {
       throw new UnauthorizedException('User not found.');
     }
 
@@ -532,9 +874,25 @@ export class AuthService {
       });
     }
 
-    user.passwordHash = await bcrypt.hash(newPasswordPlain, 12);
-    user.updatedAt = new Date();
-    this.prisma.memoryStore.users.set(user.id, user);
+    const passwordHash = await bcrypt.hash(newPasswordPlain, 12);
+
+    if (this.prisma.isDbConnected) {
+      try {
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: { passwordHash, updatedAt: new Date() },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Could not update changed password in DB: ${err.message}`);
+      }
+    }
+
+    const memUser = this.prisma.memoryStore.users.get(userId);
+    if (memUser) {
+      memUser.passwordHash = passwordHash;
+      memUser.updatedAt = new Date();
+      this.prisma.memoryStore.users.set(userId, memUser);
+    }
 
     return { success: true, message: 'Password updated successfully.' };
   }

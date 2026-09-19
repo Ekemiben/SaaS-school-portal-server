@@ -35,12 +35,12 @@ export class AuthController {
   @Post('login')
   async login(
     @CurrentTenant() tenant: TenantContext,
-    @Body() body: { email: string; password: string; tenantId?: string },
+    @Body() body: { email: string; password: string; tenantId?: string; tenantSlug?: string },
     @Res({ passthrough: true }) res: Response,
   ) {
-    const targetTenantId = body.tenantId || tenant?.tenantId || undefined;
+    const targetTenant = body.tenantId || body.tenantSlug || tenant?.tenantId || tenant?.slug || undefined;
     const result = await this.authService.login(
-      targetTenantId,
+      targetTenant,
       body.email,
       body.password,
     );
@@ -65,8 +65,9 @@ export class AuthController {
       tenantId?: string;
       email: string;
       password: string;
-      firstName: string;
-      lastName: string;
+      firstName?: string;
+      lastName?: string;
+      name?: string;
       phone?: string;
     },
     @Res({ passthrough: true }) res: Response,
@@ -76,13 +77,17 @@ export class AuthController {
       throw new BadRequestException('A valid school tenantId is required for school owner registration.');
     }
 
+    const nameParts = (body.firstName ? `${body.firstName} ${body.lastName || ''}` : (body.name || 'School Owner')).trim().split(/\s+/);
+    const firstName = body.firstName || nameParts[0] || 'School';
+    const lastName = body.lastName || nameParts.slice(1).join(' ') || 'Owner';
+
     const result = await this.authService.registerSchoolOwner(
       targetTenantId,
       {
         email: body.email,
         passwordPlain: body.password,
-        firstName: body.firstName,
-        lastName: body.lastName,
+        firstName,
+        lastName,
         phone: body.phone,
       },
     );
@@ -126,17 +131,21 @@ export class AuthController {
   async forgotPassword(
     @CurrentTenant() tenant: TenantContext,
     @Body('email') email: string,
+    @Body('tenantId') bodyTenantId?: string,
+    @Body('tenantSlug') bodyTenantSlug?: string,
   ) {
-    return this.authService.forgotPassword(tenant.tenantId, email);
+    const targetTenant = bodyTenantId || bodyTenantSlug || tenant?.tenantId || tenant?.slug || undefined;
+    return this.authService.forgotPassword(targetTenant, email);
   }
 
   @Public()
   @Post('reset-password')
   async resetPassword(
     @CurrentTenant() tenant: TenantContext,
-    @Body() body: { token: string; newPassword: string },
+    @Body() body: { token: string; newPassword: string; tenantId?: string; tenantSlug?: string },
   ) {
-    return this.authService.resetPassword(tenant.tenantId, body.token, body.newPassword);
+    const targetTenant = body.tenantId || body.tenantSlug || tenant?.tenantId || tenant?.slug || undefined;
+    return this.authService.resetPassword(targetTenant, body.token, body.newPassword);
   }
 
   @Post('change-password')
