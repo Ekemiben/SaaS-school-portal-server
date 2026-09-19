@@ -67,9 +67,11 @@ import { InventoryModule } from './modules/inventory/inventory.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
 import { DataExchangeModule } from './modules/data-exchange/data-exchange.module.js';
 import { AiModule } from './modules/ai/ai.module.js';
+import { WebsiteModule } from './modules/website/website.module.js';
 
 @Module({
   imports: [
+    WebsiteModule,
     AiModule,
     HealthModule,
     MedicalModule,

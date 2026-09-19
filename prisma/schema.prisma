@@ -71,6 +71,23 @@ enum NotificationChannel {
   IN_APP
 }
 
+enum ContentPublishStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum AnnouncementPriority {
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+}
+
 model Tenant {
   id             String       @id @default(uuid())
   name           String
@@ -174,6 +191,13 @@ model Tenant {
   dataImportJobs                DataImportJob[]
   dataExportJobs                DataExportJob[]
   outboxEvents                  OutboxEvent[]
+  websiteConfig                 WebsiteConfig?
+  publicPages                   PublicPage[]
+  publicNews                    PublicNews[]
+  publicEvents                  PublicEvent[]
+  publicAnnouncements           PublicAnnouncement[]
+  galleryMedia                  GalleryMedia[]
+  publicAdmissionInquiries      PublicAdmissionInquiry[]
 
   @@index([slug])
   @@index([status])
@@ -645,7 +669,7 @@ model Attendance {
   subject Subject?           @relation(fields: [subjectId], references: [id], onDelete: SetNull)
   session AttendanceSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
 
-  @@unique([tenantId, studentId, classId, subjectId, sessionId, date])
+  @@index([tenantId, studentId, classId, subjectId, sessionId, date])
   @@index([tenantId])
   @@index([tenantId, campusId])
   @@index([tenantId, classId, date])
@@ -2817,3 +2841,165 @@ model OutboxEvent {
   @@index([status, createdAt])
   @@index([eventType])
 }
+
+model WebsiteConfig {
+  id                String   @id @default(uuid())
+  tenantId          String   @unique
+  motto             String?
+  tagline           String?
+  aboutStory        String?  @db.Text
+  aboutMission      String?  @db.Text
+  aboutVision       String?  @db.Text
+  aboutValues       String?  @db.Text
+  principalName     String?
+  principalTitle    String?  @default("Principal")
+  principalMessage  String?  @db.Text
+  principalPhotoUrl String?
+  heroTitle         String?
+  heroSubtitle      String?
+  heroCtaText       String?  @default("Apply Now")
+  heroCtaLink       String?  @default("/admissions")
+  heroImageUrl      String?
+  contactEmail      String?
+  contactPhone      String?
+  address           String?
+  mapCoordinates    String?
+  facebookUrl       String?
+  twitterUrl        String?
+  instagramUrl      String?
+  linkedinUrl       String?
+  youtubeUrl        String?
+  seoTitle          String?
+  seoDescription    String?
+  seoKeywords       String?
+  isPublished       Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+model PublicPage {
+  id              String               @id @default(uuid())
+  tenantId        String
+  slug            String
+  title           String
+  content         String               @db.Text
+  template        String               @default("standard")
+  metaTitle       String?
+  metaDescription String?
+  status          ContentPublishStatus @default(DRAFT)
+  publishedAt     DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, status])
+}
+
+model PublicNews {
+  id            String               @id @default(uuid())
+  tenantId      String
+  slug          String
+  title         String
+  summary       String?              @db.Text
+  content       String               @db.Text
+  coverImageUrl String?
+  authorName    String?
+  category      String?              @default("General")
+  status        ContentPublishStatus @default(DRAFT)
+  publishedAt   DateTime?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, status])
+  @@index([tenantId, publishedAt])
+}
+
+model PublicEvent {
+  id            String               @id @default(uuid())
+  tenantId      String
+  slug          String
+  title         String
+  description   String?              @db.Text
+  location      String?
+  startDate     DateTime
+  endDate       DateTime?
+  allDay        Boolean              @default(false)
+  coverImageUrl String?
+  status        ContentPublishStatus @default(DRAFT)
+  publishedAt   DateTime?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, status])
+  @@index([tenantId, startDate])
+}
+
+model PublicAnnouncement {
+  id          String               @id @default(uuid())
+  tenantId    String
+  title       String
+  content     String               @db.Text
+  priority    AnnouncementPriority @default(NORMAL)
+  status      ContentPublishStatus @default(DRAFT)
+  publishedAt DateTime?
+  expiresAt   DateTime?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@index([tenantId, publishedAt])
+}
+
+model GalleryMedia {
+  id         String               @id @default(uuid())
+  tenantId   String
+  title      String?
+  caption    String?
+  mediaUrl   String
+  mediaType  MediaType            @default(IMAGE)
+  albumName  String               @default("General")
+  orderIndex Int                  @default(0)
+  status     ContentPublishStatus @default(PUBLISHED)
+  createdAt  DateTime             @default(now())
+  updatedAt  DateTime             @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, albumName])
+  @@index([tenantId, status])
+}
+
+model PublicAdmissionInquiry {
+  id            String   @id @default(uuid())
+  tenantId      String
+  studentName   String
+  parentName    String
+  email         String
+  phone         String?
+  gradeApplying String?
+  message       String?  @db.Text
+  status        String   @default("NEW")
+  notes         String?  @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+}
+

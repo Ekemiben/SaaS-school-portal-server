@@ -53,23 +53,18 @@ export class TenantResolverMiddleware implements NestMiddleware {
             }
             tenant = tenantDomain.tenant;
           } else {
-            // 2. Check if subdomain match (e.g. greenfield.yoursaas.com or greenfield.schoolportal.com)
+            // 2. Check if subdomain match (e.g. greenfield.yoursaas.com or greenfield.localhost)
             const parts = host.split('.');
-            if (parts.length >= 3) {
+            if (parts.length >= 2 && (parts.length >= 3 || parts[parts.length - 1] === 'localhost')) {
               const sub = parts[0];
-              tenant = await this.prisma.tenant.findUnique({
-                where: { slug: sub },
-              });
+              if (!['www', 'api', 'admin', 'app', 'localhost'].includes(sub)) {
+                tenant = await this.prisma.tenant.findUnique({
+                  where: { slug: sub },
+                  include: { domains: true },
+                });
+              }
             }
           }
-        }
-
-        // Default development / test tenant fallback if none found (only for non-platform routes)
-        const isPlatformRoute = req.originalUrl?.includes('/api/v1/platform') || req.originalUrl?.includes('/api/v1/auth/platform');
-        if (!tenant && !isPlatformRoute) {
-          tenant = await this.prisma.tenant.findFirst({
-            where: { status: 'ACTIVE' },
-          });
         }
       } catch (err: any) {
         if (err instanceof HttpException) throw err;
@@ -80,7 +75,6 @@ export class TenantResolverMiddleware implements NestMiddleware {
 
     // In-memory fallback if not found or DB not connected
     if (!tenant) {
-      const isPlatformRoute = req.originalUrl?.includes('/api/v1/platform') || req.originalUrl?.includes('/api/v1/auth/platform');
       if (headerTenantId) {
         tenant = this.prisma.memoryStore.tenants.get(headerTenantId);
       } else if (headerTenantSlug) {
@@ -103,16 +97,16 @@ export class TenantResolverMiddleware implements NestMiddleware {
           }
           tenant = this.prisma.memoryStore.tenants.get(domainMatch.tenantId);
         } else {
-          const sub = host.split('.')[0];
-          tenant = Array.from(this.prisma.memoryStore.tenants.values()).find(
-            (t) => t.slug === sub,
-          );
+          const parts = host.split('.');
+          if (parts.length >= 2 && (parts.length >= 3 || parts[parts.length - 1] === 'localhost')) {
+            const sub = parts[0];
+            if (!['www', 'api', 'admin', 'app', 'localhost'].includes(sub)) {
+              tenant = Array.from(this.prisma.memoryStore.tenants.values()).find(
+                (t) => t.slug === sub,
+              );
+            }
+          }
         }
-      }
-
-      // Default fallback demo tenant (only for non-platform routes)
-      if (!tenant && !isPlatformRoute) {
-        tenant = Array.from(this.prisma.memoryStore.tenants.values())[0] || null;
       }
     }
 
