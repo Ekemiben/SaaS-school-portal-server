@@ -13,12 +13,15 @@ export class TenantResolverMiddleware implements NestMiddleware {
     const requestId = reqAny.requestId || 'req_unknown';
 
     // Check headers first (e.g. for API clients, tests, or proxy headers)
-    const headerTenantId = req.headers['x-tenant-id'] as string;
-    const headerTenantSlug = req.headers['x-tenant-slug'] as string;
+    // Master Architecture Step 1: Public auth endpoints (login) must NOT be biased by client tenant headers
+    const isAuthRoute = req.originalUrl?.includes('/auth/login') || req.originalUrl?.includes('/auth/platform/login') || req.path?.includes('/auth/login') || req.path?.includes('/auth/platform/login');
+    const headerTenantId = !isAuthRoute ? (req.headers['x-tenant-id'] as string) : undefined;
+    const headerTenantSlug = !isAuthRoute ? (req.headers['x-tenant-slug'] as string) : undefined;
     const headerTenantDomain = req.headers['x-tenant-domain'] as string;
 
     // Check hostname
     const host = (headerTenantDomain || req.headers.host || '').split(':')[0].toLowerCase();
+    const isRootHost = ['localhost', '127.0.0.1', '0.0.0.0', 'yourplatform.com', 'www.yourplatform.com', 'saas.local'].includes(host);
 
     let tenant: any = null;
 
@@ -34,7 +37,7 @@ export class TenantResolverMiddleware implements NestMiddleware {
             where: { slug: headerTenantSlug },
             include: { domains: true },
           });
-        } else if (host && host !== 'localhost' && host !== '127.0.0.1') {
+        } else if (host && !isRootHost) {
           // 1. Check custom or platform subdomain domain table
           const tenantDomain = await this.prisma.tenantDomain.findUnique({
             where: { domain: host },
@@ -81,7 +84,7 @@ export class TenantResolverMiddleware implements NestMiddleware {
         tenant = Array.from(this.prisma.memoryStore.tenants.values()).find(
           (t) => t.slug === headerTenantSlug,
         );
-      } else if (host && host !== 'localhost' && host !== '127.0.0.1') {
+      } else if (host && !isRootHost) {
         const domainMatch = Array.from(this.prisma.memoryStore.domains.values()).find(
           (d) => d.domain === host,
         );

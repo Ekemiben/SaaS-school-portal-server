@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Body, Res, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Res, BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { AuthService } from './auth.service.js';
 import { Public } from '../../common/decorators/public.decorator.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
@@ -38,9 +38,49 @@ export class AuthController {
     @Body() body: { email: string; password: string; tenantId?: string; tenantSlug?: string },
     @Res({ passthrough: true }) res: Response,
   ) {
-    const targetTenant = body.tenantId || body.tenantSlug || tenant?.tenantId || tenant?.slug || undefined;
+    const rawIdentifier = body.tenantSlug || body.tenantId || tenant?.slug || tenant?.tenantId;
+
+    if (!rawIdentifier) {
+      // Platform root domain sign-in without explicit school identifier
+      // Allow platform administrators (tenantId === null) to authenticate
+      const isPlatform = await this.authService.isPlatformUser(body.email);
+      if (isPlatform) {
+        const platformResult = await this.authService.platformLogin(body.email, body.password);
+        res.cookie('accessToken', platformResult.accessToken, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'lax',
+          maxAge: 3600 * 1000,
+        });
+        return platformResult;
+      }
+
+      // School user must explicitly provide school slug/domain
+      throw new BadRequestException({
+        code: 'TENANT_REQUIRED',
+        message: 'School portal identifier is required. Please specify your school subdomain to sign in.',
+      });
+    }
+
+    // Explicit tenant resolution against authoritative PostgreSQL
+    const resolvedTenant = await this.authService.resolveTenantForAuth(rawIdentifier);
+    if (!resolvedTenant) {
+      throw new BadRequestException({
+        code: 'TENANT_NOT_FOUND',
+        message: 'School portal could not be found. Please check your school subdomain.',
+      });
+    }
+
+    if (resolvedTenant.status === 'SUSPENDED' || resolvedTenant.status === 'DELETED') {
+      throw new UnauthorizedException({
+        code: 'TENANT_SUSPENDED',
+        message: 'This school portal has been suspended or deactivated.',
+      });
+    }
+
+    // Authenticate credentials strictly inside the resolved tenant
     const result = await this.authService.login(
-      targetTenant,
+      resolvedTenant.id,
       body.email,
       body.password,
     );
@@ -134,8 +174,24 @@ export class AuthController {
     @Body('tenantId') bodyTenantId?: string,
     @Body('tenantSlug') bodyTenantSlug?: string,
   ) {
-    const targetTenant = bodyTenantId || bodyTenantSlug || tenant?.tenantId || tenant?.slug || undefined;
-    return this.authService.forgotPassword(targetTenant, email);
+    const rawIdentifier = bodyTenantSlug || bodyTenantId || tenant?.slug || tenant?.tenantId;
+    if (!rawIdentifier) {
+      const isPlatform = await this.authService.isPlatformUser(email);
+      if (isPlatform) {
+        return this.authService.forgotPassword(null, email);
+      }
+      throw new BadRequestException({
+        code: 'TENANT_REQUIRED',
+        message: 'School portal identifier is required for password recovery.',
+      });
+    }
+
+    const resolvedTenant = await this.authService.resolveTenantForAuth(rawIdentifier);
+    if (!resolvedTenant) {
+      return { success: true, message: 'If an account exists, a password reset link has been dispatched.' };
+    }
+
+    return this.authService.forgotPassword(resolvedTenant.id, email);
   }
 
   @Public()

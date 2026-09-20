@@ -36,7 +36,10 @@ export class TenancyController {
     if (effectiveSlug) {
       return this.tenancyService.findBySlug(effectiveSlug);
     }
-    const targetHost = customDomain || queryDomain || host || 'localhost';
+    const targetHost = customDomain || queryDomain || host;
+    if (!targetHost) {
+      return null;
+    }
     return this.tenancyService.resolveByHostname(targetHost);
   }
 
@@ -64,7 +67,7 @@ export class TenancyController {
   @Get('current')
   async getCurrentTenant(@CurrentTenant() tenant: TenantContext) {
     if (!tenant?.tenantId) {
-      return this.tenancyService.getDefaultTenant();
+      return null;
     }
     return this.tenancyService.resolveCurrentTenant(tenant.tenantId);
   }
