@@ -20,137 +20,96 @@ export class AuthService {
     private readonly jwtService: JwtService,
   ) {}
 
-  async login(tenantIdentifier: string | undefined | null, email: string, passwordPlain: string) {
+  async resolveTenantForAuth(tenantIdentifier: string) {
+    if (!tenantIdentifier) return null;
+    const cleanId = tenantIdentifier.toLowerCase().trim();
+
+    if (this.prisma.isDbConnected) {
+      try {
+        const tenantRecord = await this.prisma.tenant.findFirst({
+          where: {
+            OR: [
+              { id: tenantIdentifier },
+              { slug: cleanId },
+              { domains: { some: { domain: cleanId } } },
+            ],
+          },
+          include: { domains: true },
+        });
+        if (tenantRecord) return tenantRecord;
+      } catch (err: any) {
+        this.logger.warn(`Could not resolve tenant for auth in DB: ${err.message}`);
+      }
+    }
+
+    const memTenant = this.prisma.memoryStore.tenants.get(tenantIdentifier) ||
+      Array.from(this.prisma.memoryStore.tenants.values()).find(
+        (t: any) => t.slug === cleanId || t.id === tenantIdentifier,
+      );
+    return memTenant || null;
+  }
+
+  async isPlatformUser(email: string): Promise<boolean> {
     const normalizedEmail = email.toLowerCase().trim();
-    let targetTenantId: string | undefined = undefined;
-
-    if (tenantIdentifier) {
-      if (this.prisma.isDbConnected) {
-        try {
-          const tenantRecord = await this.prisma.tenant.findFirst({
-            where: {
-              OR: [
-                { id: tenantIdentifier },
-                { slug: tenantIdentifier.toLowerCase().trim() },
-              ],
-            },
-          });
-          if (tenantRecord) {
-            targetTenantId = tenantRecord.id;
-          }
-        } catch {}
+    if (this.prisma.isDbConnected) {
+      try {
+        const dbPlatUser = await this.prisma.user.findFirst({
+          where: { email: normalizedEmail, tenantId: null },
+          select: { id: true },
+        });
+        return Boolean(dbPlatUser);
+      } catch {
+        return false;
       }
+    }
+    return Array.from(this.prisma.memoryStore.users.values()).some(
+      (u: any) => (u.tenantId === null || u.tenantId === undefined) && u.email === normalizedEmail,
+    );
+  }
 
-      if (!targetTenantId) {
-        const memTenant = this.prisma.memoryStore.tenants.get(tenantIdentifier) ||
-          Array.from(this.prisma.memoryStore.tenants.values()).find(
-            (t) => t.slug === tenantIdentifier.toLowerCase().trim() || t.id === tenantIdentifier,
-          );
-        if (memTenant) {
-          targetTenantId = memTenant.id;
-        } else {
-          targetTenantId = tenantIdentifier;
-        }
-      }
+  async login(targetTenantId: string, email: string, passwordPlain: string) {
+    const normalizedEmail = email.toLowerCase().trim();
+
+    if (!targetTenantId) {
+      throw new UnauthorizedException({
+        code: ErrorCodes.UNAUTHORIZED,
+        message: 'A resolved school organization tenantId is required for login.',
+      });
     }
 
     let user: any = null;
 
-    // 1. Check PostgreSQL first if DB connected
+    // 1. Query PostgreSQL strictly scoped to targetTenantId
     if (this.prisma.isDbConnected) {
       try {
-        if (targetTenantId) {
-          user = await this.prisma.user.findFirst({
-            where: { tenantId: targetTenantId, email: normalizedEmail },
-            include: {
-              tenant: { include: { domains: true } },
-              userRoles: {
-                include: {
-                  role: {
-                    include: {
-                      permissions: {
-                        include: { permission: true },
-                      },
-                    },
-                  },
-                },
-              },
-              userCampuses: true,
-            },
-          });
-        }
-
-        // Check if platform user
-        if (!user) {
-          const dbPlatUser = await this.prisma.user.findFirst({
-            where: { email: normalizedEmail, tenantId: null },
-            include: {
-              userRoles: {
-                include: {
-                  role: {
-                    include: {
-                      permissions: {
-                        include: { permission: true },
-                      },
+        user = await this.prisma.user.findFirst({
+          where: { tenantId: targetTenantId, email: normalizedEmail },
+          include: {
+            tenant: { include: { domains: true } },
+            userRoles: {
+              include: {
+                role: {
+                  include: {
+                    permissions: {
+                      include: { permission: true },
                     },
                   },
                 },
               },
             },
-          });
-          if (dbPlatUser) {
-            return this.platformLogin(email, passwordPlain);
-          }
-        }
-
-        // If still not found and targetTenantId wasn't passed, find user across tenants
-        if (!user && !targetTenantId) {
-          user = await this.prisma.user.findFirst({
-            where: { email: normalizedEmail },
-            include: {
-              tenant: { include: { domains: true } },
-              userRoles: {
-                include: {
-                  role: {
-                    include: {
-                      permissions: {
-                        include: { permission: true },
-                      },
-                    },
-                  },
-                },
-              },
-              userCampuses: true,
-            },
-          });
-        }
+            userCampuses: true,
+          },
+        });
       } catch (err: any) {
         this.logger.warn(`Could not query user from DB during login: ${err.message}`);
       }
     }
 
-    // 2. Fall back to memoryStore
+    // 2. Fall back to memoryStore strictly scoped to targetTenantId
     if (!user) {
-      if (targetTenantId) {
-        user = Array.from(this.prisma.memoryStore.users.values()).find(
-          (u) => u.tenantId === targetTenantId && u.email === normalizedEmail,
-        );
-      }
-
-      if (!user) {
-        const memPlatUser = Array.from(this.prisma.memoryStore.users.values()).find(
-          (u) => (u.tenantId === null || u.tenantId === undefined) && u.email === normalizedEmail,
-        );
-        if (memPlatUser) {
-          return this.platformLogin(email, passwordPlain);
-        }
-      }
-
-      if (!user && !targetTenantId) {
-        user = Array.from(this.prisma.memoryStore.users.values()).find(
-          (u) => u.email === normalizedEmail,
-        );
-      }
+      user = Array.from(this.prisma.memoryStore.users.values()).find(
+        (u: any) => u.tenantId === targetTenantId && u.email === normalizedEmail,
+      );
     }
 
     if (!user) {
@@ -725,7 +684,7 @@ export class AuthService {
           });
         } else {
           user = await this.prisma.user.findFirst({
-            where: { email: normalizedEmail, isActive: true },
+            where: { email: normalizedEmail, tenantId: null, isActive: true },
             include: { tenant: true },
           });
         }
@@ -741,7 +700,7 @@ export class AuthService {
         );
       } else {
         user = Array.from(this.prisma.memoryStore.users.values()).find(
-          (u) => u.email === normalizedEmail && u.isActive,
+          (u) => (u.tenantId === null || u.tenantId === undefined) && u.email === normalizedEmail && u.isActive,
         );
       }
     }

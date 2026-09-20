@@ -135,4 +135,11 @@ export class AcademicsController {
   ) {
     return this.academicsService.getClassSubjects(tenant.tenantId, classId);
   }
+
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Post('initialize-default')
+  async initializeDefault(@CurrentTenant() tenant: TenantContext) {
+    return this.academicsService.initializeDefaultAcademicSetup(tenant.tenantId);
+  }
 }
+

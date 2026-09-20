@@ -24,8 +24,11 @@ import {
   CreateGalleryMediaDto,
   UpdateInquiryStatusDto,
 } from './dto/website.dto.js';
+import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
+import { SystemPermissions } from '../../common/constants/permissions.js';
 
 @Controller(['admin/website', 'api/v1/admin/website'])
+@RequirePermissions(SystemPermissions.WEBSITE_MANAGE)
 export class WebsiteAdminController {
   constructor(private readonly websiteService: WebsiteService) {}
 

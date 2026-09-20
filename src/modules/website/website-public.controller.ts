@@ -112,7 +112,7 @@ export class WebsitePublicController {
     return this.websiteService.getPublicGallery(tenantId, album);
   }
 
-  @Post('inquiries')
+  @Post(['inquiries', 'admissions/inquiry'])
   async submitInquiry(@Req() req: any, @Body() dto: CreatePublicInquiryDto) {
     const tenantId = await this.resolveTenantId(req);
     return this.websiteService.submitPublicInquiry(tenantId, dto);

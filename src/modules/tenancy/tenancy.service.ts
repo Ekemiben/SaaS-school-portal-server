@@ -29,7 +29,14 @@ export class TenancyService {
   }
 
   async resolveByHostname(hostname: string) {
-    const cleanHost = hostname.toLowerCase().split(':')[0];
+    if (!hostname) return null;
+    const cleanHost = hostname.toLowerCase().split(':')[0].trim();
+
+    // Platform root domains - resolve to null (platform context, not a school)
+    const platformHosts = ['localhost', '127.0.0.1', '0.0.0.0', 'yourplatform.com', 'www.yourplatform.com', 'saas.local'];
+    if (platformHosts.includes(cleanHost)) {
+      return null;
+    }
 
     if (this.prisma.isDbConnected) {
       const tenantDomain = await this.prisma.tenantDomain.findUnique({
@@ -54,46 +61,40 @@ export class TenancyService {
     }
 
     const parts = cleanHost.split('.');
-    if (parts.length >= 2) {
+    if (parts.length >= 2 && (parts.length >= 3 || parts[parts.length - 1] === 'localhost')) {
       const slug = parts[0];
-      return this.findBySlug(slug);
+      if (!['www', 'api', 'admin', 'app', 'localhost', 'platform'].includes(slug)) {
+        return this.findBySlug(slug);
+      }
     }
 
-    return this.getDefaultTenant();
+    // Root domain or unresolvable hostname - return null (never fall back to Greenfield)
+    return null;
   }
 
   async findBySlug(slug: string) {
+    if (!slug) return null;
+    const cleanSlug = slug.toLowerCase().trim();
+
     if (this.prisma.isDbConnected) {
       const tenant = await this.prisma.tenant.findUnique({
-        where: { slug },
+        where: { slug: cleanSlug },
         include: { domains: true },
       });
       if (tenant) return this.sanitizeTenantConfig(tenant);
     } else {
-      const tenant = Array.from(this.prisma.memoryStore.tenants.values()).find((t) => t.slug === slug);
+      const tenant = Array.from(this.prisma.memoryStore.tenants.values()).find((t) => t.slug === cleanSlug);
       if (tenant) {
         const domains = Array.from(this.prisma.memoryStore.domains.values()).filter((d) => d.tenantId === tenant.id);
         return this.sanitizeTenantConfig({ ...tenant, domains });
       }
     }
-    return this.getDefaultTenant();
+    // Tenant not found - return null (never fall back to Greenfield)
+    return null;
   }
 
   async getDefaultTenant() {
-    if (this.prisma.isDbConnected) {
-      const tenant = await this.prisma.tenant.findFirst({
-        where: { status: 'ACTIVE' },
-        include: { domains: true },
-      });
-      if (tenant) return this.sanitizeTenantConfig(tenant);
-    }
-
-    const first = Array.from(this.prisma.memoryStore.tenants.values())[0];
-    if (first) {
-      const domains = Array.from(this.prisma.memoryStore.domains.values()).filter((d) => d.tenantId === first.id);
-      return this.sanitizeTenantConfig({ ...first, domains });
-    }
-    throw new NotFoundException('No active school organization configured.');
+    return null;
   }
 
   listDomains(tenantId: string) {
