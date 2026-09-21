@@ -4,6 +4,7 @@ import { BulkInvoicingService } from './services/bulk-invoicing.service.js';
 import { DebtRecoveryService } from './services/debt-recovery.service.js';
 import { PaymentPlanService } from './services/payment-plan.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
+import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
@@ -96,6 +97,14 @@ export class FeesController {
   }
 
   // --- Invoicing & Bulk Invoicing ---
+  @Get('portal/my-invoices')
+  async getMyInvoices(
+    @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
+  ) {
+    return this.feesService.getMyInvoices(tenant.tenantId, user?.id || user?.sub);
+  }
+
   @RequirePermissions(SystemPermissions.FEES_VIEW)
   @Get('invoices')
   async listInvoices(

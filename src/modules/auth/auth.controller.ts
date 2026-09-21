@@ -35,17 +35,18 @@ export class AuthController {
   @Post('login')
   async login(
     @CurrentTenant() tenant: TenantContext,
-    @Body() body: { email: string; password: string; tenantId?: string; tenantSlug?: string },
+    @Body() body: { email?: string; identifier?: string; password: string; tenantId?: string; tenantSlug?: string },
     @Res({ passthrough: true }) res: Response,
   ) {
+    const loginIdentifier = (body.identifier || body.email || '').trim();
     const rawIdentifier = body.tenantSlug || body.tenantId || tenant?.slug || tenant?.tenantId;
 
     if (!rawIdentifier) {
       // Platform root domain sign-in without explicit school identifier
       // Allow platform administrators (tenantId === null) to authenticate
-      const isPlatform = await this.authService.isPlatformUser(body.email);
+      const isPlatform = await this.authService.isPlatformUser(loginIdentifier);
       if (isPlatform) {
-        const platformResult = await this.authService.platformLogin(body.email, body.password);
+        const platformResult = await this.authService.platformLogin(loginIdentifier, body.password);
         res.cookie('accessToken', platformResult.accessToken, {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
@@ -81,7 +82,7 @@ export class AuthController {
     // Authenticate credentials strictly inside the resolved tenant
     const result = await this.authService.login(
       resolvedTenant.id,
-      body.email,
+      loginIdentifier,
       body.password,
     );
 
