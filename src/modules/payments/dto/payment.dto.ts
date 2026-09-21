@@ -27,8 +27,9 @@ export class InitializePaymentDto {
   @IsString()
   invoiceId!: string;
 
+  @IsOptional()
   @IsString()
-  studentId!: string;
+  studentId?: string;
 
   @IsNumber()
   @Min(1)

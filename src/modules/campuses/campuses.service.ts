@@ -10,7 +10,16 @@ export class CampusesService {
     if (this.prisma.isDbConnected) {
       return this.prisma.campus.findMany({
         where: { tenantId },
-        orderBy: { createdAt: 'asc' },
+        include: {
+          _count: {
+            select: {
+              students: true,
+              teachers: true,
+              classes: true,
+            },
+          },
+        },
+        orderBy: [{ isMain: 'desc' }, { createdAt: 'asc' }],
       });
     }
 
@@ -23,6 +32,15 @@ export class CampusesService {
     if (this.prisma.isDbConnected) {
       const campus = await this.prisma.campus.findFirst({
         where: { id: campusId, tenantId },
+        include: {
+          _count: {
+            select: {
+              students: true,
+              teachers: true,
+              classes: true,
+            },
+          },
+        },
       });
       if (!campus) throw new NotFoundException('Campus not found in this school');
       return campus;

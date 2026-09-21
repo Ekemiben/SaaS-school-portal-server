@@ -67,9 +67,62 @@ export class AuthService {
     );
   }
 
-  async login(targetTenantId: string, email: string, passwordPlain: string) {
-    const normalizedEmail = email.toLowerCase().trim();
+  async ensureTenantRole(
+    tenantId: string,
+    roleName: 'STUDENT' | 'PARENT' | 'School Owner' | 'School Admin',
+  ): Promise<any> {
+    if (!this.prisma.isDbConnected) {
+      return { id: `role_${roleName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_mock`, name: roleName };
+    }
 
+    let role = await this.prisma.role.findFirst({
+      where: { tenantId, name: roleName },
+    });
+
+    if (!role) {
+      const description =
+        roleName === 'STUDENT'
+          ? 'Enrolled Student with student learning portal access'
+          : roleName === 'PARENT'
+          ? 'Parent or Guardian with student ward portal access'
+          : 'School Administrative Role';
+
+      role = await this.prisma.role.create({
+        data: {
+          id: `role_${roleName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
+          tenantId,
+          name: roleName,
+          description,
+          isSystem: true,
+        },
+      });
+
+      const permissionNames =
+        roleName === 'STUDENT'
+          ? ['students.view', 'academics.view', 'attendance.view', 'fees.view', 'payments.view', 'timetable.view']
+          : roleName === 'PARENT'
+          ? ['parents.view', 'students.view', 'academics.view', 'attendance.view', 'fees.view', 'payments.view']
+          : ['students.view', 'campuses.view', 'academics.view', 'attendance.view', 'fees.view'];
+
+      const perms = await this.prisma.permission.findMany({
+        where: { name: { in: permissionNames } },
+      });
+
+      if (perms.length > 0 && role) {
+        await this.prisma.rolePermission.createMany({
+          data: perms.map((p) => ({
+            roleId: role!.id,
+            permissionId: p.id,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    return role;
+  }
+
+  async login(targetTenantId: string, rawIdentifier: string, passwordPlain: string) {
     if (!targetTenantId) {
       throw new UnauthorizedException({
         code: ErrorCodes.UNAUTHORIZED,
@@ -77,13 +130,27 @@ export class AuthService {
       });
     }
 
+    const trimmed = (rawIdentifier || '').trim();
+    const normalized = trimmed.toLowerCase();
+    const cleanPhone = trimmed.replace(/[^0-9+]/g, '');
+
     let user: any = null;
+    let resolvedStudent: any = null;
+    let resolvedParent: any = null;
 
     // 1. Query PostgreSQL strictly scoped to targetTenantId
     if (this.prisma.isDbConnected) {
       try {
+        // A. Direct User match by email or exact phone
         user = await this.prisma.user.findFirst({
-          where: { tenantId: targetTenantId, email: normalizedEmail },
+          where: {
+            tenantId: targetTenantId,
+            OR: [
+              { email: normalized },
+              { phone: trimmed },
+              ...(cleanPhone ? [{ phone: cleanPhone }] : []),
+            ],
+          },
           include: {
             tenant: { include: { domains: true } },
             userRoles: {
@@ -100,22 +167,187 @@ export class AuthService {
             userCampuses: true,
           },
         });
+
+        // B. If not found in User, check Student by admissionNumber, email, or phone
+        if (!user) {
+          resolvedStudent = await this.prisma.student.findFirst({
+            where: {
+              tenantId: targetTenantId,
+              OR: [
+                { admissionNumber: { equals: trimmed, mode: 'insensitive' } },
+                { email: normalized },
+                ...(cleanPhone ? [{ phone: cleanPhone }] : []),
+              ],
+            },
+            include: { campus: true, tenant: true },
+          });
+
+          if (resolvedStudent) {
+            const studentRole = await this.ensureTenantRole(targetTenantId, 'STUDENT');
+            const studentEmail = resolvedStudent.email
+              ? resolvedStudent.email.toLowerCase().trim()
+              : `${resolvedStudent.admissionNumber.toLowerCase().replace(/[^a-z0-9]/g, '')}@student.${resolvedStudent.tenant?.slug || 'portal'}.school`;
+
+            // Look for existing user account under studentEmail
+            user = await this.prisma.user.findFirst({
+              where: { tenantId: targetTenantId, email: studentEmail },
+              include: {
+                tenant: { include: { domains: true } },
+                userRoles: {
+                  include: {
+                    role: {
+                      include: {
+                        permissions: { include: { permission: true } },
+                      },
+                    },
+                  },
+                },
+                userCampuses: true,
+              },
+            });
+
+            if (!user) {
+              const defaultPassHash = await bcrypt.hash(
+                passwordPlain === 'Password123!' ? 'Password123!' : passwordPlain,
+                10,
+              );
+              const userId = `usr_stu_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+              user = await this.prisma.user.create({
+                data: {
+                  id: userId,
+                  tenantId: targetTenantId,
+                  email: studentEmail,
+                  passwordHash: defaultPassHash,
+                  firstName: resolvedStudent.firstName,
+                  lastName: resolvedStudent.lastName,
+                  phone: resolvedStudent.phone || null,
+                  isActive: true,
+                  userRoles: {
+                    create: { roleId: studentRole.id },
+                  },
+                  userCampuses: resolvedStudent.campusId
+                    ? {
+                        create: { campusId: resolvedStudent.campusId, isDefault: true },
+                      }
+                    : undefined,
+                },
+                include: {
+                  tenant: { include: { domains: true } },
+                  userRoles: {
+                    include: {
+                      role: {
+                        include: {
+                          permissions: { include: { permission: true } },
+                        },
+                      },
+                    },
+                  },
+                  userCampuses: true,
+                },
+              });
+            }
+
+            if (resolvedStudent && user && !resolvedStudent.email) {
+              await this.prisma.student.update({
+                where: { id: resolvedStudent.id },
+                data: { email: user.email },
+              });
+            }
+          }
+        }
+
+        // C. If still not found, check Parent by phone or email
+        if (!user) {
+          const phoneFilter = cleanPhone.length >= 7 ? cleanPhone.slice(-10) : cleanPhone;
+          resolvedParent = await this.prisma.parent.findFirst({
+            where: {
+              tenantId: targetTenantId,
+              OR: [
+                ...(phoneFilter ? [{ phone: { contains: phoneFilter } }] : []),
+                { email: normalized },
+              ],
+            },
+            include: { tenant: true, students: { include: { student: true } } },
+          });
+
+          if (resolvedParent) {
+            const parentRole = await this.ensureTenantRole(targetTenantId, 'PARENT');
+            const parentEmail = resolvedParent.email
+              ? resolvedParent.email.toLowerCase().trim()
+              : `parent.${cleanPhone.replace(/[^0-9]/g, '') || resolvedParent.id.slice(-6)}@${resolvedParent.tenant?.slug || 'portal'}.school`;
+
+            user = await this.prisma.user.findFirst({
+              where: { tenantId: targetTenantId, email: parentEmail },
+              include: {
+                tenant: { include: { domains: true } },
+                userRoles: {
+                  include: {
+                    role: {
+                      include: {
+                        permissions: { include: { permission: true } },
+                      },
+                    },
+                  },
+                },
+                userCampuses: true,
+              },
+            });
+
+            if (!user) {
+              const defaultPassHash = await bcrypt.hash(
+                passwordPlain === 'Password123!' ? 'Password123!' : passwordPlain,
+                10,
+              );
+              const userId = `usr_par_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+              user = await this.prisma.user.create({
+                data: {
+                  id: userId,
+                  tenantId: targetTenantId,
+                  email: parentEmail,
+                  passwordHash: defaultPassHash,
+                  firstName: resolvedParent.firstName,
+                  lastName: resolvedParent.lastName,
+                  phone: resolvedParent.phone || null,
+                  isActive: true,
+                  userRoles: {
+                    create: { roleId: parentRole.id },
+                  },
+                },
+                include: {
+                  tenant: { include: { domains: true } },
+                  userRoles: {
+                    include: {
+                      role: {
+                        include: {
+                          permissions: { include: { permission: true } },
+                        },
+                      },
+                    },
+                  },
+                  userCampuses: true,
+                },
+              });
+            }
+          }
+        }
       } catch (err: any) {
-        this.logger.warn(`Could not query user from DB during login: ${err.message}`);
+        this.logger.warn(`Could not query/provision user from DB during login: ${err.message}`);
       }
     }
 
     // 2. Fall back to memoryStore strictly scoped to targetTenantId
     if (!user) {
       user = Array.from(this.prisma.memoryStore.users.values()).find(
-        (u: any) => u.tenantId === targetTenantId && u.email === normalizedEmail,
+        (u: any) =>
+          u.tenantId === targetTenantId &&
+          (u.email === normalized || u.phone === trimmed || u.phone === cleanPhone),
       );
     }
 
     if (!user) {
       throw new UnauthorizedException({
         code: ErrorCodes.UNAUTHORIZED,
-        message: 'Invalid email or password for this school portal.',
+        message: 'Invalid email, admission number, or password for this school portal.',
       });
     }
 
@@ -134,11 +366,11 @@ export class AuthService {
     if (!passwordMatches) {
       throw new UnauthorizedException({
         code: ErrorCodes.UNAUTHORIZED,
-        message: 'Invalid email or password for this school portal.',
+        message: 'Invalid email, admission number, or password for this school portal.',
       });
     }
 
-    // Auto-heal legacy school users missing UserRole in PostgreSQL
+    // Auto-heal legacy school owners missing UserRole in PostgreSQL
     if (this.prisma.isDbConnected && user.tenantId && (!user.userRoles || user.userRoles.length === 0)) {
       try {
         let role = await this.prisma.role.findFirst({
@@ -160,11 +392,13 @@ export class AuthService {
           });
         }
 
-        const mainCampus = await this.prisma.campus.findFirst({
-          where: { tenantId: user.tenantId, isMain: true },
-        }) || await this.prisma.campus.findFirst({
-          where: { tenantId: user.tenantId },
-        });
+        const mainCampus =
+          (await this.prisma.campus.findFirst({
+            where: { tenantId: user.tenantId, isMain: true },
+          })) ||
+          (await this.prisma.campus.findFirst({
+            where: { tenantId: user.tenantId },
+          }));
 
         await this.prisma.userRole.create({
           data: {
@@ -174,13 +408,15 @@ export class AuthService {
         });
 
         if (mainCampus) {
-          await this.prisma.userCampus.create({
-            data: {
-              userId: user.id,
-              campusId: mainCampus.id,
-              isDefault: true,
-            },
-          }).catch(() => {});
+          await this.prisma.userCampus
+            .create({
+              data: {
+                userId: user.id,
+                campusId: mainCampus.id,
+                isDefault: true,
+              },
+            })
+            .catch(() => {});
         }
 
         const permissions = await this.prisma.permission.findMany();
@@ -219,19 +455,110 @@ export class AuthService {
     }
 
     const roles = (user.userRoles || []).map((ur: any) => ur.role?.name).filter(Boolean);
-    const role = user.platformRole || (roles.length > 0 ? roles[0] : (user.role || (user.isPlatformAdmin ? 'SUPER_ADMIN' : 'School Admin')));
+    const role =
+      user.platformRole ||
+      (roles.length > 0
+        ? roles[0]
+        : user.role || (user.isPlatformAdmin ? 'SUPER_ADMIN' : 'School Admin'));
     const permissions = (user.userRoles || []).flatMap((ur: any) =>
       (ur.role?.permissions || []).map((rp: any) => rp.permission?.name).filter(Boolean),
     );
     const campusIds = (user.userCampuses || []).map((uc: any) => uc.campusId);
 
+    // Enrich student or parent specific profile
+    let studentProfile: any = null;
+    let parentProfile: any = null;
+
+    if (this.prisma.isDbConnected && user.tenantId) {
+      try {
+        if (role === 'STUDENT' || roles.includes('STUDENT')) {
+          const stu =
+            resolvedStudent ||
+            (await this.prisma.student.findFirst({
+              where: {
+                tenantId: user.tenantId,
+                OR: [
+                  { email: user.email },
+                  ...(user.phone ? [{ phone: user.phone }] : []),
+                ],
+              },
+              include: {
+                campus: true,
+                enrollments: {
+                  where: { status: 'ACTIVE' },
+                  include: { class: true },
+                  take: 1,
+                },
+              },
+            }));
+          if (stu) {
+            studentProfile = {
+              studentId: stu.id,
+              admissionNumber: stu.admissionNumber,
+              firstName: stu.firstName,
+              lastName: stu.lastName,
+              campusName: stu.campus?.name || 'Main Campus',
+              className: stu.enrollments?.[0]?.class?.name || 'Unassigned',
+            };
+          }
+        } else if (role === 'PARENT' || roles.includes('PARENT')) {
+          const par =
+            resolvedParent ||
+            (await this.prisma.parent.findFirst({
+              where: {
+                tenantId: user.tenantId,
+                OR: [
+                  { email: user.email },
+                  ...(user.phone ? [{ phone: user.phone }] : []),
+                ],
+              },
+              include: {
+                students: {
+                  include: {
+                    student: {
+                      include: {
+                        campus: true,
+                        enrollments: {
+                          where: { status: 'ACTIVE' },
+                          include: { class: true },
+                          take: 1,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            }));
+          if (par) {
+            parentProfile = {
+              parentId: par.id,
+              phone: par.phone,
+              email: par.email,
+              relationship: par.relationship,
+              wards: (par.students || []).map((sp: any) => ({
+                studentId: sp.student.id,
+                admissionNumber: sp.student.admissionNumber,
+                name: `${sp.student.firstName} ${sp.student.lastName}`.trim(),
+                campus: sp.student.campus?.name || 'Main Campus',
+                className: sp.student.enrollments?.[0]?.class?.name || 'Unassigned',
+              })),
+            };
+          }
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not attach portal profile on login: ${err.message}`);
+      }
+    }
+
     const enrichedUser = {
       ...user,
       role,
-      roles: roles.length > 0 ? roles : (user.roles || [role]),
-      permissions: permissions.length > 0 ? permissions : (user.permissions || []),
-      permissionIds: permissions.length > 0 ? permissions : (user.permissionIds || []),
-      campusIds: campusIds.length > 0 ? campusIds : (user.campusIds || []),
+      roles: roles.length > 0 ? roles : user.roles || [role],
+      permissions: permissions.length > 0 ? permissions : user.permissions || [],
+      permissionIds: permissions.length > 0 ? permissions : user.permissionIds || [],
+      campusIds: campusIds.length > 0 ? campusIds : user.campusIds || [],
+      studentProfile,
+      parentProfile,
     };
 
     return this.generateTokens(enrichedUser);
@@ -584,7 +911,23 @@ export class AuthService {
     let user: any = null;
     if (this.prisma.isDbConnected) {
       try {
-        user = await this.prisma.user.findUnique({ where: { id: userId } });
+        user = await this.prisma.user.findUnique({
+          where: { id: userId },
+          include: {
+            userRoles: {
+              include: {
+                role: {
+                  include: {
+                    permissions: {
+                      include: { permission: true },
+                    },
+                  },
+                },
+              },
+            },
+            userCampuses: true,
+          },
+        });
       } catch {
         user = null;
       }
@@ -617,10 +960,121 @@ export class AuthService {
       }
     }
 
+    const roles = (user.userRoles || []).map((ur: any) => ur.role?.name).filter(Boolean);
+    const role =
+      user.platformRole ||
+      (roles.length > 0
+        ? roles[0]
+        : user.role || (user.isPlatformAdmin ? 'SUPER_ADMIN' : 'School Admin'));
+    const isPlatformUser = user.tenantId === null || user.tenantId === undefined;
+    const isStudent = role === 'STUDENT' || roles.includes('STUDENT');
+    const isParent = role === 'PARENT' || roles.includes('PARENT');
+    const portalUrl = isStudent
+      ? '/student'
+      : isParent
+      ? '/parent'
+      : isPlatformUser
+      ? '/platform-admin'
+      : '/dashboard';
+
+    let studentProfile: any = null;
+    let parentProfile: any = null;
+
+    if (this.prisma.isDbConnected && user.tenantId) {
+      try {
+        if (isStudent) {
+          const student = await this.prisma.student.findFirst({
+            where: {
+              tenantId: user.tenantId,
+              OR: [
+                { email: user.email },
+                { admissionNumber: { equals: user.email.split('@')[0], mode: 'insensitive' } },
+                ...(user.phone ? [{ phone: user.phone }] : []),
+              ],
+            },
+            include: {
+              campus: true,
+              enrollments: {
+                where: { status: 'ACTIVE' },
+                include: { class: true, academicYear: true },
+                orderBy: { enrolledAt: 'desc' },
+                take: 1,
+              },
+            },
+          });
+          if (student) {
+            studentProfile = {
+              studentId: student.id,
+              admissionNumber: student.admissionNumber,
+              firstName: student.firstName,
+              lastName: student.lastName,
+              campusName: student.campus?.name || 'Main Campus',
+              className: student.enrollments?.[0]?.class?.name || 'Unassigned',
+            };
+          }
+        } else if (isParent) {
+          const parent = await this.prisma.parent.findFirst({
+            where: {
+              tenantId: user.tenantId,
+              OR: [
+                { email: user.email },
+                ...(user.phone ? [{ phone: user.phone }] : []),
+              ],
+            },
+            include: {
+              students: {
+                include: {
+                  student: {
+                    include: {
+                      campus: true,
+                      enrollments: {
+                        where: { status: 'ACTIVE' },
+                        include: { class: true },
+                        take: 1,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          });
+          if (parent) {
+            parentProfile = {
+              parentId: parent.id,
+              phone: parent.phone,
+              email: parent.email,
+              relationship: parent.relationship,
+              wards: (parent.students || []).map((sp: any) => ({
+                studentId: sp.student.id,
+                admissionNumber: sp.student.admissionNumber,
+                name: `${sp.student.firstName} ${sp.student.lastName}`.trim(),
+                campus: sp.student.campus?.name || 'Main Campus',
+                className: sp.student.enrollments?.[0]?.class?.name || 'Unassigned',
+              })),
+            };
+          }
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not enrich portal profile in getProfile: ${err.message}`);
+      }
+    }
+
     const { passwordHash: _, ...safeUser } = user;
     return {
-      user: safeUser,
+      user: {
+        ...safeUser,
+        role,
+        roles,
+        portalUrl,
+        studentProfile,
+        parentProfile,
+      },
       ...safeUser,
+      role,
+      roles,
+      portalUrl,
+      studentProfile,
+      parentProfile,
       tenant: tenant
         ? {
             id: tenant.id,
@@ -934,6 +1388,16 @@ export class AuthService {
       ? ['*']
       : effectivePermissions;
 
+    const isStudent = role === 'STUDENT' || (Array.isArray(user.roles) && user.roles.includes('STUDENT'));
+    const isParent = role === 'PARENT' || (Array.isArray(user.roles) && user.roles.includes('PARENT'));
+    const portalUrl = isStudent
+      ? '/student'
+      : isParent
+      ? '/parent'
+      : isPlatformUser
+      ? '/platform-admin'
+      : '/dashboard';
+
     const payload = {
       sub: user.id,
       id: user.id,
@@ -948,6 +1412,9 @@ export class AuthService {
       isPlatformAdmin: isPlatformUser || !!user.isPlatformAdmin,
       firstName: user.firstName,
       lastName: user.lastName,
+      portalUrl,
+      studentId: user.studentProfile?.studentId || null,
+      parentId: user.parentProfile?.parentId || null,
     };
 
     const accessToken = await this.jwtService.signAsync(payload, {
@@ -1001,11 +1468,16 @@ export class AuthService {
     return {
       accessToken,
       refreshToken,
+      portalUrl,
       user: {
         ...safeUser,
         tenantId: user.tenantId || null,
         scope,
         role,
+        roles: isPlatformUser ? [role] : (user.roles || [role]),
+        portalUrl,
+        studentProfile: user.studentProfile || null,
+        parentProfile: user.parentProfile || null,
         permissions: effectivePermissions,
         permissionIds: effectivePermissions,
       },

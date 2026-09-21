@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { StudentsService } from './students.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
+import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
@@ -40,6 +41,14 @@ export class StudentsController {
       page,
       limit,
     });
+  }
+
+  @Get('portal/me')
+  async getMyPortalProfile(
+    @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
+  ) {
+    return this.studentsService.getPortalProfile(tenant.tenantId, user?.id || user?.sub);
   }
 
   @RequirePermissions(SystemPermissions.STUDENTS_VIEW)

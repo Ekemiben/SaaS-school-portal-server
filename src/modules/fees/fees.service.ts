@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
 import { randomUUID } from 'crypto';
 import {
@@ -10,6 +10,8 @@ import { FeeCalculator } from './calculator/fee-calculator.js';
 
 @Injectable()
 export class FeesService {
+  private readonly logger = new Logger(FeesService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   // --- Fee Structures Management ---
@@ -138,6 +140,76 @@ export class FeesService {
 
   // --- Invoicing & Fee Processing ---
   async getInvoices(tenantId: string, filters: { studentId?: string; status?: string; classId?: string }) {
+    if (this.prisma.isDbConnected) {
+      try {
+        const whereClause: any = { tenantId };
+        if (filters.studentId) whereClause.studentId = filters.studentId;
+        if (filters.status) whereClause.status = filters.status;
+        if (filters.classId) whereClause.classId = filters.classId;
+
+        const dbInvoices = await this.prisma.invoice.findMany({
+          where: whereClause,
+          include: {
+            student: {
+              include: {
+                campus: true,
+                enrollments: {
+                  where: { status: 'ACTIVE' },
+                  include: { class: true },
+                  orderBy: { enrolledAt: 'desc' },
+                  take: 1,
+                },
+              },
+            },
+            payments: {
+              where: { status: 'SUCCESSFUL' },
+              orderBy: { paidAt: 'desc' },
+            },
+            feeStructure: true,
+          },
+          orderBy: { dueDate: 'desc' },
+        });
+
+        if (dbInvoices.length > 0) {
+          return dbInvoices.map((inv) => {
+            const payments = inv.payments.map((p) => ({
+              ref: p.reference || p.id,
+              date: p.paidAt ? p.paidAt.toISOString().split('T')[0] : p.createdAt.toISOString().split('T')[0],
+              amount: Number(p.amount || 0),
+              channel: p.provider,
+            }));
+
+            const lineItems = Array.isArray(inv.lineItems)
+              ? inv.lineItems
+              : typeof inv.feeStructure?.items === 'object' && Array.isArray(inv.feeStructure.items)
+              ? inv.feeStructure.items
+              : [];
+
+            return {
+              id: inv.id,
+              invoiceNumber: inv.invoiceNumber,
+              student: inv.student ? `${inv.student.firstName} ${inv.student.lastName}` : 'Student',
+              studentId: inv.student ? inv.student.admissionNumber || inv.student.id : inv.studentId,
+              class: inv.student?.enrollments?.[0]?.class?.name || 'Unassigned',
+              amount: inv.totalAmount,
+              paid: inv.paidAmount,
+              balance: inv.balanceAmount,
+              status: inv.status === 'PAID' ? 'Paid' : inv.status === 'PARTIALLY_PAID' ? 'Partial' : 'Pending',
+              dueDate: inv.dueDate ? inv.dueDate.toISOString().split('T')[0] : null,
+              term: 'Current Term',
+              items: lineItems.map((it: any) => ({
+                name: it.name || it.description || 'Fee Item',
+                amount: Number(it.amount || 0),
+              })),
+              payments,
+            };
+          });
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not query invoices from DB: ${err.message}`);
+      }
+    }
+
     let invoices = Array.from(this.prisma.memoryStore.invoices.values()).filter(
       (i: any) => i.tenantId === tenantId,
     );
@@ -210,6 +282,170 @@ export class FeesService {
         payments,
       };
     });
+  }
+
+  async getMyInvoices(tenantId: string, userId: string) {
+    if (this.prisma.isDbConnected) {
+      try {
+        const user = await this.prisma.user.findUnique({
+          where: { id: userId },
+          include: { userRoles: { include: { role: true } } },
+        });
+
+        if (!user) {
+          throw new NotFoundException('User not found');
+        }
+
+        const roles = (user.userRoles || []).map((ur) => ur.role?.name);
+        const isStudent = roles.includes('STUDENT');
+        const isParent = roles.includes('PARENT');
+
+        let targetStudentIds: string[] = [];
+
+        if (isStudent) {
+          let student = await this.prisma.student.findFirst({
+            where: {
+              tenantId,
+              OR: [
+                { email: user.email },
+                ...(user.phone ? [{ phone: user.phone }] : []),
+              ],
+            },
+          });
+
+          if (!student) {
+            const cleanPrefix = user.email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+            const candidates = await this.prisma.student.findMany({
+              where: {
+                tenantId,
+                OR: [{ firstName: user.firstName, lastName: user.lastName }],
+              },
+            });
+            student =
+              candidates.find((s) => s.admissionNumber.toLowerCase().replace(/[^a-z0-9]/g, '') === cleanPrefix) ||
+              candidates[0] ||
+              null;
+          }
+
+          if (student) {
+            targetStudentIds.push(student.id);
+          }
+        } else if (isParent) {
+          const cleanPhone = (user.phone || '').replace(/[^0-9+]/g, '');
+          const phoneFilter = cleanPhone.length >= 7 ? cleanPhone.slice(-10) : cleanPhone;
+          const parent = await this.prisma.parent.findFirst({
+            where: {
+              tenantId,
+              OR: [
+                { email: user.email },
+                ...(phoneFilter ? [{ phone: { contains: phoneFilter } }] : []),
+              ],
+            },
+            include: {
+              students: { include: { student: true } },
+            },
+          });
+
+          if (parent && parent.students) {
+            targetStudentIds = parent.students.map((sp) => sp.studentId);
+          }
+        }
+
+        const whereClause: any = { tenantId };
+        if (isStudent || isParent) {
+          if (targetStudentIds.length === 0) {
+            return [];
+          }
+          whereClause.studentId = { in: targetStudentIds };
+        }
+
+        const dbInvoices = await this.prisma.invoice.findMany({
+          where: whereClause,
+          include: {
+            student: {
+              include: {
+                campus: true,
+                enrollments: {
+                  where: { status: 'ACTIVE' },
+                  include: { class: true },
+                  orderBy: { enrolledAt: 'desc' },
+                  take: 1,
+                },
+              },
+            },
+            payments: {
+              where: { status: 'SUCCESSFUL' },
+              orderBy: { paidAt: 'desc' },
+            },
+            feeStructure: true,
+          },
+          orderBy: { dueDate: 'desc' },
+        });
+
+        return dbInvoices.map((inv) => {
+          const payments = inv.payments.map((p) => ({
+            id: p.id,
+            ref: p.reference,
+            date: p.paidAt ? p.paidAt.toISOString().split('T')[0] : p.createdAt.toISOString().split('T')[0],
+            amount: p.amount,
+            channel: p.provider,
+            status: p.status,
+          }));
+
+          const lineItems = Array.isArray(inv.lineItems)
+            ? inv.lineItems
+            : typeof inv.feeStructure?.items === 'object' && Array.isArray(inv.feeStructure.items)
+            ? inv.feeStructure.items
+            : [];
+
+          return {
+            id: inv.id,
+            invoiceNumber: inv.invoiceNumber,
+            studentId: inv.studentId,
+            studentName: inv.student ? `${inv.student.firstName} ${inv.student.lastName}` : 'Student',
+            admissionNumber: inv.student?.admissionNumber || 'N/A',
+            className: inv.student?.enrollments?.[0]?.class?.name || 'Unassigned',
+            campus: inv.student?.campus?.name || 'Main Campus',
+            totalAmount: inv.totalAmount,
+            paidAmount: inv.paidAmount,
+            balanceAmount: inv.balanceAmount,
+            currency: inv.currency || 'NGN',
+            status: inv.status,
+            dueDate: inv.dueDate ? inv.dueDate.toISOString().split('T')[0] : null,
+            issuedAt: inv.issuedAt ? inv.issuedAt.toISOString().split('T')[0] : null,
+            notes: inv.notes,
+            items: lineItems.map((it: any) => ({
+              name: it.name || it.description || 'Tuition / School Fee',
+              amount: Number(it.amount || 0),
+            })),
+            payments,
+          };
+        });
+      } catch (err: any) {
+        if (err instanceof NotFoundException) throw err;
+        this.logger.warn(`Could not fetch portal invoices from DB: ${err.message}`);
+      }
+    }
+
+    return Array.from(this.prisma.memoryStore.invoices.values())
+      .filter((i: any) => i.tenantId === tenantId)
+      .map((inv: any) => ({
+        id: inv.id,
+        invoiceNumber: inv.invoiceNumber || inv.id,
+        studentId: inv.studentId,
+        studentName: 'Student',
+        admissionNumber: 'SCH/2026/001',
+        className: 'JSS 1A',
+        campus: 'Main Campus',
+        totalAmount: Number(inv.totalAmount || inv.amount || 0),
+        paidAmount: Number(inv.paidAmount || inv.paid || 0),
+        balanceAmount: Number(inv.balanceAmount || Math.max(0, (inv.totalAmount || 0) - (inv.paidAmount || 0))),
+        currency: inv.currency || 'NGN',
+        status: inv.status || 'PENDING',
+        dueDate: inv.dueDate ? new Date(inv.dueDate).toISOString().split('T')[0] : null,
+        items: [],
+        payments: [],
+      }));
   }
 
   async generateInvoice(

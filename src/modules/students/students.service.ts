@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, ConflictException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
 import { randomUUID } from 'crypto';
+import bcrypt from 'bcryptjs';
 
 @Injectable()
 export class StudentsService {
@@ -442,6 +443,148 @@ export class StudentsService {
           });
         }
 
+        // Auto-provision User accounts for Student and Parent
+        try {
+          const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+          const tenantSlug = tenant?.slug || 'portal';
+
+          // Student role & user
+          let studentRole = await this.prisma.role.findFirst({ where: { tenantId, name: 'STUDENT' } });
+          if (!studentRole) {
+            studentRole = await this.prisma.role.create({
+              data: {
+                id: `role_student_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
+                tenantId,
+                name: 'STUDENT',
+                description: 'Enrolled Student with student learning portal access',
+                isSystem: true,
+              },
+            });
+            const perms = await this.prisma.permission.findMany({
+              where: {
+                name: {
+                  in: [
+                    'students.view',
+                    'academics.view',
+                    'attendance.view',
+                    'fees.view',
+                    'timetable.view',
+                  ],
+                },
+              },
+            });
+            if (perms.length > 0 && studentRole) {
+              await this.prisma.rolePermission.createMany({
+                data: perms.map((p) => ({ roleId: studentRole!.id, permissionId: p.id })),
+                skipDuplicates: true,
+              });
+            }
+          }
+
+          const studentEmail = data.email
+            ? data.email.toLowerCase().trim()
+            : `${createdStudent.admissionNumber.toLowerCase().replace(/[^a-z0-9]/g, '')}@student.${tenantSlug}.school`;
+
+          const existingStudentUser = await this.prisma.user.findFirst({
+            where: { tenantId, email: studentEmail },
+          });
+
+          if (!existingStudentUser && studentRole) {
+            const passHash = await bcrypt.hash('Password123!', 10);
+            await this.prisma.user.create({
+              data: {
+                id: `usr_stu_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                tenantId,
+                email: studentEmail,
+                passwordHash: passHash,
+                firstName: createdStudent.firstName,
+                lastName: createdStudent.lastName,
+                phone: createdStudent.phone || null,
+                isActive: true,
+                userRoles: {
+                  create: { roleId: studentRole!.id },
+                },
+                userCampuses: {
+                  create: { campusId: createdStudent.campusId, isDefault: true },
+                },
+              },
+            });
+          }
+
+          // Parent role & user if guardian info provided
+          if (data.guardianPhone || data.guardianEmail) {
+            let parentRole = await this.prisma.role.findFirst({ where: { tenantId, name: 'PARENT' } });
+            if (!parentRole) {
+              parentRole = await this.prisma.role.create({
+                data: {
+                  id: `role_parent_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
+                  tenantId,
+                  name: 'PARENT',
+                  description: 'Parent or Guardian with student ward portal access',
+                  isSystem: true,
+                },
+              });
+              const perms = await this.prisma.permission.findMany({
+                where: {
+                  name: {
+                    in: [
+                      'parents.view',
+                      'students.view',
+                      'academics.view',
+                      'attendance.view',
+                      'fees.view',
+                      'payments.view',
+                    ],
+                  },
+                },
+              });
+              if (perms.length > 0 && parentRole) {
+                await this.prisma.rolePermission.createMany({
+                  data: perms.map((p) => ({ roleId: parentRole!.id, permissionId: p.id })),
+                  skipDuplicates: true,
+                });
+              }
+            }
+
+            const phoneClean = (data.guardianPhone || '').replace(/\s+/g, '');
+            const parentEmail = data.guardianEmail
+              ? data.guardianEmail.toLowerCase().trim()
+              : `parent.${phoneClean.replace(/[^0-9]/g, '') || randomUUID().slice(0, 6)}@${tenantSlug}.school`;
+
+            const existingParentUser = await this.prisma.user.findFirst({
+              where: {
+                tenantId,
+                OR: [
+                  { email: parentEmail },
+                  ...(phoneClean ? [{ phone: phoneClean }] : []),
+                ],
+              },
+            });
+
+            if (!existingParentUser && parentRole) {
+              const passHash = await bcrypt.hash('Password123!', 10);
+              const nameParts = (data.guardianName || 'Guardian').trim().split(/\s+/);
+              await this.prisma.user.create({
+                data: {
+                  id: `usr_par_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                  tenantId,
+                  email: parentEmail,
+                  passwordHash: passHash,
+                  firstName: nameParts[0] || 'Guardian',
+                  lastName: nameParts.slice(1).join(' ') || 'Parent',
+                  phone: phoneClean || null,
+                  isActive: true,
+                  userRoles: {
+                    create: { roleId: parentRole!.id },
+                  },
+                },
+              });
+            }
+          }
+        } catch (e: any) {
+          this.logger.warn(`Could not auto-provision user accounts on enrollment: ${e.message}`);
+        }
+
         const formatted = {
           id: createdStudent.id,
           tenantId: createdStudent.tenantId,
@@ -625,5 +768,167 @@ export class StudentsService {
     await this.findById(tenantId, studentId);
     this.prisma.memoryStore.students.delete(studentId);
     return { success: true, message: 'Student removed successfully' };
+  }
+
+  async getPortalProfile(tenantId: string, userId: string) {
+    if (this.prisma.isDbConnected) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+      });
+      if (!user) throw new NotFoundException('User account not found');
+
+      // Find corresponding student in this tenant
+      let student = await this.prisma.student.findFirst({
+        where: {
+          tenantId,
+          OR: [
+            { email: user.email },
+            ...(user.phone ? [{ phone: user.phone }] : []),
+          ],
+        },
+        include: {
+          campus: true,
+          enrollments: {
+            where: { status: 'ACTIVE' },
+            include: { class: true, academicYear: true },
+            orderBy: { enrolledAt: 'desc' },
+            take: 1,
+          },
+          attendance: {
+            take: 50,
+            orderBy: { date: 'desc' },
+          },
+          invoices: {
+            orderBy: { dueDate: 'desc' },
+          },
+        },
+      });
+
+      if (!student) {
+        const cleanUserPrefix = user.email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+        const candidateStudents = await this.prisma.student.findMany({
+          where: {
+            tenantId,
+            OR: [
+              { firstName: user.firstName, lastName: user.lastName },
+            ],
+          },
+          include: {
+            campus: true,
+            enrollments: {
+              where: { status: 'ACTIVE' },
+              include: { class: true, academicYear: true },
+              orderBy: { enrolledAt: 'desc' },
+              take: 1,
+            },
+            attendance: {
+              take: 50,
+              orderBy: { date: 'desc' },
+            },
+            invoices: {
+              orderBy: { dueDate: 'desc' },
+            },
+          },
+        });
+
+        student =
+          candidateStudents.find(
+            (s) => s.admissionNumber.toLowerCase().replace(/[^a-z0-9]/g, '') === cleanUserPrefix,
+          ) || candidateStudents[0] || null;
+
+        if (student && !student.email) {
+          await this.prisma.student.update({
+            where: { id: student.id },
+            data: { email: user.email },
+          });
+        }
+      }
+
+      if (!student) {
+        throw new NotFoundException('Student profile not found for this account.');
+      }
+
+      // Compute authentic attendance metrics
+      const totalAttendance = student.attendance.length;
+      const presentCount = student.attendance.filter((a) => a.status === 'PRESENT').length;
+      const attendancePercentage =
+        totalAttendance > 0 ? Math.round((presentCount / totalAttendance) * 100) : 100;
+
+      // Compute authentic fee metrics
+      const totalInvoiced = student.invoices.reduce((sum, inv) => sum + (inv.totalAmount || 0), 0);
+      const totalPaid = student.invoices.reduce((sum, inv) => sum + (inv.paidAmount || 0), 0);
+      const balanceDue = student.invoices.reduce((sum, inv) => sum + (inv.balanceAmount || 0), 0);
+
+      return {
+        student: {
+          id: student.id,
+          admissionNumber: student.admissionNumber,
+          firstName: student.firstName,
+          middleName: student.middleName,
+          lastName: student.lastName,
+          fullName: [student.firstName, student.middleName, student.lastName].filter(Boolean).join(' '),
+          gender: student.gender,
+          dateOfBirth: student.dateOfBirth,
+          photoUrl: student.photoUrl,
+          campus: student.campus?.name || 'Main Campus',
+          status: student.status,
+        },
+        enrollment: {
+          className: student.enrollments?.[0]?.class?.name || 'Unassigned',
+          academicYear: student.enrollments?.[0]?.academicYear?.name || 'Current Session',
+        },
+        attendance: {
+          totalDays: totalAttendance,
+          presentDays: presentCount,
+          percentage: attendancePercentage,
+        },
+        fees: {
+          totalInvoiced,
+          totalPaid,
+          balanceDue,
+          isSettled: balanceDue <= 0,
+          invoicesCount: student.invoices.length,
+          invoices: student.invoices.map((inv) => ({
+            id: inv.id,
+            invoiceNumber: inv.invoiceNumber,
+            totalAmount: inv.totalAmount,
+            paidAmount: inv.paidAmount,
+            balanceAmount: inv.balanceAmount,
+            status: inv.status,
+            dueDate: inv.dueDate,
+          })),
+        },
+      };
+    }
+
+    // MemoryStore fallback
+    return {
+      student: {
+        id: 'std_mock_01',
+        admissionNumber: 'STU-001',
+        firstName: 'Student',
+        lastName: 'Member',
+        fullName: 'Student Member',
+        campus: 'Main Campus',
+        status: 'ACTIVE',
+      },
+      enrollment: {
+        className: 'JSS 1 Gold',
+        academicYear: '2026/2027',
+      },
+      attendance: {
+        totalDays: 60,
+        presentDays: 58,
+        percentage: 96,
+      },
+      fees: {
+        totalInvoiced: 120000,
+        totalPaid: 120000,
+        balanceDue: 0,
+        isSettled: true,
+        invoicesCount: 1,
+        invoices: [],
+      },
+    };
   }
 }

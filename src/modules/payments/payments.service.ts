@@ -416,13 +416,14 @@ export class PaymentsService {
       throw new BadRequestException('This invoice has already been fully paid.');
     }
 
-    if (!student) {
+    const targetStudentId = dto.studentId || invoice.studentId;
+    if (!student && targetStudentId) {
       student =
-        this.prisma.memoryStore.students.get(dto.studentId) ||
+        this.prisma.memoryStore.students.get(targetStudentId) ||
         Array.from(this.prisma.memoryStore.students.values()).find(
           (s: any) =>
             s.tenantId === tenantId &&
-            (s.admissionNumber === dto.studentId || s.id === dto.studentId),
+            (s.admissionNumber === targetStudentId || s.id === targetStudentId),
         );
     }
 
