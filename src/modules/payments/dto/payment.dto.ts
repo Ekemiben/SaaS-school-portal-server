@@ -111,6 +111,26 @@ export class TenantPaymentConfigDto {
   @IsOptional()
   @IsBoolean()
   enableCardPayments?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  enableBankTransfer?: boolean;
+
+  @IsOptional()
+  @IsString()
+  bankName?: string;
+
+  @IsOptional()
+  @IsString()
+  accountNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  accountName?: string;
+
+  @IsOptional()
+  @IsString()
+  paymentInstructions?: string;
 }
 
 export class RefundPaymentDto {

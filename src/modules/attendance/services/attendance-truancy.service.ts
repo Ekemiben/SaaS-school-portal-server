@@ -24,7 +24,22 @@ export class AttendanceTruancyService {
     remarks?: string,
   ) {
     const config = await this.configService.getConfig(tenantId);
-    const student = this.prisma.memoryStore.students.get(studentId);
+    let student: any = null;
+    if (this.prisma.isDbConnected) {
+      student = await this.prisma.student.findFirst({
+        where: { tenantId, id: studentId },
+        include: {
+          parents: {
+            include: {
+              parent: true,
+            },
+          },
+        },
+      });
+    }
+    if (!student) {
+      student = this.prisma.memoryStore.students.get(studentId);
+    }
     if (!student || student.tenantId !== tenantId) return;
 
     // 1. Dispatch Immediate Daily Absence Alert if configured
@@ -37,9 +52,28 @@ export class AttendanceTruancyService {
     }
 
     // 2. Evaluate Consecutive Absences for Truancy
-    const allStudentRecords = Array.from(this.prisma.memoryStore.attendance.values())
-      .filter((a: any) => a.tenantId === tenantId && a.studentId === studentId && (a.sessionType === 'DAILY' || !a.sessionType))
-      .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    let allStudentRecords: any[] = [];
+    if (this.prisma.isDbConnected) {
+      try {
+        allStudentRecords = await this.prisma.attendance.findMany({
+          where: {
+            tenantId,
+            studentId,
+            OR: [{ sessionType: 'DAILY' }, { sessionType: 'MORNING' }],
+          },
+          orderBy: { date: 'desc' },
+          take: 20,
+        });
+      } catch (err: any) {
+        // Fallback to memory store if query fails
+      }
+    }
+
+    if (allStudentRecords.length === 0) {
+      allStudentRecords = Array.from(this.prisma.memoryStore.attendance.values())
+        .filter((a: any) => a.tenantId === tenantId && a.studentId === studentId && (a.sessionType === 'DAILY' || !a.sessionType))
+        .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    }
 
     let consecutiveAbsences = 0;
     for (const r of allStudentRecords) {
@@ -80,6 +114,28 @@ export class AttendanceTruancyService {
       thresholdValue: number;
     },
   ) {
+    if (this.prisma.isDbConnected) {
+      try {
+        const incident = await this.prisma.truancyIncident.create({
+          data: {
+            tenantId,
+            campusId,
+            studentId,
+            classId,
+            incidentType: data.incidentType,
+            severity: data.severity,
+            triggerValue: data.triggerValue,
+            thresholdValue: data.thresholdValue,
+            parentNotified: true,
+            status: 'OPEN',
+          },
+        });
+        return incident;
+      } catch (err: any) {
+        this.logger.warn(`PostgreSQL recordTruancyIncident failed: ${err.message}, falling back to memory store`);
+      }
+    }
+
     const id = `tru_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
     const incident = {
       id,
@@ -114,7 +170,12 @@ export class AttendanceTruancyService {
     try {
       // Find parent contact
       let parentContact: { phone?: string; email?: string } | null = null;
-      if (student.parentId) {
+      if (student.parents && student.parents.length > 0) {
+        const p = student.parents[0]?.parent;
+        if (p) parentContact = { phone: p.phone, email: p.email };
+      }
+
+      if (!parentContact && student.parentId) {
         const parent = this.prisma.memoryStore.parents.get(student.parentId);
         if (parent) {
           parentContact = { phone: parent.phone, email: parent.email };

@@ -108,6 +108,7 @@ export const SystemPermissions = {
   PLATFORM_TENANT_CREATE: 'platform.tenant.create',
   PLATFORM_TENANT_UPDATE: 'platform.tenant.update',
   PLATFORM_TENANT_SUSPEND: 'platform.tenant.suspend',
+  PLATFORM_TENANT_DELETE: 'platform.tenant.delete',
   PLATFORM_USER_VIEW: 'platform.user.view',
   PLATFORM_USER_CREATE: 'platform.user.create',
   PLATFORM_USER_UPDATE: 'platform.user.update',

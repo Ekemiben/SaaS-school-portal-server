@@ -3,6 +3,7 @@ import { CurrentTenant } from '../../../common/decorators/current-tenant.decorat
 import { CurrentUser } from '../../../common/decorators/current-user.decorator.js';
 import type { TenantContext } from '../../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../../common/decorators/permissions.decorator.js';
+import { RequireSubscriptionFeature } from '../../../common/decorators/subscription-feature.decorator.js';
 import { SystemPermissions } from '../../../common/constants/permissions.js';
 import { DisciplineIncidentService } from '../services/discipline-incident.service.js';
 import {
@@ -15,6 +16,7 @@ import {
 } from '../dto/update-incident.dto.js';
 
 @Controller('api/v1/discipline/incidents')
+@RequireSubscriptionFeature('DISCIPLINE_MANAGEMENT')
 export class DisciplineIncidentsController {
   constructor(private readonly incidentService: DisciplineIncidentService) {}
 

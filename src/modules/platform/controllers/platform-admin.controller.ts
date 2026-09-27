@@ -1,7 +1,9 @@
 import {
   Controller,
   Get,
+  Post,
   Patch,
+  Delete,
   Param,
   Body,
   Query,
@@ -15,6 +17,8 @@ import {
   PlatformTenantFilterDto,
   UpdateTenantStatusDto,
   UpdateTenantPlanDto,
+  TenantDangerActionDto,
+  DeleteTenantDangerDto,
 } from '../dto/platform-tenant.dto.js';
 import { AuthGuard } from '../../../common/guards/auth.guard.js';
 import { PlatformAdminGuard } from '../../../common/guards/platform-admin.guard.js';
@@ -70,4 +74,68 @@ export class PlatformAdminController {
       user?.id || 'superadmin_system',
     );
   }
+
+  // =========================================================================
+  // STEP 13: SUPER ADMIN DANGER ZONE ENDPOINTS
+  // =========================================================================
+
+  @Post('tenants/:id/deactivate')
+  @RequirePermissions(SystemPermissions.PLATFORM_TENANT_SUSPEND)
+  deactivateTenant(
+    @Param('id') tenantId: string,
+    @CurrentUser() user: any,
+    @Body() dto: TenantDangerActionDto,
+  ) {
+    return this.adminService.deactivateTenant(tenantId, dto?.reason, user);
+  }
+
+  @Post('tenants/:id/suspend')
+  @RequirePermissions(SystemPermissions.PLATFORM_TENANT_SUSPEND)
+  suspendTenant(
+    @Param('id') tenantId: string,
+    @CurrentUser() user: any,
+    @Body() dto: TenantDangerActionDto,
+  ) {
+    return this.adminService.suspendTenant(tenantId, dto?.reason || 'Administrative Suspension', user);
+  }
+
+  @Post('tenants/:id/archive')
+  @RequirePermissions(SystemPermissions.PLATFORM_TENANT_SUSPEND)
+  archiveTenant(
+    @Param('id') tenantId: string,
+    @CurrentUser() user: any,
+    @Body() dto: TenantDangerActionDto,
+  ) {
+    return this.adminService.archiveTenant(tenantId, dto?.reason, user);
+  }
+
+  @Post('tenants/:id/reactivate')
+  @RequirePermissions(SystemPermissions.PLATFORM_TENANT_SUSPEND)
+  reactivateTenant(
+    @Param('id') tenantId: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.adminService.reactivateTenant(tenantId, user);
+  }
+
+  @Post('tenants/:id/delete')
+  @RequirePermissions(SystemPermissions.PLATFORM_TENANT_DELETE)
+  deleteTenantPost(
+    @Param('id') tenantId: string,
+    @CurrentUser() user: any,
+    @Body() dto: DeleteTenantDangerDto,
+  ) {
+    return this.adminService.deleteTenantDanger(tenantId, dto, user);
+  }
+
+  @Delete('tenants/:id')
+  @RequirePermissions(SystemPermissions.PLATFORM_TENANT_DELETE)
+  deleteTenant(
+    @Param('id') tenantId: string,
+    @CurrentUser() user: any,
+    @Body() dto: DeleteTenantDangerDto,
+  ) {
+    return this.adminService.deleteTenantDanger(tenantId, dto, user);
+  }
 }
+

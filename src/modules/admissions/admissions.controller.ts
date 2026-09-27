@@ -1,5 +1,6 @@
-import { Controller, Get, Post, Patch, Body, Param, Query, Req } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Req } from '@nestjs/common';
 import { Permissions } from '../../common/decorators/permissions.decorator.js';
+import { RequireSubscriptionFeature } from '../../common/decorators/subscription-feature.decorator.js';
 import { AdmissionApplicationService } from './services/admission-application.service.js';
 import { AdmissionDocumentService } from './services/admission-document.service.js';
 import {
@@ -10,7 +11,8 @@ import {
 } from './dto/admission-application.dto.js';
 import { UploadAdmissionDocumentDto } from './dto/admission-document.dto.js';
 
-@Controller('admissions')
+@Controller(['api/v1/admissions', 'admissions'])
+@RequireSubscriptionFeature('ADMISSIONS_PORTAL')
 export class AdmissionsController {
   constructor(
     private readonly applicationService: AdmissionApplicationService,
@@ -53,6 +55,22 @@ export class AdmissionsController {
     @Body() dto: TransitionApplicationStatusDto,
   ) {
     return this.applicationService.transitionStatus(req.tenantId, id, dto);
+  }
+
+  @Post('applications/:id/enroll')
+  @Permissions('admissions.update')
+  async enrollCandidate(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    return this.applicationService.enrollCandidate(req.tenantId, id, body);
+  }
+
+  @Delete('applications/:id')
+  @Permissions('admissions.update')
+  async deleteApplication(@Req() req: any, @Param('id') id: string) {
+    return this.applicationService.deleteApplication(req.tenantId, id);
   }
 
   @Post('applications/:id/documents')

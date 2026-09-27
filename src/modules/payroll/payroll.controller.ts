@@ -6,6 +6,7 @@ import { PayslipService } from './payslip.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
+import { RequireSubscriptionFeature } from '../../common/decorators/subscription-feature.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
 import {
   CalculateSalaryDto,
@@ -25,6 +26,7 @@ import {
 import { QueryStaffPayslipsDto, BulkGeneratePayslipsDto } from './dto/payslip.dto.js';
 
 @Controller('api/v1/payroll')
+@RequireSubscriptionFeature('PAYROLL_BASIC')
 export class PayrollController {
   constructor(
     private readonly payrollService: PayrollService,

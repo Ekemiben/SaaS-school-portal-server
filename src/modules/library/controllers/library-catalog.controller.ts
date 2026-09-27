@@ -10,6 +10,7 @@ import {
 import { CurrentTenant } from '../../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../../common/decorators/permissions.decorator.js';
+import { RequireSubscriptionFeature } from '../../../common/decorators/subscription-feature.decorator.js';
 import { SystemPermissions } from '../../../common/constants/permissions.js';
 import { BookCatalogService } from '../services/book-catalog.service.js';
 import {
@@ -24,6 +25,7 @@ import {
 } from '../dto/library-filter.dto.js';
 
 @Controller('api/v1/library')
+@RequireSubscriptionFeature('LIBRARY_MANAGEMENT')
 export class LibraryCatalogController {
   constructor(private readonly catalogService: BookCatalogService) {}
 

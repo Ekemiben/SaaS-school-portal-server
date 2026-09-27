@@ -43,3 +43,25 @@ export class UpdateTenantPlanDto {
   @IsOptional()
   notes?: string;
 }
+
+export class TenantDangerActionDto {
+  @IsString()
+  @IsOptional()
+  reason?: string;
+}
+
+export class DeleteTenantDangerDto {
+  @IsString()
+  confirmationSchoolName: string;
+
+  @IsString()
+  superAdminPassword: string;
+
+  @IsBoolean()
+  confirmationCheckbox: boolean;
+
+  @IsString()
+  @IsOptional()
+  reason?: string;
+}
+

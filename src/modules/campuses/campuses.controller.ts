@@ -4,8 +4,9 @@ import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
+import { RequireSubscriptionFeature } from '../../common/decorators/subscription-feature.decorator.js';
 
-@Controller('api/v1/campuses')
+@Controller(['api/v1/campuses', 'campuses'])
 export class CampusesController {
   constructor(private readonly campusesService: CampusesService) {}
 
@@ -22,6 +23,7 @@ export class CampusesController {
     return this.campusesService.findById(tenant.tenantId, id);
   }
 
+  @RequireSubscriptionFeature('MULTI_CAMPUS')
   @RequirePermissions(SystemPermissions.CAMPUSES_MANAGE)
   @Post()
   async createCampus(

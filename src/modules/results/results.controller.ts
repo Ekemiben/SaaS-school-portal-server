@@ -6,6 +6,7 @@ import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
+import { RequireSubscriptionFeature } from '../../common/decorators/subscription-feature.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
 import {
   CreateAssessmentStructureDto,
@@ -20,7 +21,8 @@ import {
   BatchPublishReportCardsDto,
 } from './dto/report-card.dto.js';
 
-@Controller('api/v1/results')
+@Controller(['api/v1/results', 'results'])
+@RequireSubscriptionFeature('EXAMINATIONS_RESULTS')
 export class ResultsController {
   constructor(
     private readonly resultsService: ResultsService,

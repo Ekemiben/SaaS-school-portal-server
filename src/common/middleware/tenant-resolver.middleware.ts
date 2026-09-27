@@ -28,10 +28,13 @@ export class TenantResolverMiddleware implements NestMiddleware {
     if (this.prisma.isDbConnected) {
       try {
         if (headerTenantId) {
-          tenant = await this.prisma.tenant.findUnique({
+          tenant = (await this.prisma.tenant.findUnique({
             where: { id: headerTenantId },
             include: { domains: true },
-          });
+          })) || (await this.prisma.tenant.findUnique({
+            where: { slug: headerTenantId },
+            include: { domains: true },
+          }));
         } else if (headerTenantSlug) {
           tenant = await this.prisma.tenant.findUnique({
             where: { slug: headerTenantSlug },

@@ -12,6 +12,7 @@ import { CurrentTenant } from '../../../common/decorators/current-tenant.decorat
 import { CurrentUser } from '../../../common/decorators/current-user.decorator.js';
 import type { TenantContext } from '../../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../../common/decorators/permissions.decorator.js';
+import { RequireSubscriptionFeature } from '../../../common/decorators/subscription-feature.decorator.js';
 import { SystemPermissions } from '../../../common/constants/permissions.js';
 import { InventoryItemService } from '../services/inventory-item.service.js';
 import { StockMovementService } from '../services/stock-movement.service.js';
@@ -30,6 +31,7 @@ import {
 } from '../dto/inventory-filter.dto.js';
 
 @Controller('api/v1/inventory')
+@RequireSubscriptionFeature('INVENTORY_MANAGEMENT')
 export class InventoryController {
   constructor(
     private readonly itemService: InventoryItemService,

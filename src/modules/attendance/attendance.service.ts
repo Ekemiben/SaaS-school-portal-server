@@ -51,28 +51,51 @@ export class AttendanceService {
   }
 
   async getStatistics(tenantId: string, classId?: string) {
-    if (classId) {
-      const today = new Date().toISOString().split('T')[0];
-      try {
-        return await this.reportService.getDailyClassReport(tenantId, classId, today);
-      } catch {
-        // Fallback if class not found or no records
-      }
-    }
     const records = await this.coreService.getAttendanceRecords(tenantId, { classId });
     const total = records.length;
     if (total === 0) {
-      return { totalRecords: 0, presentRate: 100, absentRate: 0, lateRate: 0, chronicAbsentees: [] };
+      return {
+        totalRecords: 0,
+        totalStudentsRecorded: 0,
+        presentRate: 100,
+        absentRate: 0,
+        lateRate: 0,
+        chronicAbsentees: [],
+      };
     }
     const presentCount = records.filter((r: any) => r.status === 'PRESENT').length;
     const absentCount = records.filter((r: any) => r.status === 'ABSENT').length;
     const lateCount = records.filter((r: any) => r.status === 'LATE').length;
+    const excusedCount = records.filter((r: any) => r.status === 'EXCUSED').length;
+
+    // Aggregate student absences
+    const studentAbsenceMap = new Map<string, { studentId: string; studentName: string; admissionNumber: string; absenceCount: number }>();
+    for (const r of records) {
+      if (r.status === 'ABSENT') {
+        const sId = r.studentId;
+        const name = r.student ? `${r.student.firstName} ${r.student.lastName}` : 'Student';
+        const adm = r.student?.admissionNumber || 'N/A';
+        const existing = studentAbsenceMap.get(sId) || { studentId: sId, studentName: name, admissionNumber: adm, absenceCount: 0 };
+        existing.absenceCount++;
+        studentAbsenceMap.set(sId, existing);
+      }
+    }
+
+    const chronicAbsentees = Array.from(studentAbsenceMap.values())
+      .filter((s) => s.absenceCount >= 3)
+      .sort((a, b) => b.absenceCount - a.absenceCount);
+
     return {
       totalRecords: total,
-      presentRate: Math.round((presentCount / total) * 100),
+      totalStudentsRecorded: total,
+      presentCount,
+      absentCount,
+      lateCount,
+      excusedCount,
+      presentRate: Math.round(((presentCount + lateCount) / total) * 100),
       absentRate: Math.round((absentCount / total) * 100),
       lateRate: Math.round((lateCount / total) * 100),
-      chronicAbsentees: [],
+      chronicAbsentees,
     };
   }
 

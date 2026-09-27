@@ -5,6 +5,8 @@ import {
 import { PrismaService } from '../../../database/prisma.service.js';
 import { CsvParserService } from './csv-parser.service.js';
 import { AuditService } from '../../audit/audit.service.js';
+import * as bcrypt from 'bcryptjs';
+import { randomUUID } from 'crypto';
 import {
   ImportStudentsDto,
   ImportParentsDto,
@@ -126,7 +128,101 @@ export class DataImportService {
     let createdCount = 0;
     if (mode === 'COMMIT' && errors.length === 0) {
       for (const d of validRowsData) {
-        const parentId = `par_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const parentId = `par_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+        const cleanEmail = d.email ? d.email.toLowerCase().trim() : null;
+        const cleanPhone = d.phone ? d.phone.replace(/\s+/g, '').trim() : null;
+
+        if (this.prisma.isDbConnected) {
+          try {
+            // Check if user exists or provision new
+            let parentUserId: string | null = null;
+            if (cleanEmail || cleanPhone) {
+              const existingUser = await this.prisma.user.findFirst({
+                where: {
+                  tenantId,
+                  OR: [
+                    ...(cleanEmail ? [{ email: cleanEmail }] : []),
+                    ...(cleanPhone ? [{ phone: cleanPhone }] : []),
+                  ],
+                },
+              });
+
+              let role = await this.prisma.role.findFirst({
+                where: { tenantId, name: 'PARENT' },
+              });
+              if (!role) {
+                role = await this.prisma.role.create({
+                  data: {
+                    id: `role_parent_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
+                    tenantId,
+                    name: 'PARENT',
+                    description: 'Parent or Guardian with student ward portal access',
+                    isSystem: true,
+                  },
+                });
+              }
+
+              if (existingUser) {
+                parentUserId = existingUser.id;
+                await this.prisma.userRole.upsert({
+                  where: {
+                    userId_roleId: {
+                      userId: existingUser.id,
+                      roleId: role.id,
+                    },
+                  },
+                  create: {
+                    id: `ur_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                    userId: existingUser.id,
+                    roleId: role.id,
+                  },
+                  update: {},
+                });
+              } else {
+                const passwordHash = await bcrypt.hash(randomUUID(), 10);
+                const newUserId = `usr_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+                const userEmail = cleanEmail || `${cleanPhone || randomUUID().substring(0, 8)}@parent.portal`;
+                const createdUser = await this.prisma.user.create({
+                  data: {
+                    id: newUserId,
+                    tenantId,
+                    email: userEmail,
+                    phone: cleanPhone,
+                    firstName: d.firstName,
+                    lastName: d.lastName,
+                    passwordHash,
+                    isActive: true,
+                    userRoles: {
+                      create: {
+                        id: `ur_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                        roleId: role.id,
+                      },
+                    },
+                  },
+                });
+                parentUserId = createdUser.id;
+              }
+            }
+
+            await this.prisma.parent.create({
+              data: {
+                id: parentId,
+                tenantId,
+                userId: parentUserId || undefined,
+                firstName: d.firstName,
+                lastName: d.lastName,
+                email: cleanEmail,
+                phone: cleanPhone,
+                relationship: d.relationship || 'Parent',
+              },
+            });
+            createdCount++;
+            continue;
+          } catch (err: any) {
+            this.logger.warn(`Failed DB import for parent ${d.email || d.phone}: ${err.message}`);
+          }
+        }
+
         this.prisma.memoryStore.parents.set(parentId, {
           id: parentId,
           tenantId,

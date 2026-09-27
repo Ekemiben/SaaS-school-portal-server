@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'crypto';
+import crypto, { randomUUID } from 'crypto';
 import {
   PaymentProviderAdapter,
   InitializePaymentParams,
@@ -141,7 +141,14 @@ export class FlutterwavePaymentAdapter implements PaymentProviderAdapter {
   }
 
   verifyWebhookSignature(signature: string, _rawBody?: string | Buffer): boolean {
-    if (!signature) return false;
-    return signature === this.webhookSecretHash;
+    if (!signature || typeof signature !== 'string') return false;
+    const expected = this.webhookSecretHash;
+    try {
+      const sigBuf = Buffer.from(signature, 'utf8');
+      const expBuf = Buffer.from(expected, 'utf8');
+      return sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf);
+    } catch {
+      return false;
+    }
   }
 }

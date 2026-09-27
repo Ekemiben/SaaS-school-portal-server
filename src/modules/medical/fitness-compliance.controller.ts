@@ -14,6 +14,7 @@ import { HealthComplianceService } from './services/health-compliance.service.js
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
+import { RequireSubscriptionFeature } from '../../common/decorators/subscription-feature.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
 import {
   UpdateSchoolMedicalPolicyDto,
@@ -30,6 +31,7 @@ import {
 } from './dto/health-screening.dto.js';
 
 @Controller('api/v1/medical')
+@RequireSubscriptionFeature('MEDICAL_CLINIC')
 export class FitnessComplianceController {
   constructor(
     private readonly policyService: MedicalPolicyService,

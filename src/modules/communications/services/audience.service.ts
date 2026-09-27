@@ -18,6 +18,193 @@ export class AudienceService {
   ): Promise<RecipientInfo[]> {
     const recipients: RecipientInfo[] = [];
 
+    if (this.prisma.isDbConnected) {
+      try {
+        switch (dto.audienceType) {
+          case AudienceType.ALL_PARENTS: {
+            const parents = await this.prisma.parent.findMany({
+              where: { tenantId },
+            });
+            for (const p of parents) {
+              recipients.push({
+                userId: p.id,
+                name: `${p.firstName || ''} ${p.lastName || ''}`.trim() || 'Parent',
+                email: p.email || undefined,
+                phone: p.phone || undefined,
+                role: 'PARENT',
+              });
+            }
+            break;
+          }
+
+          case AudienceType.ALL_STUDENTS: {
+            const students = await this.prisma.student.findMany({
+              where: { tenantId, status: 'ACTIVE' },
+            });
+            for (const s of students) {
+              recipients.push({
+                userId: s.id,
+                name: `${s.firstName || ''} ${s.lastName || ''}`.trim(),
+                email: s.email || undefined,
+                phone: s.phone || undefined,
+                role: 'STUDENT',
+                studentId: s.id,
+                studentName: `${s.firstName || ''} ${s.lastName || ''}`.trim(),
+              });
+            }
+            break;
+          }
+
+          case AudienceType.SELECTED_CAMPUS: {
+            if (!dto.campusId) break;
+            const students = await this.prisma.student.findMany({
+              where: { tenantId, campusId: dto.campusId, status: 'ACTIVE' },
+            });
+            for (const s of students) {
+              recipients.push({
+                userId: s.id,
+                name: `${s.firstName || ''} ${s.lastName || ''}`.trim(),
+                email: s.email || undefined,
+                phone: s.phone || undefined,
+                role: 'STUDENT',
+                studentId: s.id,
+              });
+            }
+            break;
+          }
+
+          case AudienceType.SELECTED_CLASS:
+          case AudienceType.SELECTED_CLASSES: {
+            const classIds = dto.classIds || (dto.classId ? [dto.classId] : []);
+            const students = await this.prisma.student.findMany({
+              where: {
+                tenantId,
+                status: 'ACTIVE',
+                enrollments: {
+                  some: {
+                    classId: { in: classIds },
+                    status: 'ACTIVE',
+                  },
+                },
+              },
+            });
+            for (const s of students) {
+              recipients.push({
+                userId: s.id,
+                name: `${s.firstName || ''} ${s.lastName || ''}`.trim(),
+                email: s.email || undefined,
+                phone: s.phone || undefined,
+                role: 'STUDENT',
+                studentId: s.id,
+              });
+            }
+            break;
+          }
+
+          case AudienceType.STUDENTS_OUTSTANDING_FEES:
+          case AudienceType.PARENTS_OUTSTANDING_FEES: {
+            const invoices = await this.prisma.invoice.findMany({
+              where: {
+                tenantId,
+                balanceAmount: { gt: 0 },
+                status: { not: 'CANCELLED' },
+              },
+              include: {
+                student: {
+                  include: {
+                    parents: {
+                      include: { parent: true },
+                    },
+                  },
+                },
+              },
+            });
+
+            for (const inv of invoices) {
+              const student = inv.student;
+              if (!student) continue;
+
+              if (dto.audienceType === AudienceType.STUDENTS_OUTSTANDING_FEES) {
+                recipients.push({
+                  userId: student.id,
+                  name: `${student.firstName || ''} ${student.lastName || ''}`.trim(),
+                  email: student.email || undefined,
+                  phone: student.phone || undefined,
+                  role: 'STUDENT',
+                  studentId: student.id,
+                });
+              } else {
+                for (const sp of student.parents) {
+                  const p = sp.parent;
+                  if (p) {
+                    recipients.push({
+                      userId: p.id,
+                      name: `${p.firstName || ''} ${p.lastName || ''}`.trim() || `Parent of ${student.firstName}`,
+                      email: p.email || undefined,
+                      phone: p.phone || undefined,
+                      role: 'PARENT',
+                      studentId: student.id,
+                      studentName: `${student.firstName} ${student.lastName}`,
+                    });
+                  }
+                }
+              }
+            }
+            break;
+          }
+
+          case AudienceType.CUSTOM_RECIPIENTS: {
+            if (dto.customUserIds && dto.customUserIds.length > 0) {
+              const users = await this.prisma.user.findMany({
+                where: { id: { in: dto.customUserIds }, tenantId },
+              });
+              for (const u of users) {
+                recipients.push({
+                  userId: u.id,
+                  name: `${u.firstName || ''} ${u.lastName || ''}`.trim() || 'User',
+                  email: u.email || undefined,
+                  phone: u.phone || undefined,
+                  role: 'ADMIN',
+                });
+              }
+            }
+            break;
+          }
+
+          default: {
+            const parents = await this.prisma.parent.findMany({
+              where: { tenantId },
+            });
+            for (const p of parents) {
+              recipients.push({
+                userId: p.id,
+                name: `${p.firstName || ''} ${p.lastName || ''}`.trim() || 'Parent',
+                email: p.email || undefined,
+                phone: p.phone || undefined,
+                role: 'PARENT',
+              });
+            }
+            break;
+          }
+        }
+
+        if (recipients.length > 0) {
+          const unique = new Map<string, RecipientInfo>();
+          for (const r of recipients) {
+            const key = r.userId || `${r.email}_${r.phone}`;
+            if (!unique.has(key)) {
+              unique.set(key, r);
+            }
+          }
+          this.logger.log(`Resolved audience ${dto.audienceType} -> ${unique.size} recipients from DB for tenant ${tenantId}`);
+          return Array.from(unique.values());
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not resolve audience from DB: ${err.message}`);
+      }
+    }
+
+    // Memory Store Fallback
     switch (dto.audienceType) {
       case AudienceType.ALL_PARENTS: {
         const parents = Array.from(this.prisma.memoryStore.parents.values()).filter(
@@ -102,7 +289,6 @@ export class AudienceService {
                 studentId: student.id,
               });
             } else {
-              // Find parent for this student
               const parent = Array.from(this.prisma.memoryStore.parents.values()).find(
                 (p) => p.tenantId === tenantId,
               );
@@ -154,7 +340,6 @@ export class AudienceService {
       }
 
       default: {
-        // Fallback to all parents
         const parents = Array.from(this.prisma.memoryStore.parents.values()).filter(
           (p) => p.tenantId === tenantId,
         );

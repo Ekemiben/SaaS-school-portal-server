@@ -5,7 +5,7 @@ import { AppModule } from './app.module.js';
 import { CustomValidationPipe } from './common/pipes/validation.pipe.js';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   app.use(cookieParser());
   app.useGlobalPipes(new CustomValidationPipe());

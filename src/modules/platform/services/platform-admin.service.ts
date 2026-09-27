@@ -2,8 +2,11 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
+  UnauthorizedException,
   Logger,
 } from '@nestjs/common';
+import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../../../database/prisma.service.js';
 import { AuditService } from '../../audit/audit.service.js';
 import { SubscriptionsService, SAAS_PLANS } from '../../subscriptions/subscriptions.service.js';
@@ -11,6 +14,8 @@ import {
   PlatformTenantFilterDto,
   UpdateTenantStatusDto,
   UpdateTenantPlanDto,
+  TenantDangerActionDto,
+  DeleteTenantDangerDto,
 } from '../dto/platform-tenant.dto.js';
 
 @Injectable()
@@ -361,6 +366,360 @@ export class PlatformAdminService {
       plan: tenant.plan,
       features: tenant.features,
       message: `Tenant plan successfully updated to ${plan.name}`,
+    };
+  }
+
+  /**
+   * Step 13: Super Admin Danger Zone - Deactivate school subscription and cancel active renewals.
+   */
+  async deactivateTenant(tenantId: string, reason?: string, adminUser?: any) {
+    const now = new Date();
+    if (this.prisma.isDbConnected) {
+      try {
+        const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+        if (!tenant) throw new NotFoundException(`Tenant with ID '${tenantId}' not found.`);
+
+        // 1. Update Subscription to CANCELLED
+        await this.prisma.subscription.updateMany({
+          where: { tenantId },
+          data: { status: 'CANCELLED', autoRenew: false, updatedAt: now },
+        });
+
+        // 2. Update Tenant to SUSPENDED
+        await this.prisma.tenant.update({
+          where: { id: tenantId },
+          data: { status: 'SUSPENDED', updatedAt: now },
+        });
+
+        // 3. Log Audit
+        await this.auditService.log({
+          tenantId,
+          actorUserId: adminUser?.id || adminUser?.userId || 'superadmin_system',
+          action: 'TENANT_DEACTIVATED',
+          resourceType: 'TENANT',
+          resourceId: tenantId,
+          beforeData: { status: tenant.status },
+          afterData: {
+            status: 'SUSPENDED',
+            subscriptionStatus: 'CANCELLED',
+            reason: reason || 'Platform Super Admin Deactivation',
+            deactivatedBy: adminUser?.email || 'Platform Super Admin',
+          },
+        });
+
+        // 4. Memory store sync
+        const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
+        if (memTenant) memTenant.status = 'SUSPENDED';
+
+        return {
+          success: true,
+          status: 'DEACTIVATED',
+          message: `School tenant '${tenant.name}' subscription has been deactivated.`,
+        };
+      } catch (err: any) {
+        this.logger.error(`Error deactivating tenant ${tenantId}: ${err?.message}`);
+        throw err;
+      }
+    }
+
+    const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
+    if (!memTenant) throw new NotFoundException(`Tenant with ID '${tenantId}' not found.`);
+    memTenant.status = 'SUSPENDED';
+    return { success: true, status: 'DEACTIVATED', message: `School tenant '${memTenant.name}' deactivated.` };
+  }
+
+  /**
+   * Step 13: Super Admin Danger Zone - Suspend school portal and block all staff/student access.
+   */
+  async suspendTenant(tenantId: string, reason: string, adminUser?: any) {
+    const now = new Date();
+    if (!reason || !reason.trim()) {
+      throw new BadRequestException('A reason for school suspension is strictly required.');
+    }
+
+    if (this.prisma.isDbConnected) {
+      try {
+        const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+        if (!tenant) throw new NotFoundException(`Tenant with ID '${tenantId}' not found.`);
+
+        await this.prisma.subscription.updateMany({
+          where: { tenantId },
+          data: { status: 'SUSPENDED', updatedAt: now },
+        });
+
+        await this.prisma.tenant.update({
+          where: { id: tenantId },
+          data: { status: 'SUSPENDED', updatedAt: now },
+        });
+
+        await this.auditService.log({
+          tenantId,
+          actorUserId: adminUser?.id || adminUser?.userId || 'superadmin_system',
+          action: 'TENANT_SUSPENDED',
+          resourceType: 'TENANT',
+          resourceId: tenantId,
+          beforeData: { status: tenant.status },
+          afterData: {
+            status: 'SUSPENDED',
+            reason,
+            suspendedBy: adminUser?.email || 'Platform Super Admin',
+          },
+        });
+
+        const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
+        if (memTenant) memTenant.status = 'SUSPENDED';
+
+        return {
+          success: true,
+          status: 'SUSPENDED',
+          message: `School tenant '${tenant.name}' has been suspended.`,
+        };
+      } catch (err: any) {
+        this.logger.error(`Error suspending tenant ${tenantId}: ${err?.message}`);
+        throw err;
+      }
+    }
+
+    const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
+    if (!memTenant) throw new NotFoundException(`Tenant with ID '${tenantId}' not found.`);
+    memTenant.status = 'SUSPENDED';
+    return { success: true, status: 'SUSPENDED', message: `School tenant '${memTenant.name}' suspended.` };
+  }
+
+  /**
+   * Step 13: Super Admin Danger Zone - Archive school tenant to cold storage.
+   */
+  async archiveTenant(tenantId: string, reason?: string, adminUser?: any) {
+    const now = new Date();
+    if (this.prisma.isDbConnected) {
+      try {
+        const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+        if (!tenant) throw new NotFoundException(`Tenant with ID '${tenantId}' not found.`);
+
+        await this.prisma.subscription.updateMany({
+          where: { tenantId },
+          data: { status: 'CANCELLED', autoRenew: false, updatedAt: now },
+        });
+
+        await this.prisma.tenant.update({
+          where: { id: tenantId },
+          data: { status: 'ARCHIVED', updatedAt: now },
+        });
+
+        await this.auditService.log({
+          tenantId,
+          actorUserId: adminUser?.id || adminUser?.userId || 'superadmin_system',
+          action: 'TENANT_ARCHIVED',
+          resourceType: 'TENANT',
+          resourceId: tenantId,
+          beforeData: { status: tenant.status },
+          afterData: {
+            status: 'ARCHIVED',
+            reason: reason || 'Platform Super Admin Archive to cold storage',
+            archivedBy: adminUser?.email || 'Platform Super Admin',
+          },
+        });
+
+        const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
+        if (memTenant) memTenant.status = 'ARCHIVED';
+
+        return {
+          success: true,
+          status: 'ARCHIVED',
+          message: `School tenant '${tenant.name}' has been archived to cold storage.`,
+        };
+      } catch (err: any) {
+        this.logger.error(`Error archiving tenant ${tenantId}: ${err?.message}`);
+        throw err;
+      }
+    }
+
+    const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
+    if (!memTenant) throw new NotFoundException(`Tenant with ID '${tenantId}' not found.`);
+    memTenant.status = 'ARCHIVED';
+    return { success: true, status: 'ARCHIVED', message: `School tenant '${memTenant.name}' archived.` };
+  }
+
+  /**
+   * Step 13: Super Admin Danger Zone - Reactivate a suspended/archived school tenant.
+   */
+  async reactivateTenant(tenantId: string, adminUser?: any) {
+    const now = new Date();
+    if (this.prisma.isDbConnected) {
+      try {
+        const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+        if (!tenant) throw new NotFoundException(`Tenant with ID '${tenantId}' not found.`);
+
+        await this.prisma.subscription.updateMany({
+          where: { tenantId },
+          data: { status: 'ACTIVE', updatedAt: now },
+        });
+
+        await this.prisma.tenant.update({
+          where: { id: tenantId },
+          data: { status: 'ACTIVE', updatedAt: now },
+        });
+
+        await this.auditService.log({
+          tenantId,
+          actorUserId: adminUser?.id || adminUser?.userId || 'superadmin_system',
+          action: 'TENANT_REACTIVATED',
+          resourceType: 'TENANT',
+          resourceId: tenantId,
+          beforeData: { status: tenant.status },
+          afterData: {
+            status: 'ACTIVE',
+            reactivatedBy: adminUser?.email || 'Platform Super Admin',
+          },
+        });
+
+        const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
+        if (memTenant) memTenant.status = 'ACTIVE';
+
+        return {
+          success: true,
+          status: 'ACTIVE',
+          message: `School tenant '${tenant.name}' has been restored to ACTIVE status.`,
+        };
+      } catch (err: any) {
+        this.logger.error(`Error reactivating tenant ${tenantId}: ${err?.message}`);
+        throw err;
+      }
+    }
+
+    const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
+    if (!memTenant) throw new NotFoundException(`Tenant with ID '${tenantId}' not found.`);
+    memTenant.status = 'ACTIVE';
+    return { success: true, status: 'ACTIVE', message: `School tenant '${memTenant.name}' reactivated.` };
+  }
+
+  /**
+   * Step 13: Super Admin Danger Zone - Permanent Destructive Deletion of School Tenant.
+   * Independently enforces:
+   * 1. Platform Super Admin Authorization
+   * 2. Exact School Name Confirmation Entry
+   * 3. Super Admin Password Cryptographic Verification
+   * 4. Explicit Confirmation Checkbox
+   * 5. Cascade Transaction Safety & Permanent Deletion
+   */
+  async deleteTenantDanger(tenantId: string, dto: DeleteTenantDangerDto, adminUser: any) {
+    // 1. Authorization check
+    const userRole = adminUser?.role || adminUser?.platformRole;
+    if (userRole !== 'SUPER_ADMIN' && !adminUser?.isPlatformAdmin) {
+      throw new ForbiddenException('Only Platform Super Administrators can execute permanent tenant deletion.');
+    }
+
+    // 2. Tenant existence check
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+    });
+    if (!tenant) {
+      throw new NotFoundException(`School tenant with ID '${tenantId}' not found.`);
+    }
+
+    // 3. School Name Entry Verification
+    if (
+      !dto.confirmationSchoolName ||
+      dto.confirmationSchoolName.trim().toLowerCase() !== tenant.name.trim().toLowerCase()
+    ) {
+      throw new BadRequestException(
+        `School name confirmation mismatch. You typed '${dto.confirmationSchoolName}', but the target school is '${tenant.name}'.`,
+      );
+    }
+
+    // 4. Confirmation Checkbox Verification
+    if (dto.confirmationCheckbox !== true) {
+      throw new BadRequestException(
+        'Explicit confirmation checkbox acknowledging irreversible data destruction must be checked.',
+      );
+    }
+
+    // 5. Super Admin Password Verification
+    if (!dto.superAdminPassword) {
+      throw new BadRequestException('Super Admin password is required to authorize permanent deletion.');
+    }
+
+    const adminEmail = adminUser.email || 'superadmin@platform.io';
+    const adminRecord = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { id: adminUser.id || adminUser.userId || '' },
+          { email: adminEmail },
+        ],
+      },
+    });
+
+    if (!adminRecord || !adminRecord.passwordHash) {
+      throw new UnauthorizedException('Super Admin credentials could not be verified.');
+    }
+
+    const isPasswordValid =
+      Boolean(adminRecord.passwordHash) &&
+      (adminRecord.passwordHash.startsWith('$2a$') || adminRecord.passwordHash.startsWith('$2b$')) &&
+      (await bcrypt.compare(dto.superAdminPassword, adminRecord.passwordHash));
+
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Invalid Super Admin password. Deletion authorization rejected.');
+    }
+
+    // 6. Safeguards: Prevent deleting platform master or non-deletable records
+    if (tenant.id === 'tenant_platform_system' || tenant.slug === 'platform-master') {
+      throw new BadRequestException('Core platform tenant cannot be deleted.');
+    }
+
+    // 7. Transactional Cascade Deletion
+    const deletedTenantName = tenant.name;
+    const deletedTenantSlug = tenant.slug;
+
+    if (this.prisma.isDbConnected) {
+      await this.prisma.$transaction(async (tx) => {
+        // Record platform level audit log before deletion
+        await tx.auditLog.create({
+          data: {
+            id: `aud_del_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            tenantId: tenantId,
+            action: 'TENANT_PERMANENTLY_DELETED',
+            resourceType: 'TENANT',
+            resourceId: tenantId,
+            actorUserId: adminRecord.id,
+            beforeData: {
+              tenantId,
+              schoolName: deletedTenantName,
+              slug: deletedTenantSlug,
+              status: tenant.status,
+              plan: tenant.plan,
+            },
+            afterData: {
+              reason: dto.reason || 'Super Admin Danger Zone Permanent Deletion',
+              deletedBy: adminRecord.email,
+              deletedAt: new Date().toISOString(),
+            },
+          },
+        });
+
+        // Explicitly clean up child records in dependency order to prevent FK constraints
+        await tx.subscriptionFeatureOverride.deleteMany({ where: { tenantId } });
+        await tx.subscriptionPayment.deleteMany({ where: { tenantId } });
+        await tx.billingInvoice.deleteMany({ where: { tenantId } });
+        await tx.subscription.deleteMany({ where: { tenantId } });
+        await tx.auditLog.deleteMany({ where: { tenantId } });
+        await tx.tenantDomain.deleteMany({ where: { tenantId } });
+
+        // Finally delete the tenant record
+        await tx.tenant.delete({
+          where: { id: tenantId },
+        });
+      });
+    }
+
+    // Clean up memory store
+    this.prisma.memoryStore.tenants.delete(tenantId);
+
+    return {
+      success: true,
+      tenantId,
+      schoolName: deletedTenantName,
+      message: `School tenant '${deletedTenantName}' (${tenantId}) and all associated platform records have been permanently deleted.`,
     };
   }
 }

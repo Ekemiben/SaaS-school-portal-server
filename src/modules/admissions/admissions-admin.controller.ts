@@ -18,7 +18,7 @@ import { ScheduleInterviewDto, EvaluateInterviewDto } from './dto/admission-inte
 import { CreateAdmissionDecisionDto, GenerateAdmissionOfferDto } from './dto/admission-offer.dto.js';
 import { VerifyAdmissionDocumentDto } from './dto/admission-document.dto.js';
 
-@Controller('admin/admissions')
+@Controller(['api/v1/admin/admissions', 'admin/admissions'])
 export class AdmissionsAdminController {
   constructor(
     private readonly inquiryService: AdmissionInquiryService,

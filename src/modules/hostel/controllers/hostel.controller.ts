@@ -10,6 +10,7 @@ import {
 import { CurrentTenant } from '../../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../../common/decorators/permissions.decorator.js';
+import { RequireSubscriptionFeature } from '../../../common/decorators/subscription-feature.decorator.js';
 import { SystemPermissions } from '../../../common/constants/permissions.js';
 import { HostelService } from '../services/hostel.service.js';
 import { HostelAnalyticsService } from '../services/hostel-analytics.service.js';
@@ -29,6 +30,7 @@ import {
 } from '../dto/hostel-filter.dto.js';
 
 @Controller('api/v1/hostel')
+@RequireSubscriptionFeature('HOSTEL_MANAGEMENT')
 export class HostelController {
   constructor(
     private readonly hostelService: HostelService,

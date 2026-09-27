@@ -25,7 +25,7 @@ import {
   ExamType,
 } from './dto/debt-recovery.dto.js';
 
-@Controller('api/v1/fees')
+@Controller(['api/v1/fees', 'fees'])
 export class FeesController {
   constructor(
     private readonly feesService: FeesService,

@@ -14,6 +14,7 @@ import { TenantGuard } from './common/guards/tenant.guard.js';
 import { PermissionsGuard } from './common/guards/permissions.guard.js';
 import { RolesGuard } from './common/guards/roles.guard.js';
 import { CampusGuard } from './common/guards/campus.guard.js';
+import { SubscriptionFeatureGuard } from './common/guards/subscription-feature.guard.js';
 
 // Interceptors & Filters
 import { TransformInterceptor } from './common/interceptors/transform.interceptor.js';
@@ -136,6 +137,10 @@ import { WebsiteModule } from './modules/website/website.module.js';
     {
       provide: APP_GUARD,
       useClass: CampusGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: SubscriptionFeatureGuard,
     },
     {
       provide: APP_INTERCEPTOR,

@@ -1,9 +1,10 @@
-import { Controller, Get, Post, Put, Body, Param, Query, Headers } from '@nestjs/common';
+import { Controller, Get, Post, Put, Body, Param, Query, Headers, Req } from '@nestjs/common';
 import { PaymentsService } from './payments.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
+import { RequireSubscriptionFeature } from '../../common/decorators/subscription-feature.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
 import { Public } from '../../common/decorators/public.decorator.js';
 import {
@@ -13,7 +14,7 @@ import {
   RefundPaymentDto,
 } from './dto/payment.dto.js';
 
-@Controller('api/v1/payments')
+@Controller(['api/v1/payments', 'payments'])
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 
@@ -27,12 +28,14 @@ export class PaymentsController {
   }
 
   @RequirePermissions(SystemPermissions.PAYMENTS_VIEW)
+  @RequireSubscriptionFeature('ONLINE_PAYMENTS')
   @Get('gateway-config')
   async getGatewayConfig(@CurrentTenant() tenant: TenantContext) {
     return this.paymentsService.getGatewayConfig(tenant.tenantId);
   }
 
   @RequirePermissions(SystemPermissions.FEES_MANAGE)
+  @RequireSubscriptionFeature('ONLINE_PAYMENTS')
   @Put('gateway-config')
   async updateGatewayConfig(
     @CurrentTenant() tenant: TenantContext,
@@ -119,8 +122,10 @@ export class PaymentsController {
   async paystackWebhook(
     @Headers('x-paystack-signature') signature: string,
     @Body() body: any,
+    @Req() req: any,
   ) {
-    return this.paymentsService.handleWebhook('paystack', body, signature);
+    const rawPayload = req.rawBody || body;
+    return this.paymentsService.handleWebhook('paystack', body, signature, rawPayload);
   }
 
   @Public()
@@ -128,7 +133,9 @@ export class PaymentsController {
   async flutterwaveWebhook(
     @Headers('verif-hash') signature: string,
     @Body() body: any,
+    @Req() req: any,
   ) {
-    return this.paymentsService.handleWebhook('flutterwave', body, signature);
+    const rawPayload = req.rawBody || body;
+    return this.paymentsService.handleWebhook('flutterwave', body, signature, rawPayload);
   }
 }

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
 import { randomUUID } from 'crypto';
 
@@ -7,6 +7,52 @@ export class TeachersService {
   private readonly logger = new Logger(TeachersService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  private parseSubjects(subjectsTaught?: string | null): string[] {
+    if (!subjectsTaught) return [];
+    try {
+      if (subjectsTaught.startsWith('[')) {
+        const parsed = JSON.parse(subjectsTaught);
+        return Array.isArray(parsed) ? parsed : [];
+      }
+    } catch {
+      // fallback to comma separated
+    }
+    return subjectsTaught.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+
+  private formatTeacher(t: any, campusName?: string) {
+    const assignedClass = t.classes?.[0]?.name || t.assignedClass || 'N/A';
+    const assignedClassId = t.classes?.[0]?.id || null;
+    const subjects = this.parseSubjects(t.subjectsTaught);
+
+    return {
+      id: t.id,
+      tenantId: t.tenantId,
+      campusId: t.campusId,
+      campus: campusName || t.campus?.name || 'Main Campus',
+      employeeNumber: t.employeeNumber,
+      employeeId: t.employeeNumber,
+      firstName: t.firstName,
+      lastName: t.lastName,
+      fullName: `${t.firstName} ${t.lastName}`.trim(),
+      email: t.email,
+      phone: t.phone,
+      department: t.specialization || 'General',
+      role: 'Subject Teacher',
+      specialization: t.specialization,
+      qualification: t.qualification,
+      dateJoined: t.joiningDate,
+      status: t.isActive ? 'Active' : 'Inactive',
+      isActive: t.isActive,
+      assignedClass,
+      assignedClassId,
+      subjectsTaught: subjects,
+      officeLocation: t.officeLocation || '',
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+    };
+  }
 
   async findAll(tenantId: string, campusId?: string) {
     if (this.prisma.isDbConnected) {
@@ -20,28 +66,7 @@ export class TeachersService {
           orderBy: { createdAt: 'desc' },
         });
 
-        const items = teachers.map((t) => ({
-          id: t.id,
-          tenantId: t.tenantId,
-          campusId: t.campusId,
-          campus: t.campus?.name || 'Main Campus',
-          employeeNumber: t.employeeNumber,
-          employeeId: t.employeeNumber,
-          firstName: t.firstName,
-          lastName: t.lastName,
-          fullName: `${t.firstName} ${t.lastName}`.trim(),
-          email: t.email,
-          phone: t.phone,
-          department: t.specialization || 'General',
-          role: 'Subject Teacher',
-          specialization: t.specialization,
-          qualification: t.qualification,
-          dateJoined: t.joiningDate,
-          status: t.isActive ? 'Active' : 'Inactive',
-          isActive: t.isActive,
-          createdAt: t.createdAt,
-          updatedAt: t.updatedAt,
-        }));
+        const items = teachers.map((t) => this.formatTeacher(t));
 
         for (const item of items) {
           this.prisma.memoryStore.teachers.set(item.id, item);
@@ -66,28 +91,7 @@ export class TeachersService {
           include: { campus: true, classes: true },
         });
         if (t) {
-          return {
-            id: t.id,
-            tenantId: t.tenantId,
-            campusId: t.campusId,
-            campus: t.campus?.name || 'Main Campus',
-            employeeNumber: t.employeeNumber,
-            employeeId: t.employeeNumber,
-            firstName: t.firstName,
-            lastName: t.lastName,
-            fullName: `${t.firstName} ${t.lastName}`.trim(),
-            email: t.email,
-            phone: t.phone,
-            department: t.specialization || 'General',
-            role: 'Subject Teacher',
-            specialization: t.specialization,
-            qualification: t.qualification,
-            dateJoined: t.joiningDate,
-            status: t.isActive ? 'Active' : 'Inactive',
-            isActive: t.isActive,
-            createdAt: t.createdAt,
-            updatedAt: t.updatedAt,
-          };
+          return this.formatTeacher(t);
         }
       } catch (err: any) {
         this.logger.warn(`Failed querying teacher by id from DB: ${err.message}`);
@@ -104,6 +108,20 @@ export class TeachersService {
   async create(tenantId: string, data: any) {
     if (this.prisma.isDbConnected) {
       try {
+        // Enforce staff subscription quota
+        const sub = await this.prisma.subscription.findFirst({
+          where: { tenantId },
+        });
+        const maxStaff = sub?.maxStaff ?? 30;
+        const currentCount = await this.prisma.teacher.count({
+          where: { tenantId, isActive: true },
+        });
+        if (currentCount >= maxStaff) {
+          throw new ForbiddenException(
+            `Staff hiring quota reached (${currentCount}/${maxStaff}). Please upgrade your subscription plan to add more staff.`
+          );
+        }
+
         // 1. Resolve campusId
         let campusId = data.campusId;
         if (campusId) {
@@ -162,6 +180,25 @@ export class TeachersService {
         // 5. Phone sanitization
         const phoneClean = data.phone ? data.phone.replace(/\s+/g, '') : null;
 
+        // 6. Subjects taught normalization
+        let subjectsTaughtStr: string | null = null;
+        if (data.subjectsTaught) {
+          if (Array.isArray(data.subjectsTaught)) {
+            subjectsTaughtStr = data.subjectsTaught.map((s: any) => String(s).trim()).filter(Boolean).join(', ');
+          } else if (typeof data.subjectsTaught === 'string' && data.subjectsTaught.trim()) {
+            subjectsTaughtStr = data.subjectsTaught.trim();
+          }
+        }
+
+        // 7. Office location normalization
+        const officeLocation = data.officeLocation ? String(data.officeLocation).trim() : null;
+
+        // 8. Assigned class normalization
+        let assignedClassStr: string | null = null;
+        if (data.assignedClass && data.assignedClass !== 'N/A' && String(data.assignedClass).trim()) {
+          assignedClassStr = String(data.assignedClass).trim();
+        }
+
         const id = `tch_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
 
         const created = await this.prisma.teacher.create({
@@ -178,32 +215,44 @@ export class TeachersService {
             qualification: data.qualification || null,
             joiningDate: data.dateJoined ? new Date(data.dateJoined) : new Date(),
             isActive,
+            officeLocation,
+            subjectsTaught: subjectsTaughtStr,
+            assignedClass: assignedClassStr,
           },
           include: { campus: true },
         });
 
-        const formatted = {
-          id: created.id,
-          tenantId: created.tenantId,
-          campusId: created.campusId,
-          campus: created.campus?.name || 'Main Campus',
-          employeeNumber: created.employeeNumber,
-          employeeId: created.employeeNumber,
-          firstName: created.firstName,
-          lastName: created.lastName,
-          fullName: `${created.firstName} ${created.lastName}`.trim(),
-          email: created.email,
-          phone: created.phone,
-          department: data.department || created.specialization || 'General',
-          role: data.role || 'Subject Teacher',
-          specialization: created.specialization,
-          qualification: created.qualification,
-          dateJoined: created.joiningDate,
-          status: created.isActive ? 'Active' : 'Inactive',
-          isActive: created.isActive,
-          createdAt: created.createdAt,
-          updatedAt: created.updatedAt,
+        // Relational Class linking
+        let linkedClass: any = null;
+        if (assignedClassStr) {
+          linkedClass = await this.prisma.class.findFirst({
+            where: {
+              tenantId,
+              OR: [
+                { id: assignedClassStr },
+                { name: { equals: assignedClassStr, mode: 'insensitive' } },
+              ],
+            },
+          });
+          if (linkedClass) {
+            await this.prisma.class.update({
+              where: { id: linkedClass.id },
+              data: { classTeacherId: created.id },
+            });
+            if (created.assignedClass !== linkedClass.name) {
+              await this.prisma.teacher.update({
+                where: { id: created.id },
+                data: { assignedClass: linkedClass.name },
+              });
+            }
+          }
+        }
+
+        const createdWithClasses = {
+          ...created,
+          classes: linkedClass ? [linkedClass] : [],
         };
+        const formatted = this.formatTeacher(createdWithClasses, created.campus?.name);
 
         this.prisma.memoryStore.teachers.set(created.id, formatted);
         return formatted;
@@ -214,6 +263,17 @@ export class TeachersService {
     }
 
     // Fallback in-memory
+    const currentMemoryCount = Array.from(this.prisma.memoryStore.teachers.values()).filter(
+      (t: any) => t.tenantId === tenantId && t.isActive !== false,
+    ).length;
+    const memorySub = this.prisma.memoryStore.subscriptions?.get(tenantId);
+    const maxStaffMem = memorySub?.maxStaff ?? 30;
+    if (currentMemoryCount >= maxStaffMem) {
+      throw new ForbiddenException(
+        `Staff hiring quota reached (${currentMemoryCount}/${maxStaffMem}). Please upgrade your subscription plan to add more staff.`
+      );
+    }
+
     const id = `tch_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
     const firstName = data.firstName || data.fullName?.split(' ')[0] || 'Teacher';
     const lastName = data.lastName || data.fullName?.split(' ').slice(1).join(' ') || '';
@@ -242,6 +302,13 @@ export class TeachersService {
       qualification: data.qualification || null,
       status: data.status || 'Active',
       isActive: data.isActive ?? true,
+      assignedClass: data.assignedClass || 'N/A',
+      subjectsTaught: Array.isArray(data.subjectsTaught)
+        ? data.subjectsTaught
+        : data.subjectsTaught
+        ? data.subjectsTaught.split(',').map((s: string) => s.trim()).filter(Boolean)
+        : [],
+      officeLocation: data.officeLocation || '',
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -274,37 +341,64 @@ export class TeachersService {
         if (data.qualification !== undefined) updateData.qualification = data.qualification;
         if (data.dateJoined) updateData.joiningDate = new Date(data.dateJoined);
         if (data.status !== undefined) updateData.isActive = data.status.toLowerCase() === 'active';
-        if (data.isActive !== undefined) updateData.isActive = Boolean(data.isActive);
+        if (data.officeLocation !== undefined) updateData.officeLocation = data.officeLocation ? String(data.officeLocation).trim() : null;
+
+        if (data.subjectsTaught !== undefined) {
+          if (Array.isArray(data.subjectsTaught)) {
+            updateData.subjectsTaught = data.subjectsTaught.map((s: any) => String(s).trim()).filter(Boolean).join(', ');
+          } else if (typeof data.subjectsTaught === 'string') {
+            updateData.subjectsTaught = data.subjectsTaught.trim() || null;
+          } else {
+            updateData.subjectsTaught = null;
+          }
+        }
+
+        if (data.assignedClass !== undefined) {
+          const val = data.assignedClass ? String(data.assignedClass).trim() : '';
+          if (!val || val.toUpperCase() === 'N/A' || val.toLowerCase() === 'unassigned') {
+            // Unassign from any class
+            await this.prisma.class.updateMany({
+              where: { tenantId, classTeacherId: teacherId },
+              data: { classTeacherId: null },
+            });
+            updateData.assignedClass = null;
+          } else {
+            const matchedClass = await this.prisma.class.findFirst({
+              where: {
+                tenantId,
+                OR: [
+                  { id: val },
+                  { name: { equals: val, mode: 'insensitive' } },
+                ],
+              },
+            });
+            if (matchedClass) {
+              await this.prisma.class.updateMany({
+                where: { tenantId, classTeacherId: teacherId, id: { not: matchedClass.id } },
+                data: { classTeacherId: null },
+              });
+              await this.prisma.class.update({
+                where: { id: matchedClass.id },
+                data: { classTeacherId: teacherId },
+              });
+              updateData.assignedClass = matchedClass.name;
+            } else {
+              await this.prisma.class.updateMany({
+                where: { tenantId, classTeacherId: teacherId },
+                data: { classTeacherId: null },
+              });
+              updateData.assignedClass = val;
+            }
+          }
+        }
 
         const updated = await this.prisma.teacher.update({
           where: { id: teacherId },
           data: updateData,
-          include: { campus: true },
+          include: { campus: true, classes: true },
         });
 
-        const formatted = {
-          id: updated.id,
-          tenantId: updated.tenantId,
-          campusId: updated.campusId,
-          campus: updated.campus?.name || 'Main Campus',
-          employeeNumber: updated.employeeNumber,
-          employeeId: updated.employeeNumber,
-          firstName: updated.firstName,
-          lastName: updated.lastName,
-          fullName: `${updated.firstName} ${updated.lastName}`.trim(),
-          email: updated.email,
-          phone: updated.phone,
-          department: data.department || updated.specialization || 'General',
-          role: data.role || 'Subject Teacher',
-          specialization: updated.specialization,
-          qualification: updated.qualification,
-          dateJoined: updated.joiningDate,
-          status: updated.isActive ? 'Active' : 'Inactive',
-          isActive: updated.isActive,
-          createdAt: updated.createdAt,
-          updatedAt: updated.updatedAt,
-        };
-
+        const formatted = this.formatTeacher(updated);
         this.prisma.memoryStore.teachers.set(teacherId, formatted);
         return formatted;
       } catch (err: any) {
@@ -331,6 +425,12 @@ export class TeachersService {
         if (!existing) {
           throw new NotFoundException('Teacher not found in this school');
         }
+
+        // Clear any class teacher assignments first
+        await this.prisma.class.updateMany({
+          where: { tenantId, classTeacherId: teacherId },
+          data: { classTeacherId: null },
+        });
 
         await this.prisma.teacher.delete({
           where: { id: teacherId },

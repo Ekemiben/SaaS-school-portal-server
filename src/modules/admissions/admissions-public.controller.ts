@@ -7,7 +7,7 @@ import { CreateAdmissionInquiryDto } from './dto/admission-inquiry.dto.js';
 import { CreateAdmissionApplicationDto } from './dto/admission-application.dto.js';
 import { RespondToOfferDto, InitializeAcceptancePaymentDto } from './dto/admission-offer.dto.js';
 
-@Controller('public/admissions')
+@Controller(['api/v1/public/admissions', 'public/admissions'])
 @Public()
 export class AdmissionsPublicController {
   constructor(

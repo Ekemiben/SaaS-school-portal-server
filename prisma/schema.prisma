@@ -58,10 +58,13 @@ enum PaymentProvider {
 }
 
 enum SubscriptionStatus {
+  PENDING
   TRIAL
   ACTIVE
   PAST_DUE
   CANCELLED
+  EXPIRED
+  SUSPENDED
 }
 
 enum NotificationChannel {
@@ -143,6 +146,8 @@ model Tenant {
   fileAssets                    FileAsset[]
   subscriptions                 Subscription[]
   billingInvoices               BillingInvoice[]
+  subscriptionPayments          SubscriptionPayment[]
+  subscriptionFeatureOverrides  SubscriptionFeatureOverride[]
   auditLogs                     AuditLog[]
   staffSalaryProfiles           StaffSalaryProfile[]
   assessmentStructures          AssessmentStructure[]
@@ -306,6 +311,7 @@ model User {
   userRoles      UserRole[]
   userCampuses   UserCampus[]
   teacherProfile Teacher?
+  parentProfile  Parent?
   mfaSecret      MfaSecret?
   resetTokens    PasswordResetToken[]
 
@@ -439,6 +445,7 @@ model Student {
 model Parent {
   id           String   @id @default(uuid())
   tenantId     String
+  userId       String?  @unique
   firstName    String
   lastName     String
   email        String?
@@ -450,10 +457,12 @@ model Parent {
   updatedAt    DateTime @updatedAt
 
   tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user     User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
   students StudentParent[]
 
   @@index([tenantId])
   @@index([tenantId, phone])
+  @@index([userId])
 }
 
 model StudentParent {
@@ -484,6 +493,9 @@ model Teacher {
   qualification  String?
   joiningDate    DateTime?
   isActive       Boolean   @default(true)
+  officeLocation String?
+  subjectsTaught String?
+  assignedClass  String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -1483,42 +1495,194 @@ model FileAsset {
   @@index([tenantId, storageKey])
 }
 
-model Subscription {
-  id                 String             @id @default(uuid())
-  tenantId           String
-  planId             String             @default("starter")
-  status             SubscriptionStatus @default(ACTIVE)
-  billingCycle       String             @default("monthly")
-  trialEndsAt        DateTime?
-  currentPeriodStart DateTime           @default(now())
-  currentPeriodEnd   DateTime
-  maxStudents        Int                @default(500)
-  maxCampuses        Int                @default(2)
-  maxStaff           Int                @default(50)
-  storageLimitMb     Int                @default(10240)
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
+model SubscriptionPlan {
+  id                    String         @id @default(uuid())
+  tier                  String         @unique // STARTER, STANDARD, PREMIUM, CUSTOM
+  name                  String
+  description           String?
+  termlyPrice           Decimal        @default(0) @db.Decimal(12, 2)
+  annualPrice           Decimal        @default(0) @db.Decimal(12, 2)
+  currency              String         @default("NGN")
+  yearlyDiscountPercent Float          @default(6.0)
+  maxStudents           Int            @default(500)
+  maxCampuses           Int            @default(1)
+  maxStaff              Int            @default(50)
+  storageLimitMb        Int            @default(10240)
+  messagingQuota        Int            @default(1000)
+  isPopular             Boolean        @default(false)
+  isActive              Boolean        @default(true)
+  displayOrder          Int            @default(0)
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  features              PlanFeature[]
+  incentives            PlanIncentive[]
+  subscriptions         Subscription[]
+
+  @@index([tier])
+  @@index([isActive])
+}
+
+model PlanFeature {
+  id          String           @id @default(uuid())
+  planId      String
+  featureKey  String           // e.g. STUDENT_MANAGEMENT, ONLINE_PAYMENTS, etc.
+  featureName String
+  category    String           @default("CORE") // CORE, ACADEMIC, FINANCE, OPERATIONS, ADVANCED
+  isIncluded  Boolean          @default(true)
+  quotaLimit  Int?
+  description String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  plan        SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, featureKey])
+  @@index([planId])
+  @@index([featureKey])
+}
+
+model PlanIncentive {
+  id              String            @id @default(uuid())
+  planId          String?
+  incentiveKey    String
+  name            String
+  description     String?
+  featureKey      String?
+  discountPercent Float?
+  extraTrialDays  Int?
+  bonusQuota      Int?
+  quotaType       String?
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  plan            SubscriptionPlan? @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([planId])
+  @@index([incentiveKey])
+}
+
+model Subscription {
+  id                 String                        @id @default(uuid())
+  tenantId           String
+  planId             String?                       // Foreign key to SubscriptionPlan
+  planTier           String                        @default("STARTER") // STARTER, STANDARD, PREMIUM, CUSTOM
+  status             SubscriptionStatus            @default(ACTIVE)
+  billingCycle       String                        @default("TERMLY") // TERMLY, ANNUAL, MONTHLY
+  priceAtPurchase    Decimal                       @default(0) @db.Decimal(12, 2)
+  currency           String                        @default("NGN")
+  trialEndsAt        DateTime?
+  gracePeriodEndsAt  DateTime?
+  currentPeriodStart DateTime                      @default(now())
+  currentPeriodEnd   DateTime
+  maxStudents        Int                           @default(500)
+  maxCampuses        Int                           @default(1)
+  maxStaff           Int                           @default(50)
+  storageLimitMb     Int                           @default(10240)
+  autoRenew          Boolean                       @default(true)
+  incentivesApplied  Json?
+  metadata           Json?
+  createdAt          DateTime                      @default(now())
+  updatedAt          DateTime                      @updatedAt
+
+  tenant             Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan               SubscriptionPlan?             @relation(fields: [planId], references: [id], onDelete: SetNull)
+  overrides          SubscriptionFeatureOverride[]
+  billingInvoices    BillingInvoice[]
+  payments           SubscriptionPayment[]
 
   @@index([tenantId])
+  @@index([planId])
+  @@index([status])
+  @@index([currentPeriodEnd])
+}
+
+model SubscriptionFeatureOverride {
+  id             String       @id @default(uuid())
+  tenantId       String
+  subscriptionId String
+  featureKey     String
+  isEnabled      Boolean      @default(true)
+  quotaLimit     Int?
+  reason         String?
+  grantedBy      String?
+  expiresAt      DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@unique([subscriptionId, featureKey])
+  @@index([tenantId])
+  @@index([subscriptionId])
+  @@index([featureKey])
+}
+
+model SubscriptionPayment {
+  id                String        @id @default(uuid())
+  tenantId          String
+  subscriptionId    String?
+  billingInvoiceId  String?
+  amount            Decimal       @db.Decimal(12, 2)
+  currency          String        @default("NGN")
+  paymentMethod     String        // CARD, BANK_TRANSFER, CASH, MANUAL, PAYSTACK, FLUTTERWAVE
+  provider          String?       // PAYSTACK, FLUTTERWAVE, SYSTEM, MANUAL
+  providerReference String?       @unique // Paystack reference or bank transaction ref
+  status            String        @default("PENDING") // INITIATED, PENDING, SUCCESSFUL, FAILED, CANCELLED, REFUNDED, MANUALLY_VERIFIED
+  paidAt            DateTime?
+  verifiedAt        DateTime?
+  verifiedBy        String?       // SuperAdmin ID or SYSTEM
+  metadata          Json?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  tenant            Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription      Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([subscriptionId])
+  @@index([providerReference])
+  @@index([status])
+}
+
+model CustomPlanRequest {
+  id                String    @id @default(uuid())
+  schoolName        String
+  contactPersonName String
+  contactEmail      String
+  contactPhone      String?
+  estimatedStudents Int?
+  campusCount       Int?      @default(1)
+  requestedFeatures Json?
+  message           String?
+  status            String    @default("NEW") // NEW, CONTACTED, NEGOTIATING, APPROVED, REJECTED, CONVERTED
+  adminNotes        String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([status])
+  @@index([contactEmail])
 }
 
 model BillingInvoice {
-  id            String    @id @default(uuid())
-  tenantId      String
-  invoiceNumber String
-  amount        Float
-  currency      String    @default("USD")
-  status        String    @default("PENDING")
-  dueDate       DateTime
-  paidAt        DateTime?
-  paymentMethod String?
-  lineItems     Json?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id             String        @id @default(uuid())
+  tenantId       String
+  subscriptionId String?
+  invoiceNumber  String
+  amount         Float
+  currency       String        @default("USD")
+  status         String        @default("PENDING")
+  dueDate        DateTime
+  paidAt         DateTime?
+  paymentMethod  String?
+  lineItems      Json?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, invoiceNumber])
   @@index([tenantId])
