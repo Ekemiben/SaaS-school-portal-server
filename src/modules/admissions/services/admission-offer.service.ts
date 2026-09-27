@@ -150,6 +150,12 @@ export class AdmissionOfferService {
   }
 
   async getOfferById(tenantId: string, offerId: string) {
+    if (this.prisma.isDbConnected && (this.prisma as any).admissionOffer) {
+      const offer = await (this.prisma as any).admissionOffer.findFirst({
+        where: { id: offerId, tenantId },
+      });
+      if (offer) return offer;
+    }
     const offer = this.prisma.memoryStore.admissionOffers.get(offerId);
     if (!offer || offer.tenantId !== tenantId) {
       throw new NotFoundException(`Admission offer ${offerId} not found`);
@@ -158,6 +164,12 @@ export class AdmissionOfferService {
   }
 
   async getOfferByNumber(tenantId: string, offerNumber: string) {
+    if (this.prisma.isDbConnected && (this.prisma as any).admissionOffer) {
+      const offer = await (this.prisma as any).admissionOffer.findFirst({
+        where: { tenantId, offerNumber },
+      });
+      if (offer) return offer;
+    }
     const offer = Array.from(this.prisma.memoryStore.admissionOffers.values()).find(
       (o: any) => o.tenantId === tenantId && o.offerNumber === offerNumber,
     );
@@ -176,6 +188,9 @@ export class AdmissionOfferService {
     if (new Date() > new Date(offer.acceptanceDeadline)) {
       offer.status = 'EXPIRED';
       this.prisma.memoryStore.admissionOffers.set(offerId, offer);
+      if (this.prisma.isDbConnected && (this.prisma as any).admissionOffer) {
+        await (this.prisma as any).admissionOffer.update({ where: { id: offerId }, data: { status: 'EXPIRED' } }).catch(() => {});
+      }
       throw new BadRequestException(`Offer ${offer.offerNumber} has expired on ${offer.acceptanceDeadline.toISOString()}`);
     }
 
@@ -200,6 +215,12 @@ export class AdmissionOfferService {
 
     offer.updatedAt = new Date();
     this.prisma.memoryStore.admissionOffers.set(offerId, offer);
+    if (this.prisma.isDbConnected && (this.prisma as any).admissionOffer) {
+      await (this.prisma as any).admissionOffer.update({
+        where: { id: offerId },
+        data: { status: offer.status, updatedAt: new Date() },
+      }).catch((e: any) => this.logger.warn(`Could not update offer status: ${e.message}`));
+    }
     return offer;
   }
 
@@ -241,6 +262,17 @@ export class AdmissionOfferService {
     offer.status = 'ACCEPTED';
     offer.updatedAt = new Date();
     this.prisma.memoryStore.admissionOffers.set(offerId, offer);
+
+    if (this.prisma.isDbConnected && (this.prisma as any).admissionOffer) {
+      await (this.prisma as any).admissionOffer.update({
+        where: { id: offerId },
+        data: {
+          acceptanceFeePaid: true,
+          status: 'ACCEPTED',
+          updatedAt: new Date(),
+        },
+      }).catch((e: any) => this.logger.warn(`Could not update offer: ${e.message}`));
+    }
 
     await this.applicationService.transitionStatus(tenantId, offer.applicationId, {
       status: 'ACCEPTED',

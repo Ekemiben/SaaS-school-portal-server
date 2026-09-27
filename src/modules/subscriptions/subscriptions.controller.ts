@@ -5,6 +5,13 @@ import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
+import { Public } from '../../common/decorators/public.decorator.js';
+import { CreateCustomPlanRequestDto } from './dto/custom-plan-request.dto.js';
+import {
+  PreviewPlanChangeDto,
+  UpgradeSubscriptionDto,
+  DowngradeSubscriptionDto,
+} from './dto/plan-change.dto.js';
 
 @Controller('api/v1/subscription')
 export class SubscriptionsController {
@@ -12,6 +19,18 @@ export class SubscriptionsController {
     private readonly subscriptionsService: SubscriptionsService,
     private readonly usageMeteringService: UsageMeteringService,
   ) {}
+
+  @Public()
+  @Get('plans/public')
+  async getPublicPlans() {
+    return this.subscriptionsService.getPublicPlans();
+  }
+
+  @Public()
+  @Post('custom-request')
+  async createCustomPlanRequest(@Body() dto: CreateCustomPlanRequestDto) {
+    return this.subscriptionsService.createCustomPlanRequest(dto);
+  }
 
   @Get()
   async getSubscription(@CurrentTenant() tenant: TenantContext) {
@@ -29,13 +48,31 @@ export class SubscriptionsController {
     return this.subscriptionsService.getInvoices(tenant.tenantId);
   }
 
+  @Post('preview-change')
+  @RequirePermissions(SystemPermissions.SETTINGS_MANAGE)
+  async previewPlanChange(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() dto: PreviewPlanChangeDto,
+  ) {
+    return this.subscriptionsService.previewPlanChange(tenant.tenantId, dto);
+  }
+
   @Post('upgrade')
   @RequirePermissions(SystemPermissions.SETTINGS_MANAGE)
   async upgradeSubscription(
     @CurrentTenant() tenant: TenantContext,
-    @Body() body: any,
+    @Body() dto: UpgradeSubscriptionDto,
   ) {
-    return this.subscriptionsService.upgradeSubscription(tenant.tenantId, body);
+    return this.subscriptionsService.upgradeSubscription(tenant.tenantId, dto);
+  }
+
+  @Post('downgrade')
+  @RequirePermissions(SystemPermissions.SETTINGS_MANAGE)
+  async downgradeSubscription(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() dto: DowngradeSubscriptionDto,
+  ) {
+    return this.subscriptionsService.downgradeSubscription(tenant.tenantId, dto);
   }
 
   @Get('usage')

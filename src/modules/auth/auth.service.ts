@@ -69,7 +69,7 @@ export class AuthService {
 
   async ensureTenantRole(
     tenantId: string,
-    roleName: 'STUDENT' | 'PARENT' | 'School Owner' | 'School Admin',
+    roleName: 'STUDENT' | 'PARENT' | 'TEACHER' | 'School Owner' | 'School Admin',
   ): Promise<any> {
     if (!this.prisma.isDbConnected) {
       return { id: `role_${roleName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_mock`, name: roleName };
@@ -85,6 +85,8 @@ export class AuthService {
           ? 'Enrolled Student with student learning portal access'
           : roleName === 'PARENT'
           ? 'Parent or Guardian with student ward portal access'
+          : roleName === 'TEACHER'
+          ? 'Teaching Staff and Educator portal access'
           : 'School Administrative Role';
 
       role = await this.prisma.role.create({
@@ -102,6 +104,8 @@ export class AuthService {
           ? ['students.view', 'academics.view', 'attendance.view', 'fees.view', 'payments.view', 'timetable.view']
           : roleName === 'PARENT'
           ? ['parents.view', 'students.view', 'academics.view', 'attendance.view', 'fees.view', 'payments.view']
+          : roleName === 'TEACHER'
+          ? ['students.view', 'academics.view', 'attendance.view', 'attendance.mark', 'classes.view', 'timetable.view']
           : ['students.view', 'campuses.view', 'academics.view', 'attendance.view', 'fees.view'];
 
       const perms = await this.prisma.permission.findMany({
@@ -207,30 +211,36 @@ export class AuthService {
             });
 
             if (!user) {
-              const defaultPassHash = await bcrypt.hash(
-                passwordPlain === 'Password123!' ? 'Password123!' : passwordPlain,
-                10,
-              );
-              const userId = `usr_stu_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-              user = await this.prisma.user.create({
-                data: {
-                  id: userId,
-                  tenantId: targetTenantId,
-                  email: studentEmail,
-                  passwordHash: defaultPassHash,
-                  firstName: resolvedStudent.firstName,
-                  lastName: resolvedStudent.lastName,
-                  phone: resolvedStudent.phone || null,
-                  isActive: true,
-                  userRoles: {
-                    create: { roleId: studentRole.id },
-                  },
-                  userCampuses: resolvedStudent.campusId
-                    ? {
-                        create: { campusId: resolvedStudent.campusId, isDefault: true },
-                      }
-                    : undefined,
-                },
+              this.logger.warn(`Student login failed: No user account found for student ${resolvedStudent.admissionNumber}`);
+            }
+
+            if (resolvedStudent && user && !resolvedStudent.email) {
+              await this.prisma.student.update({
+                where: { id: resolvedStudent.id },
+                data: { email: user.email },
+              });
+            }
+          }
+        }
+
+        // C. If still not found, check Parent by userId, phone, or email
+        if (!user) {
+          const phoneFilter = cleanPhone.length >= 7 ? cleanPhone.slice(-10) : cleanPhone;
+          resolvedParent = await this.prisma.parent.findFirst({
+            where: {
+              tenantId: targetTenantId,
+              OR: [
+                ...(phoneFilter ? [{ phone: { contains: phoneFilter } }] : []),
+                { email: normalized },
+              ],
+            },
+            include: { tenant: true, user: true, students: { include: { student: true } } },
+          });
+
+          if (resolvedParent) {
+            if (resolvedParent.userId) {
+              user = await this.prisma.user.findFirst({
+                where: { id: resolvedParent.userId, tenantId: targetTenantId },
                 include: {
                   tenant: { include: { domains: true } },
                   userRoles: {
@@ -247,37 +257,52 @@ export class AuthService {
               });
             }
 
-            if (resolvedStudent && user && !resolvedStudent.email) {
-              await this.prisma.student.update({
-                where: { id: resolvedStudent.id },
-                data: { email: user.email },
+            if (!user && resolvedParent.email) {
+              user = await this.prisma.user.findFirst({
+                where: { tenantId: targetTenantId, email: resolvedParent.email.toLowerCase().trim() },
+                include: {
+                  tenant: { include: { domains: true } },
+                  userRoles: {
+                    include: {
+                      role: {
+                        include: {
+                          permissions: { include: { permission: true } },
+                        },
+                      },
+                    },
+                  },
+                  userCampuses: true,
+                },
               });
+
+              if (user && !resolvedParent.userId) {
+                await this.prisma.parent.update({
+                  where: { id: resolvedParent.id },
+                  data: { userId: user.id },
+                }).catch(() => {});
+              }
             }
           }
         }
 
-        // C. If still not found, check Parent by phone or email
+        // D. If still not found, check Teacher by employeeNumber, email, or phone
         if (!user) {
           const phoneFilter = cleanPhone.length >= 7 ? cleanPhone.slice(-10) : cleanPhone;
-          resolvedParent = await this.prisma.parent.findFirst({
+          const resolvedTeacher = await this.prisma.teacher.findFirst({
             where: {
               tenantId: targetTenantId,
               OR: [
-                ...(phoneFilter ? [{ phone: { contains: phoneFilter } }] : []),
+                { employeeNumber: { equals: trimmed, mode: 'insensitive' } },
                 { email: normalized },
+                ...(phoneFilter ? [{ phone: { contains: phoneFilter } }] : []),
               ],
             },
-            include: { tenant: true, students: { include: { student: true } } },
+            include: { tenant: true, campus: true },
           });
 
-          if (resolvedParent) {
-            const parentRole = await this.ensureTenantRole(targetTenantId, 'PARENT');
-            const parentEmail = resolvedParent.email
-              ? resolvedParent.email.toLowerCase().trim()
-              : `parent.${cleanPhone.replace(/[^0-9]/g, '') || resolvedParent.id.slice(-6)}@${resolvedParent.tenant?.slug || 'portal'}.school`;
-
+          if (resolvedTeacher && resolvedTeacher.userId) {
             user = await this.prisma.user.findFirst({
-              where: { tenantId: targetTenantId, email: parentEmail },
+              where: { id: resolvedTeacher.userId, tenantId: targetTenantId },
               include: {
                 tenant: { include: { domains: true } },
                 userRoles: {
@@ -292,55 +317,20 @@ export class AuthService {
                 userCampuses: true,
               },
             });
-
-            if (!user) {
-              const defaultPassHash = await bcrypt.hash(
-                passwordPlain === 'Password123!' ? 'Password123!' : passwordPlain,
-                10,
-              );
-              const userId = `usr_par_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-              user = await this.prisma.user.create({
-                data: {
-                  id: userId,
-                  tenantId: targetTenantId,
-                  email: parentEmail,
-                  passwordHash: defaultPassHash,
-                  firstName: resolvedParent.firstName,
-                  lastName: resolvedParent.lastName,
-                  phone: resolvedParent.phone || null,
-                  isActive: true,
-                  userRoles: {
-                    create: { roleId: parentRole.id },
-                  },
-                },
-                include: {
-                  tenant: { include: { domains: true } },
-                  userRoles: {
-                    include: {
-                      role: {
-                        include: {
-                          permissions: { include: { permission: true } },
-                        },
-                      },
-                    },
-                  },
-                  userCampuses: true,
-                },
-              });
-            }
           }
         }
       } catch (err: any) {
-        this.logger.warn(`Could not query/provision user from DB during login: ${err.message}`);
+        this.logger.warn(`Could not query user from DB during login: ${err.message}`);
       }
     }
 
-    // 2. Fall back to memoryStore strictly scoped to targetTenantId
-    if (!user) {
+    if (!user && this.prisma?.memoryStore?.users) {
       user = Array.from(this.prisma.memoryStore.users.values()).find(
         (u: any) =>
           u.tenantId === targetTenantId &&
-          (u.email === normalized || u.phone === trimmed || u.phone === cleanPhone),
+          (u.email?.toLowerCase() === normalized ||
+            u.phone === trimmed ||
+            (cleanPhone && u.phone === cleanPhone)),
       );
     }
 
@@ -359,9 +349,9 @@ export class AuthService {
     }
 
     const passwordMatches =
-      user.passwordHash.startsWith('$2a$') || user.passwordHash.startsWith('$2b$')
-        ? await bcrypt.compare(passwordPlain, user.passwordHash)
-        : passwordPlain === user.passwordHash || passwordPlain === 'Password123!';
+      Boolean(user.passwordHash) &&
+      (user.passwordHash.startsWith('$2a$') || user.passwordHash.startsWith('$2b$')) &&
+      (await bcrypt.compare(passwordPlain, user.passwordHash));
 
     if (!passwordMatches) {
       throw new UnauthorizedException({
@@ -623,9 +613,9 @@ export class AuthService {
     }
 
     const passwordMatches =
-      user.passwordHash.startsWith('$2a$') || user.passwordHash.startsWith('$2b$')
-        ? await bcrypt.compare(passwordPlain, user.passwordHash)
-        : passwordPlain === user.passwordHash || passwordPlain === 'Password123!';
+      Boolean(user.passwordHash) &&
+      (user.passwordHash.startsWith('$2a$') || user.passwordHash.startsWith('$2b$')) &&
+      (await bcrypt.compare(passwordPlain, user.passwordHash));
 
     if (!passwordMatches) {
       throw new UnauthorizedException({
@@ -1013,44 +1003,77 @@ export class AuthService {
             };
           }
         } else if (isParent) {
-          const parent = await this.prisma.parent.findFirst({
-            where: {
-              tenantId: user.tenantId,
-              OR: [
-                { email: user.email },
-                ...(user.phone ? [{ phone: user.phone }] : []),
-              ],
-            },
-            include: {
-              students: {
-                include: {
-                  student: {
-                    include: {
-                      campus: true,
-                      enrollments: {
-                        where: { status: 'ACTIVE' },
-                        include: { class: true },
-                        take: 1,
+          let parent =
+            (await this.prisma.parent.findFirst({
+              where: {
+                tenantId: user.tenantId,
+                userId: user.id,
+              },
+              include: {
+                students: {
+                  include: {
+                    student: {
+                      include: {
+                        campus: true,
+                        enrollments: {
+                          where: { status: 'ACTIVE' },
+                          include: { class: true },
+                          take: 1,
+                        },
                       },
                     },
                   },
                 },
               },
-            },
-          });
+            })) ||
+            (await this.prisma.parent.findFirst({
+              where: {
+                tenantId: user.tenantId,
+                OR: [
+                  { email: user.email },
+                  ...(user.phone ? [{ phone: user.phone }] : []),
+                ],
+              },
+              include: {
+                students: {
+                  include: {
+                    student: {
+                      include: {
+                        campus: true,
+                        enrollments: {
+                          where: { status: 'ACTIVE' },
+                          include: { class: true },
+                          take: 1,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            }));
+
+          if (parent && !parent.userId) {
+            await this.prisma.parent.update({
+              where: { id: parent.id },
+              data: { userId: user.id },
+            }).catch(() => {});
+          }
+
           if (parent) {
             parentProfile = {
               parentId: parent.id,
               phone: parent.phone,
               email: parent.email,
               relationship: parent.relationship,
-              wards: (parent.students || []).map((sp: any) => ({
-                studentId: sp.student.id,
-                admissionNumber: sp.student.admissionNumber,
-                name: `${sp.student.firstName} ${sp.student.lastName}`.trim(),
-                campus: sp.student.campus?.name || 'Main Campus',
-                className: sp.student.enrollments?.[0]?.class?.name || 'Unassigned',
-              })),
+              wards: (parent.students || [])
+                .filter((sp: any) => sp.student && sp.student.tenantId === user.tenantId)
+                .map((sp: any) => ({
+                  studentId: sp.student.id,
+                  admissionNumber: sp.student.admissionNumber,
+                  name: `${sp.student.firstName} ${sp.student.lastName}`.trim(),
+                  campus: sp.student.campus?.name || 'Main Campus',
+                  className: sp.student.enrollments?.[0]?.class?.name || 'Unassigned',
+                })),
             };
           }
         }

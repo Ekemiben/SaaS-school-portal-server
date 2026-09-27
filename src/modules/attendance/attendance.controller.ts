@@ -4,6 +4,7 @@ import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions, Permissions } from '../../common/decorators/permissions.decorator.js';
+import { RequireSubscriptionFeature } from '../../common/decorators/subscription-feature.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
 import { CampusGuard } from '../../common/guards/campus.guard.js';
 import { MarkAttendanceDto, AttendanceFilterDto } from './dto/mark-attendance.dto.js';
@@ -11,7 +12,7 @@ import { CorrectAttendanceDto } from './dto/attendance-correction.dto.js';
 import { CreateAttendanceSessionDto, GenerateQrTokenDto, QrCheckInDto, DeviceCheckInDto } from './dto/attendance-session.dto.js';
 import { UpdateAttendanceConfigDto } from './dto/attendance-config.dto.js';
 
-@Controller('api/v1/attendance')
+@Controller(['api/v1/attendance', 'attendance'])
 @UseGuards(CampusGuard)
 export class AttendanceController {
   constructor(private readonly attendanceService: AttendanceService) {}
@@ -58,6 +59,7 @@ export class AttendanceController {
   }
 
   @RequirePermissions(SystemPermissions.ATTENDANCE_MARK)
+  @RequireSubscriptionFeature('BIOMETRIC_ATTENDANCE')
   @Post('device-checkin')
   async deviceCheckIn(
     @CurrentTenant() tenant: TenantContext,
@@ -72,6 +74,7 @@ export class AttendanceController {
   }
 
   @RequirePermissions(SystemPermissions.ATTENDANCE_MARK)
+  @RequireSubscriptionFeature('ATTENDANCE_ADVANCED')
   @Post('sessions')
   async createSession(
     @CurrentTenant() tenant: TenantContext,

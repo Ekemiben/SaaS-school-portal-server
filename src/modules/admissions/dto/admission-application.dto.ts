@@ -1,88 +1,6 @@
-import { IsString, IsNotEmpty, IsOptional, IsEmail, IsDateString, IsIn, IsArray } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsEmail } from 'class-validator';
 
 export class CreateAdmissionApplicationDto {
-  @IsNotEmpty()
-  @IsString()
-  campusId: string;
-
-  @IsNotEmpty()
-  @IsString()
-  academicYearId: string;
-
-  @IsNotEmpty()
-  @IsString()
-  gradeLevel: string;
-
-  @IsNotEmpty()
-  @IsString()
-  studentFirstName: string;
-
-  @IsOptional()
-  @IsString()
-  studentMiddleName?: string;
-
-  @IsNotEmpty()
-  @IsString()
-  studentLastName: string;
-
-  @IsNotEmpty()
-  @IsDateString()
-  dateOfBirth: string;
-
-  @IsNotEmpty()
-  @IsIn(['MALE', 'FEMALE', 'OTHER'])
-  gender: string;
-
-  @IsOptional()
-  @IsString()
-  bloodGroup?: string;
-
-  @IsOptional()
-  @IsString()
-  previousSchool?: string;
-
-  @IsOptional()
-  @IsString()
-  previousGrade?: string;
-
-  @IsNotEmpty()
-  @IsString()
-  parentFirstName: string;
-
-  @IsNotEmpty()
-  @IsString()
-  parentLastName: string;
-
-  @IsNotEmpty()
-  @IsEmail()
-  parentEmail: string;
-
-  @IsNotEmpty()
-  @IsString()
-  parentPhone: string;
-
-  @IsOptional()
-  @IsString()
-  parentRelationship?: string;
-
-  @IsOptional()
-  @IsString()
-  parentAddress?: string;
-
-  @IsOptional()
-  @IsString()
-  emergencyContactName?: string;
-
-  @IsOptional()
-  @IsString()
-  emergencyContactPhone?: string;
-
-  @IsOptional()
-  @IsString()
-  inquiryId?: string;
-}
-
-export class UpdateAdmissionApplicationDto {
   @IsOptional()
   @IsString()
   campusId?: string;
@@ -97,6 +15,10 @@ export class UpdateAdmissionApplicationDto {
 
   @IsOptional()
   @IsString()
+  applyingClass?: string;
+
+  @IsOptional()
+  @IsString()
   studentFirstName?: string;
 
   @IsOptional()
@@ -108,7 +30,11 @@ export class UpdateAdmissionApplicationDto {
   studentLastName?: string;
 
   @IsOptional()
-  @IsDateString()
+  @IsString()
+  candidateName?: string;
+
+  @IsOptional()
+  @IsString()
   dateOfBirth?: string;
 
   @IsOptional()
@@ -136,12 +62,20 @@ export class UpdateAdmissionApplicationDto {
   parentLastName?: string;
 
   @IsOptional()
-  @IsEmail()
+  @IsString()
+  parentName?: string;
+
+  @IsOptional()
+  @IsString()
   parentEmail?: string;
 
   @IsOptional()
   @IsString()
   parentPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  parentRelationship?: string;
 
   @IsOptional()
   @IsString()
@@ -154,23 +88,141 @@ export class UpdateAdmissionApplicationDto {
   @IsOptional()
   @IsString()
   emergencyContactPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  inquiryId?: string;
+
+  @IsOptional()
+  @IsString()
+  applicationDate?: string;
+
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @IsOptional()
+  examScore?: number | string | null;
+
+  @IsOptional()
+  interviewScore?: number | string | null;
+
+  @IsOptional()
+  @IsString()
+  decisionNotes?: string;
+}
+
+export class UpdateAdmissionApplicationDto {
+  @IsOptional()
+  @IsString()
+  campusId?: string;
+
+  @IsOptional()
+  @IsString()
+  academicYearId?: string;
+
+  @IsOptional()
+  @IsString()
+  gradeLevel?: string;
+
+  @IsOptional()
+  @IsString()
+  applyingClass?: string;
+
+  @IsOptional()
+  @IsString()
+  studentFirstName?: string;
+
+  @IsOptional()
+  @IsString()
+  studentMiddleName?: string;
+
+  @IsOptional()
+  @IsString()
+  studentLastName?: string;
+
+  @IsOptional()
+  @IsString()
+  candidateName?: string;
+
+  @IsOptional()
+  @IsString()
+  dateOfBirth?: string;
+
+  @IsOptional()
+  @IsString()
+  gender?: string;
+
+  @IsOptional()
+  @IsString()
+  bloodGroup?: string;
+
+  @IsOptional()
+  @IsString()
+  previousSchool?: string;
+
+  @IsOptional()
+  @IsString()
+  previousGrade?: string;
+
+  @IsOptional()
+  @IsString()
+  parentFirstName?: string;
+
+  @IsOptional()
+  @IsString()
+  parentLastName?: string;
+
+  @IsOptional()
+  @IsString()
+  parentName?: string;
+
+  @IsOptional()
+  @IsString()
+  parentEmail?: string;
+
+  @IsOptional()
+  @IsString()
+  parentPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  parentRelationship?: string;
+
+  @IsOptional()
+  @IsString()
+  parentAddress?: string;
+
+  @IsOptional()
+  @IsString()
+  emergencyContactName?: string;
+
+  @IsOptional()
+  @IsString()
+  emergencyContactPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  applicationDate?: string;
+
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @IsOptional()
+  examScore?: number | string | null;
+
+  @IsOptional()
+  interviewScore?: number | string | null;
+
+  @IsOptional()
+  @IsString()
+  decisionNotes?: string;
 }
 
 export class TransitionApplicationStatusDto {
   @IsNotEmpty()
-  @IsIn([
-    'DRAFT',
-    'SUBMITTED',
-    'UNDER_REVIEW',
-    'SCREENING',
-    'ENTRANCE_TEST',
-    'INTERVIEW',
-    'OFFERED',
-    'ACCEPTED',
-    'REJECTED',
-    'WITHDRAWN',
-    'EXPIRED',
-  ])
+  @IsString()
   status: string;
 
   @IsOptional()

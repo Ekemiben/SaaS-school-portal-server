@@ -3,6 +3,7 @@ import { PrismaModule } from '../../database/prisma.module.js';
 import { FilesModule } from '../files/files.module.js';
 import { PaymentsModule } from '../payments/payments.module.js';
 import { FeesModule } from '../fees/fees.module.js';
+import { StudentsModule } from '../students/students.module.js';
 
 import { AdmissionsController } from './admissions.controller.js';
 import { AdmissionsPublicController } from './admissions-public.controller.js';
@@ -17,7 +18,7 @@ import { AdmissionDocumentService } from './services/admission-document.service.
 import { AdmissionLetterRendererService } from './services/admission-letter-renderer.service.js';
 
 @Module({
-  imports: [PrismaModule, FilesModule, PaymentsModule, FeesModule],
+  imports: [PrismaModule, FilesModule, PaymentsModule, FeesModule, StudentsModule],
   controllers: [AdmissionsController, AdmissionsPublicController, AdmissionsAdminController],
   providers: [
     AdmissionInquiryService,

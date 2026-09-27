@@ -3,10 +3,12 @@ import { TimetableService } from './timetable.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
+import { RequireSubscriptionFeature } from '../../common/decorators/subscription-feature.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
 import { CreateTimetableDto, CreateTimetableEntryDto } from './dto/create-timetable.dto.js';
 
-@Controller('api/v1/timetable')
+@Controller(['api/v1/timetable', 'timetable'])
+@RequireSubscriptionFeature('TIMETABLE_MANAGEMENT')
 export class TimetableController {
   constructor(private readonly timetableService: TimetableService) {}
 

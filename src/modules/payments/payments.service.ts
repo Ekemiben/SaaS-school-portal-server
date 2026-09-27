@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException, Logger, Optional } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ForbiddenException, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service.js';
 import { CloudflareR2StorageProvider } from '../files/storage.provider.js';
@@ -31,17 +31,65 @@ export class PaymentsService {
   ) {}
 
   async getGatewayConfig(tenantId: string): Promise<TenantPaymentConfigDto> {
+    if (this.prisma.isDbConnected) {
+      try {
+        const tenant = await this.prisma.tenant.findUnique({
+          where: { id: tenantId },
+          select: { features: true, name: true, currency: true },
+        });
+        const paymentConfig = (tenant?.features as any)?.paymentConfig;
+        if (paymentConfig) {
+          return {
+            defaultProvider: paymentConfig.defaultProvider || PaymentGatewayProvider.PAYSTACK,
+            subaccountCode: paymentConfig.subaccountCode,
+            splitPercentage: paymentConfig.splitPercentage ?? 100,
+            bearer: paymentConfig.bearer || 'account',
+            enableVirtualAccounts: paymentConfig.enableVirtualAccounts ?? true,
+            enableCardPayments: paymentConfig.enableCardPayments ?? true,
+            enableBankTransfer: paymentConfig.enableBankTransfer ?? true,
+            bankName: paymentConfig.bankName,
+            accountNumber: paymentConfig.accountNumber,
+            accountName: paymentConfig.accountName,
+            paymentInstructions: paymentConfig.paymentInstructions,
+          };
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not load tenant gateway config from DB: ${err.message}`);
+      }
+    }
+
     return (
       this.tenantConfigs.get(tenantId) || {
         defaultProvider: PaymentGatewayProvider.PAYSTACK,
         enableCardPayments: true,
         enableVirtualAccounts: true,
+        enableBankTransfer: true,
         splitPercentage: 100,
       }
     );
   }
 
   async updateGatewayConfig(tenantId: string, config: TenantPaymentConfigDto) {
+    if (this.prisma.isDbConnected) {
+      try {
+        const tenant = await this.prisma.tenant.findUnique({
+          where: { id: tenantId },
+          select: { features: true },
+        });
+        const existingFeatures = (tenant?.features as any) || {};
+        await this.prisma.tenant.update({
+          where: { id: tenantId },
+          data: {
+            features: {
+              ...existingFeatures,
+              paymentConfig: config,
+            },
+          },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Could not persist tenant gateway config in DB: ${err.message}`);
+      }
+    }
     this.tenantConfigs.set(tenantId, config);
     return config;
   }
@@ -342,6 +390,25 @@ export class PaymentsService {
                 tx,
               );
             }
+
+            await tx.auditLog.create({
+              data: {
+                tenantId,
+                action: 'OFFLINE_PAYMENT_RECORDED',
+                resourceType: 'Payment',
+                resourceId: id,
+                afterData: {
+                  reference,
+                  amount,
+                  currency: payment.currency,
+                  invoiceId: dbInvoice?.id || data.invoiceId,
+                  studentId: dbStudent.id,
+                  paymentMethod: payment.provider,
+                  payerName: payment.payerName,
+                  paidAt: payment.paidAt.toISOString(),
+                } as any,
+              },
+            });
           });
         }
       } catch (err: any) {
@@ -559,6 +626,12 @@ export class PaymentsService {
     }
 
     if (!payment) {
+      if (this.prisma.isDbConnected) {
+        const crossTenant = await this.prisma.payment.findFirst({ where: { reference } }).catch(() => null);
+        if (crossTenant && crossTenant.tenantId !== tenantId) {
+          throw new ForbiddenException('Cross-tenant payment violation: Reference belongs to another school organization.');
+        }
+      }
       throw new NotFoundException('Payment reference not found');
     }
 
@@ -582,6 +655,28 @@ export class PaymentsService {
       payment.status = 'FAILED';
       this.prisma.memoryStore.payments.set(payment.id, payment);
       throw new BadRequestException('Payment gateway verification failed or uncompleted.');
+    }
+
+    // Underpayment Check
+    if (
+      verification.amount !== undefined &&
+      !(verification.rawPayload as any)?.isDevSimulation &&
+      Number(verification.amount) < Number(payment.amount)
+    ) {
+      throw new BadRequestException(
+        `Underpayment detected: Paid ₦${verification.amount} but expected ₦${payment.amount}. Settlement rejected.`,
+      );
+    }
+
+    // Currency Check
+    if (
+      verification.currency &&
+      payment.currency &&
+      verification.currency.toUpperCase() !== payment.currency.toUpperCase()
+    ) {
+      throw new BadRequestException(
+        `Currency mismatch: Expected ${payment.currency} but received ${verification.currency}. Settlement rejected.`,
+      );
     }
 
     const paidAt = verification.paidAt ? new Date(verification.paidAt) : new Date();
@@ -639,6 +734,24 @@ export class PaymentsService {
               tx,
             );
           }
+
+          await tx.auditLog.create({
+            data: {
+              tenantId,
+              action: 'ONLINE_PAYMENT_VERIFIED',
+              resourceType: 'Payment',
+              resourceId: payment.id,
+              afterData: {
+                reference: payment.reference,
+                amount: payment.amount,
+                currency: payment.currency,
+                invoiceId: payment.invoiceId,
+                channel,
+                transactionId,
+                verifiedAt: paidAt.toISOString(),
+              } as any,
+            },
+          });
         });
       } catch (err: any) {
         this.logger.warn(`Could not update payment in DB transaction: ${err.message}`);
@@ -678,10 +791,16 @@ export class PaymentsService {
     return { success: true, message: 'Payment verified and credited successfully!', payment };
   }
 
-  async handleWebhook(provider: 'paystack' | 'flutterwave', payload: any, signature: string) {
+  async handleWebhook(
+    provider: 'paystack' | 'flutterwave',
+    payload: any,
+    signature: string,
+    rawBody?: string | Buffer,
+  ) {
     const adapter = provider === 'flutterwave' ? this.flutterwaveAdapter : this.paystackAdapter;
-    const isValid = adapter.verifyWebhookSignature(signature, JSON.stringify(payload));
+    const isValid = adapter.verifyWebhookSignature(signature, rawBody || JSON.stringify(payload));
     if (!isValid) {
+      this.logger.warn(`Rejected invalid or unsigned ${provider} webhook signature.`);
       throw new BadRequestException('Invalid cryptographic webhook signature');
     }
 
@@ -863,6 +982,23 @@ export class PaymentsService {
               tx,
             );
           }
+
+          await tx.auditLog.create({
+            data: {
+              tenantId,
+              actorUserId: refundedByUserId || null,
+              action: 'PAYMENT_REFUNDED',
+              resourceType: 'Payment',
+              resourceId: payment.id,
+              afterData: {
+                reference: payment.reference,
+                amount: payment.amount,
+                reason,
+                refundedByUserId,
+                refundedAt: refundDate.toISOString(),
+              } as any,
+            },
+          });
         });
       } catch (err: any) {
         this.logger.warn(`Could not persist refund in DB: ${err.message}`);

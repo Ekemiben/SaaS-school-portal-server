@@ -18,6 +18,7 @@ import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
+import { RequireSubscriptionFeature } from '../../common/decorators/subscription-feature.decorator.js';
 
 @Controller('api/v1/tenant')
 export class TenancyController {
@@ -97,6 +98,7 @@ export class TenancyController {
     return this.tenancyService.listDomains(tenant.tenantId);
   }
 
+  @RequireSubscriptionFeature('CUSTOM_DOMAIN_SSL')
   @RequirePermissions(SystemPermissions.DOMAINS_MANAGE)
   @Post('domains/custom')
   async addCustomDomain(
@@ -106,6 +108,7 @@ export class TenancyController {
     return this.tenancyService.addCustomDomain(tenant.tenantId, dto.domain);
   }
 
+  @RequireSubscriptionFeature('CUSTOM_DOMAIN_SSL')
   @RequirePermissions(SystemPermissions.DOMAINS_MANAGE)
   @Post('domains/:domain/verify')
   async verifyCustomDomain(
@@ -115,6 +118,7 @@ export class TenancyController {
     return this.tenancyService.verifyCustomDomain(tenant.tenantId, domain);
   }
 
+  @RequireSubscriptionFeature('CUSTOM_DOMAIN_SSL')
   @RequirePermissions(SystemPermissions.DOMAINS_MANAGE)
   @Patch('domains/:domain/primary')
   async setPrimaryDomain(

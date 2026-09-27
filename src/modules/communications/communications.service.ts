@@ -1,4 +1,4 @@
-import { Injectable, Optional } from '@nestjs/common';
+import { Injectable, Optional, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
 import { CreateAnnouncementDto, SendDirectMessageDto } from './dto/create-announcement.dto.js';
 import { QueueService } from '../../jobs/queue.service.js';
@@ -7,13 +7,15 @@ import { OutboxService } from '../../infrastructure/outbox/outbox.service.js';
 
 @Injectable()
 export class CommunicationsService {
+  private readonly logger = new Logger(CommunicationsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly queueService: QueueService,
     @Optional() private readonly outboxService?: OutboxService,
   ) {}
 
-  private enrichAnnouncement(c: any) {
+  private async enrichAnnouncement(c: any, tenantId?: string) {
     const dateStr =
       c.sentAt ||
       (c.createdAt
@@ -28,12 +30,43 @@ export class CommunicationsService {
       (c.audience
         ? `All ${c.audience.charAt(0) + c.audience.slice(1).toLowerCase()}`
         : 'All Parents & Guardians');
-    const recipientCount =
-      c.recipientCount || (recipientGroup.toLowerCase().includes('all') ? 1240 : 320);
+
+    let recipientCount = c.recipientCount;
+    if (recipientCount === undefined || recipientCount === null) {
+      if (tenantId && this.prisma.isDbConnected) {
+        try {
+          const audience = (c.audience || '').toUpperCase();
+          if (audience === 'PARENTS') {
+            recipientCount = await this.prisma.parent.count({ where: { tenantId } });
+          } else if (audience === 'STUDENTS') {
+            recipientCount = await this.prisma.student.count({ where: { tenantId, status: 'ACTIVE' } });
+          } else if (audience === 'STAFF') {
+            recipientCount = await this.prisma.user.count({
+              where: {
+                tenantId,
+                status: 'ACTIVE',
+                userRoles: { some: { role: { name: { in: ['STAFF', 'TEACHER', 'ADMIN'] } } } },
+              },
+            });
+          } else {
+            const [pCount, sCount] = await Promise.all([
+              this.prisma.parent.count({ where: { tenantId } }),
+              this.prisma.student.count({ where: { tenantId, status: 'ACTIVE' } }),
+            ]);
+            recipientCount = pCount + sCount;
+          }
+        } catch {
+          recipientCount = 0;
+        }
+      } else {
+        recipientCount = 0;
+      }
+    }
+
     const status = c.status || 'Delivered';
     const deliveryRate =
       c.deliveryRate ||
-      (status === 'Delivered' ? '99.4%' : status === 'Scheduled' ? 'Pending' : '100%');
+      (status === 'Delivered' ? '100%' : status === 'Scheduled' ? 'Pending' : '100%');
     const sender = c.sender || "Principal's Desk";
 
     return {
@@ -44,7 +77,7 @@ export class CommunicationsService {
       content,
       channel,
       recipientGroup,
-      recipientCount,
+      recipientCount: Number(recipientCount || 0),
       status,
       deliveryRate,
       sender,
@@ -62,15 +95,33 @@ export class CommunicationsService {
   }
 
   async createAnnouncement(tenantId: string, authorUserId: string, dto: CreateAnnouncementDto) {
-    const id = `COM-2025-00${this.prisma.memoryStore.communications.size + 1}`;
-    const announcement = this.enrichAnnouncement({
+    const id = `COM-${new Date().getFullYear()}-${(this.prisma.memoryStore.communications.size + 1).toString().padStart(4, '0')}`;
+    const announcement = await this.enrichAnnouncement({
       id,
       tenantId,
       authorId: authorUserId,
       ...dto,
       createdAt: new Date(),
       updatedAt: new Date(),
-    });
+    }, tenantId);
+
+    if (this.prisma.isDbConnected) {
+      try {
+        await this.prisma.notification.create({
+          data: {
+            id,
+            tenantId,
+            recipientUserId: null,
+            title: announcement.title,
+            message: announcement.content || announcement.message,
+            channel: 'IN_APP',
+            status: 'SENT',
+          },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Could not persist announcement to DB: ${err.message}`);
+      }
+    }
 
     this.prisma.memoryStore.communications.set(id, announcement);
 
@@ -113,6 +164,37 @@ export class CommunicationsService {
   }
 
   async getAnnouncements(tenantId: string, audience?: string, campusId?: string) {
+    if (this.prisma.isDbConnected) {
+      try {
+        const notifications = await this.prisma.notification.findMany({
+          where: { tenantId },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (notifications.length > 0) {
+          return Promise.all(
+            notifications.map((n) =>
+              this.enrichAnnouncement(
+                {
+                  id: n.id,
+                  tenantId: n.tenantId,
+                  title: n.title,
+                  message: n.message,
+                  content: n.message,
+                  channel: n.channel,
+                  status: n.status === 'SENT' ? 'Delivered' : n.status,
+                  createdAt: n.createdAt,
+                },
+                tenantId,
+              ),
+            ),
+          );
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not load announcements from DB: ${err.message}`);
+      }
+    }
+
     const items = Array.from(this.prisma.memoryStore.communications.values())
       .filter(
         (c) =>
@@ -122,7 +204,7 @@ export class CommunicationsService {
       )
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-    return items.map((c) => this.enrichAnnouncement(c));
+    return Promise.all(items.map((c) => this.enrichAnnouncement(c, tenantId)));
   }
 
   async sendDirectMessage(tenantId: string, senderUserId: string, dto: SendDirectMessageDto) {
@@ -139,6 +221,24 @@ export class CommunicationsService {
       read: false,
       createdAt: new Date(),
     };
+
+    if (this.prisma.isDbConnected) {
+      try {
+        await this.prisma.notification.create({
+          data: {
+            id,
+            tenantId,
+            recipientUserId: dto.recipientUserId,
+            title: 'Direct Message',
+            message: dto.content,
+            channel: 'IN_APP',
+            status: 'SENT',
+          },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Could not persist direct message to DB: ${err.message}`);
+      }
+    }
 
     this.prisma.memoryStore.communicationThreads.set(id, message);
     return message;

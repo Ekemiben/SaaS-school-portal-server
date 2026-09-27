@@ -9,6 +9,7 @@ import { ParentLiveTrackingService } from './parent-live-tracking.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
+import { RequireSubscriptionFeature } from '../../common/decorators/subscription-feature.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
 import {
   CreateTransportRouteDto,
@@ -28,6 +29,7 @@ import { BatchBoardingCheckInDto, QueryTransportAttendanceDto } from './dto/tran
 import { QueryParentLiveTrackingDto } from './dto/parent-live-tracking.dto.js';
 
 @Controller('api/v1/transport')
+@RequireSubscriptionFeature('TRANSPORT_BASIC')
 export class TransportController {
   constructor(
     private readonly transportService: TransportService,
@@ -183,16 +185,19 @@ export class TransportController {
 
   // --- Tracking & Telemetry ---
 
+  @RequireSubscriptionFeature('TRANSPORT_ADVANCED_FLEET')
   @Post('tracking/telemetry')
   async ingestTelemetry(@CurrentTenant() tenant: TenantContext, @Body() body: IngestTelemetryDto) {
     return this.trackingService.ingestTelemetry(tenant.tenantId, body);
   }
 
+  @RequireSubscriptionFeature('TRANSPORT_ADVANCED_FLEET')
   @Get('tracking/trips/:id/latest')
   async getTripLiveLocation(@CurrentTenant() tenant: TenantContext, @Param('id') tripId: string) {
     return this.trackingService.getLatestLocation(tenant.tenantId, { tripId });
   }
 
+  @RequireSubscriptionFeature('TRANSPORT_ADVANCED_FLEET')
   @Get('tracking/vehicles/:number/latest')
   async getVehicleLiveLocation(@CurrentTenant() tenant: TenantContext, @Param('number') vehicleNumber: string) {
     return this.trackingService.getLatestLocation(tenant.tenantId, { vehicleNumber });
@@ -200,6 +205,7 @@ export class TransportController {
 
   // --- Parent Live Experience ---
 
+  @RequireSubscriptionFeature('TRANSPORT_ADVANCED_FLEET')
   @Get('parent/student/:studentId/live')
   async getStudentLiveTracking(
     @CurrentTenant() tenant: TenantContext,
@@ -212,6 +218,7 @@ export class TransportController {
     });
   }
 
+  @RequireSubscriptionFeature('TRANSPORT_ADVANCED_FLEET')
   @Get('parent/students/live')
   async getParentStudentsLiveTracking(@CurrentTenant() tenant: TenantContext) {
     return this.parentTrackingService.getParentStudentsLiveTransport(tenant.tenantId, tenant.userId || '');

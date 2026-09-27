@@ -1,6 +1,6 @@
-import { Injectable, NotFoundException, ConflictException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, ForbiddenException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes } from 'crypto';
 import bcrypt from 'bcryptjs';
 
 @Injectable()
@@ -100,6 +100,19 @@ export class StudentsService {
           status: s.status,
           classLevel: s.enrollments?.[0]?.class?.name || (s as any).classLevel || 'Unassigned',
           classId: s.enrollments?.[0]?.classId || null,
+          parents: (s.parents || []).map((sp) => ({
+            id: sp.parent.id,
+            parentId: sp.parent.id,
+            firstName: sp.parent.firstName,
+            lastName: sp.parent.lastName,
+            fullName: `${sp.parent.firstName} ${sp.parent.lastName}`.trim(),
+            relationship: sp.parent.relationship,
+            phone: sp.parent.phone,
+            email: sp.parent.email,
+            address: sp.parent.address,
+            occupation: sp.parent.occupation,
+            isPrimaryContact: sp.isPrimaryContact,
+          })),
           guardianName: s.parents?.[0]?.parent
             ? `${s.parents[0].parent.firstName} ${s.parents[0].parent.lastName}`
             : null,
@@ -213,6 +226,19 @@ export class StudentsService {
             status: s.status,
             classLevel: s.enrollments?.[0]?.class?.name || (s as any).classLevel || 'Unassigned',
             classId: s.enrollments?.[0]?.classId || null,
+            parents: (s.parents || []).map((sp) => ({
+              id: sp.parent.id,
+              parentId: sp.parent.id,
+              firstName: sp.parent.firstName,
+              lastName: sp.parent.lastName,
+              fullName: `${sp.parent.firstName} ${sp.parent.lastName}`.trim(),
+              relationship: sp.parent.relationship,
+              phone: sp.parent.phone,
+              email: sp.parent.email,
+              address: sp.parent.address,
+              occupation: sp.parent.occupation,
+              isPrimaryContact: sp.isPrimaryContact,
+            })),
             guardianName: s.parents?.[0]?.parent
               ? `${s.parents[0].parent.firstName} ${s.parents[0].parent.lastName}`
               : null,
@@ -275,6 +301,20 @@ export class StudentsService {
   ) {
     if (this.prisma.isDbConnected) {
       try {
+        // Enforce student subscription quota
+        const sub = await this.prisma.subscription.findFirst({
+          where: { tenantId },
+        });
+        const maxStudents = sub?.maxStudents ?? 500;
+        const currentCount = await this.prisma.student.count({
+          where: { tenantId, status: { not: 'GRADUATED' } },
+        });
+        if (currentCount >= maxStudents) {
+          throw new ForbiddenException(
+            `Student enrollment quota reached (${currentCount}/${maxStudents}). Please upgrade your subscription plan to admit more students.`
+          );
+        }
+
         // 1. Resolve campusId in PostgreSQL
         let campusId = data.campusId;
         if (campusId) {
@@ -353,33 +393,158 @@ export class StudentsService {
           },
         });
 
-        // 5. Create Parent & StudentParent if guardian info provided
-        if (data.guardianName || data.guardianPhone) {
+        // 5. Create Parent & StudentParent if guardian info or parentIds provided
+        if (Array.isArray(data.parentIds) && data.parentIds.length > 0) {
+          const validParents = await this.prisma.parent.findMany({
+            where: { tenantId, id: { in: data.parentIds } },
+            select: { id: true },
+          });
+          for (let i = 0; i < validParents.length; i++) {
+            await this.prisma.studentParent.upsert({
+              where: {
+                studentId_parentId: {
+                  studentId: createdStudent.id,
+                  parentId: validParents[i].id,
+                },
+              },
+              create: {
+                id: `sp_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                studentId: createdStudent.id,
+                parentId: validParents[i].id,
+                isPrimaryContact: i === 0,
+              },
+              update: {},
+            });
+          }
+        } else if (data.guardianName || data.guardianPhone || data.guardianEmail) {
           const nameParts = (data.guardianName || 'Guardian').trim().split(/\s+/);
           const pFirstName = nameParts[0] || 'Guardian';
           const pLastName = nameParts.slice(1).join(' ') || 'Parent';
-          const phoneClean = (data.guardianPhone || '').replace(/\s+/g, '') || '0000000000';
+          const phoneClean = (data.guardianPhone || '').replace(/\s+/g, '') || null;
+          const emailClean = data.guardianEmail ? data.guardianEmail.toLowerCase().trim() : null;
 
-          const parentRecord = await this.prisma.parent.create({
-            data: {
-              id: `par_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
-              tenantId,
-              firstName: pFirstName,
-              lastName: pLastName,
-              phone: phoneClean,
-              email: data.guardianEmail ? data.guardianEmail.toLowerCase().trim() : null,
-              address: data.guardianAddress || null,
-              relationship: data.guardianRelationship || 'Parent',
+          // Deduplication: look for existing parent in this tenant by phone or email
+          let parentRecord = null;
+          if (phoneClean || emailClean) {
+            parentRecord = await this.prisma.parent.findFirst({
+              where: {
+                tenantId,
+                OR: [
+                  ...(phoneClean ? [{ phone: phoneClean }] : []),
+                  ...(emailClean ? [{ email: emailClean }] : []),
+                ],
+              },
+            });
+          }
+
+          let userId: string | null = parentRecord?.userId || null;
+          if (!userId && (phoneClean || emailClean)) {
+            try {
+              let role = await this.prisma.role.findFirst({
+                where: { tenantId, name: 'PARENT' },
+              });
+              if (!role) {
+                role = await this.prisma.role.create({
+                  data: {
+                    id: `role_parent_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
+                    tenantId,
+                    name: 'PARENT',
+                    description: 'Parent or Guardian with student ward portal access',
+                    isSystem: true,
+                  },
+                });
+              }
+
+              const existingUser = await this.prisma.user.findFirst({
+                where: {
+                  tenantId,
+                  OR: [
+                    ...(emailClean ? [{ email: emailClean }] : []),
+                    ...(phoneClean ? [{ phone: phoneClean }] : []),
+                  ],
+                },
+              });
+
+              if (existingUser) {
+                userId = existingUser.id;
+                await this.prisma.userRole.upsert({
+                  where: {
+                    userId_roleId: {
+                      userId: existingUser.id,
+                      roleId: role.id,
+                    },
+                  },
+                  create: {
+                    id: `ur_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                    userId: existingUser.id,
+                    roleId: role.id,
+                  },
+                  update: {},
+                });
+              } else {
+                const passwordHash = await bcrypt.hash(randomUUID(), 10);
+                const newUserId = `usr_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+                const userEmail = emailClean || `${phoneClean || randomUUID().substring(0, 8)}@parent.portal`;
+                const createdUser = await this.prisma.user.create({
+                  data: {
+                    id: newUserId,
+                    tenantId,
+                    email: userEmail,
+                    phone: phoneClean,
+                    firstName: pFirstName,
+                    lastName: pLastName,
+                    passwordHash,
+                    isActive: true,
+                    userRoles: {
+                      create: {
+                        id: `ur_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                        roleId: role.id,
+                      },
+                    },
+                  },
+                });
+                userId = createdUser.id;
+              }
+            } catch (err: any) {
+              this.logger.warn(`Failed to provision user for guardian: ${err.message}`);
+            }
+          }
+
+          if (!parentRecord) {
+            parentRecord = await this.prisma.parent.create({
+              data: {
+                id: `par_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                tenantId,
+                userId: userId || undefined,
+                firstName: pFirstName,
+                lastName: pLastName,
+                phone: phoneClean || '0000000000',
+                email: emailClean,
+                address: data.guardianAddress || null,
+                relationship: data.guardianRelationship || 'Parent',
+              },
+            });
+          } else if (userId && !parentRecord.userId) {
+            await this.prisma.parent.update({
+              where: { id: parentRecord.id },
+              data: { userId },
+            }).catch(() => {});
+          }
+
+          await this.prisma.studentParent.upsert({
+            where: {
+              studentId_parentId: {
+                studentId: createdStudent.id,
+                parentId: parentRecord.id,
+              },
             },
-          });
-
-          await this.prisma.studentParent.create({
-            data: {
+            create: {
               id: `sp_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
               studentId: createdStudent.id,
               parentId: parentRecord.id,
               isPrimaryContact: true,
             },
+            update: {},
           });
         }
 
@@ -490,7 +655,8 @@ export class StudentsService {
           });
 
           if (!existingStudentUser && studentRole) {
-            const passHash = await bcrypt.hash('Password123!', 10);
+            const randomSecret = randomBytes(16).toString('hex');
+            const passHash = await bcrypt.hash(randomSecret, 10);
             await this.prisma.user.create({
               data: {
                 id: `usr_stu_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
@@ -562,7 +728,8 @@ export class StudentsService {
             });
 
             if (!existingParentUser && parentRole) {
-              const passHash = await bcrypt.hash('Password123!', 10);
+              const randomSecret = randomBytes(16).toString('hex');
+              const passHash = await bcrypt.hash(randomSecret, 10);
               const nameParts = (data.guardianName || 'Guardian').trim().split(/\s+/);
               await this.prisma.user.create({
                 data: {
@@ -623,6 +790,17 @@ export class StudentsService {
     }
 
     // In-memory fallback
+    const currentMemoryCount = Array.from(this.prisma.memoryStore.students.values()).filter(
+      (s: any) => s.tenantId === tenantId && s.status !== 'GRADUATED',
+    ).length;
+    const memorySub = this.prisma.memoryStore.subscriptions?.get(tenantId);
+    const maxStudentsMem = memorySub?.maxStudents ?? 500;
+    if (currentMemoryCount >= maxStudentsMem) {
+      throw new ForbiddenException(
+        `Student enrollment quota reached (${currentMemoryCount}/${maxStudentsMem}). Please upgrade your subscription plan to admit more students.`
+      );
+    }
+
     const admissionNumber =
       data.admissionNumber ||
       `SCH/${new Date().getFullYear()}/${Math.floor(1000 + Math.random() * 9000)}`;
@@ -718,6 +896,19 @@ export class StudentsService {
           status: updated.status,
           classLevel: updated.enrollments?.[0]?.class?.name || (updated as any).classLevel || 'Unassigned',
           classId: updated.enrollments?.[0]?.classId || null,
+          parents: (updated.parents || []).map((sp) => ({
+            id: sp.parent.id,
+            parentId: sp.parent.id,
+            firstName: sp.parent.firstName,
+            lastName: sp.parent.lastName,
+            fullName: `${sp.parent.firstName} ${sp.parent.lastName}`.trim(),
+            relationship: sp.parent.relationship,
+            phone: sp.parent.phone,
+            email: sp.parent.email,
+            address: sp.parent.address,
+            occupation: sp.parent.occupation,
+            isPrimaryContact: sp.isPrimaryContact,
+          })),
           guardianName: updated.parents?.[0]?.parent
             ? `${updated.parents[0].parent.firstName} ${updated.parents[0].parent.lastName}`
             : null,
@@ -834,7 +1025,7 @@ export class StudentsService {
         student =
           candidateStudents.find(
             (s) => s.admissionNumber.toLowerCase().replace(/[^a-z0-9]/g, '') === cleanUserPrefix,
-          ) || candidateStudents[0] || null;
+          ) || null;
 
         if (student && !student.email) {
           await this.prisma.student.update({
@@ -850,7 +1041,9 @@ export class StudentsService {
 
       // Compute authentic attendance metrics
       const totalAttendance = student.attendance.length;
-      const presentCount = student.attendance.filter((a) => a.status === 'PRESENT').length;
+      const presentCount = student.attendance.filter(
+        (a) => a.status === 'PRESENT' || a.status === 'LATE',
+      ).length;
       const attendancePercentage =
         totalAttendance > 0 ? Math.round((presentCount / totalAttendance) * 100) : 100;
 

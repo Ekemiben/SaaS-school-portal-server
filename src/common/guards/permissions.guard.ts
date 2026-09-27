@@ -51,9 +51,15 @@ export class PermissionsGuard implements CanActivate {
       });
     }
 
-    // School Owner has full access to tenant-scoped permissions
+    // School Owner, School Admin, and ADMIN have full access to tenant-scoped permissions
     const userRoles: string[] = user.roles || [];
-    if (!isPlatformPermission && userRoles.includes('School Owner')) {
+    if (
+      !isPlatformPermission &&
+      (userRoles.includes('School Owner') ||
+        userRoles.includes('School Admin') ||
+        userRoles.includes('ADMIN') ||
+        userRoles.includes('Admin'))
+    ) {
       return true;
     }
 

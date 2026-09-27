@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { PrismaService } from '../../../database/prisma.service.js';
 import crypto, { randomUUID } from 'crypto';
 import {
   PaymentProviderAdapter,
@@ -13,7 +14,10 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
   private readonly logger = new Logger(PaystackPaymentAdapter.name);
   readonly name = 'PAYSTACK';
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    @Optional() private readonly prisma?: PrismaService,
+  ) {}
 
   private get secretKey(): string {
     return (
@@ -23,11 +27,27 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
     );
   }
 
+  private get webhookSecret(): string {
+    return (
+      this.configService.get<string>('PAYSTACK_WEBHOOK_SECRET') ||
+      process.env.PAYSTACK_WEBHOOK_SECRET ||
+      this.secretKey
+    );
+  }
+
+  private get isConfiguredRealKey(): boolean {
+    const key = this.secretKey;
+    return Boolean(
+      key &&
+      !key.includes('mock') &&
+      (key.startsWith('sk_live_') || key.startsWith('sk_test_'))
+    );
+  }
+
   async initializePayment(params: InitializePaymentParams): Promise<InitializePaymentResult> {
-    const isProd = process.env.NODE_ENV === 'production' && !this.secretKey.includes('mock');
     const amountInKobo = Math.round(params.amount * 100);
 
-    if (isProd) {
+    if (this.isConfiguredRealKey) {
       try {
         const response = await fetch('https://api.paystack.co/transaction/initialize', {
           method: 'POST',
@@ -53,6 +73,8 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
             reference: params.reference,
             provider: 'paystack',
           };
+        } else {
+          this.logger.warn(`Paystack initialize returned status false: ${data.message || JSON.stringify(data)}`);
         }
       } catch (err: any) {
         this.logger.error(`Paystack initialize API error: ${err?.message}`);
@@ -69,9 +91,7 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
   }
 
   async verifyPayment(reference: string): Promise<VerifyPaymentResult> {
-    const isProd = process.env.NODE_ENV === 'production' && !this.secretKey.includes('mock');
-
-    if (isProd) {
+    if (this.isConfiguredRealKey) {
       try {
         const response = await fetch(`https://api.paystack.co/transaction/verify/${reference}`, {
           method: 'GET',
@@ -100,17 +120,44 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
       }
     }
 
-    // Simulation response
+    // Safe simulation response: dynamically look up actual payment/invoice amount
+    let simulatedAmount = 150000;
+    let simulatedCurrency = 'NGN';
+
+    if (this.prisma) {
+      try {
+        if (this.prisma.isDbConnected) {
+          const dbPayment = await this.prisma.payment.findUnique({
+            where: { reference },
+            include: { invoice: true },
+          });
+          if (dbPayment) {
+            simulatedAmount = dbPayment.amount || dbPayment.invoice?.totalAmount || 150000;
+            simulatedCurrency = dbPayment.currency || 'NGN';
+          }
+        }
+        if (this.prisma.memoryStore) {
+          const memPayment = Array.from(this.prisma.memoryStore.payments.values()).find(
+            (p: any) => p.reference === reference,
+          );
+          if (memPayment) {
+            simulatedAmount = memPayment.amount || 150000;
+            simulatedCurrency = memPayment.currency || 'NGN';
+          }
+        }
+      } catch {}
+    }
+
     return {
       success: true,
       reference,
-      amount: 150000,
-      currency: 'NGN',
+      amount: simulatedAmount,
+      currency: simulatedCurrency,
       status: 'successful',
       paidAt: new Date(),
       channel: 'card',
-      gatewayResponse: 'Successful',
-      rawPayload: { reference, status: 'success', channel: 'card' },
+      gatewayResponse: 'Successful (Development Mode)',
+      rawPayload: { reference, status: 'success', channel: 'card', amount: simulatedAmount * 100, isDevSimulation: true },
     };
   }
 
@@ -121,9 +168,7 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
     bvn?: string;
     bankCode?: string;
   }) {
-    const isProd = process.env.NODE_ENV === 'production' && !this.secretKey.includes('mock');
-
-    if (isProd) {
+    if (this.isConfiguredRealKey) {
       try {
         const response = await fetch('https://api.paystack.co/dedicated_account', {
           method: 'POST',
@@ -165,10 +210,28 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
     };
   }
 
-  verifyWebhookSignature(signature: string, rawBody: string | Buffer): boolean {
-    if (!signature) return false;
-    const bodyStr = typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8');
-    const hash = crypto.createHmac('sha512', this.secretKey).update(bodyStr).digest('hex');
-    return hash === signature;
+  verifyWebhookSignature(signature: string, rawBody: string | Buffer | any): boolean {
+    if (!signature || typeof signature !== 'string') return false;
+    const bodyStr =
+      Buffer.isBuffer(rawBody)
+        ? rawBody.toString('utf8')
+        : typeof rawBody === 'string'
+        ? rawBody
+        : JSON.stringify(rawBody);
+
+    const checkWithSecret = (secret: string) => {
+      try {
+        const hash = crypto.createHmac('sha512', secret).update(bodyStr).digest('hex');
+        const hashBuf = Buffer.from(hash, 'utf8');
+        const sigBuf = Buffer.from(signature, 'utf8');
+        return hashBuf.length === sigBuf.length && crypto.timingSafeEqual(hashBuf, sigBuf);
+      } catch {
+        return false;
+      }
+    };
+
+    if (checkWithSecret(this.webhookSecret)) return true;
+    if (this.webhookSecret !== this.secretKey && checkWithSecret(this.secretKey)) return true;
+    return false;
   }
 }

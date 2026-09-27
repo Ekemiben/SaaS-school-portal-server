@@ -5,13 +5,28 @@ import type { TenantContext } from '../../common/types/tenant-context.interface.
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
 
-@Controller('api/v1/academics')
+@Controller(['api/v1/academics', 'academics'])
 export class AcademicsController {
   constructor(private readonly academicsService: AcademicsService) {}
 
+  // --- Academic Calendar & Timeline ---
+  @Get('calendar')
+  async getAcademicCalendar(@CurrentTenant() tenant: TenantContext) {
+    return this.academicsService.getAcademicCalendarSummary(tenant.tenantId);
+  }
+
+  // --- Academic Years ---
   @Get('years')
   async getYears(@CurrentTenant() tenant: TenantContext) {
     return this.academicsService.getAcademicYears(tenant.tenantId);
+  }
+
+  @Get('years/:id')
+  async getYearById(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.academicsService.getAcademicYearById(tenant.tenantId, id);
   }
 
   @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
@@ -23,12 +38,49 @@ export class AcademicsController {
     return this.academicsService.createAcademicYear(tenant.tenantId, body);
   }
 
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Patch('years/:id')
+  async updateYear(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    return this.academicsService.updateAcademicYear(tenant.tenantId, id, body);
+  }
+
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Post('years/:id/set-current')
+  async setCurrentYear(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.academicsService.setCurrentAcademicYear(tenant.tenantId, id);
+  }
+
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Delete('years/:id')
+  async deleteYear(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.academicsService.deleteAcademicYear(tenant.tenantId, id);
+  }
+
+  // --- Terms ---
   @Get('terms')
   async getTerms(
     @CurrentTenant() tenant: TenantContext,
     @Query('academicYearId') academicYearId?: string,
   ) {
     return this.academicsService.getTerms(tenant.tenantId, academicYearId);
+  }
+
+  @Get('terms/:id')
+  async getTermById(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.academicsService.getTermById(tenant.tenantId, id);
   }
 
   @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
@@ -40,6 +92,35 @@ export class AcademicsController {
     return this.academicsService.createTerm(tenant.tenantId, body);
   }
 
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Patch('terms/:id')
+  async updateTerm(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    return this.academicsService.updateTerm(tenant.tenantId, id, body);
+  }
+
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Post('terms/:id/set-current')
+  async setCurrentTerm(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.academicsService.setCurrentTerm(tenant.tenantId, id);
+  }
+
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Delete('terms/:id')
+  async deleteTerm(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.academicsService.deleteTerm(tenant.tenantId, id);
+  }
+
+  // --- Classes ---
   @Get('classes')
   async getClasses(
     @CurrentTenant() tenant: TenantContext,
@@ -76,6 +157,17 @@ export class AcademicsController {
     return this.academicsService.deleteClass(tenant.tenantId, id);
   }
 
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Post('classes/:id/assign-teacher')
+  async assignTeacher(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() body: { teacherId?: string | null },
+  ) {
+    return this.academicsService.assignTeacherToClass(tenant.tenantId, id, body.teacherId);
+  }
+
+  // --- Subjects ---
   @Get('subjects')
   async getSubjects(@CurrentTenant() tenant: TenantContext) {
     return this.academicsService.getSubjects(tenant.tenantId);
@@ -88,6 +180,25 @@ export class AcademicsController {
     @Body() body: any,
   ) {
     return this.academicsService.createSubject(tenant.tenantId, body);
+  }
+
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Patch('subjects/:id')
+  async updateSubject(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    return this.academicsService.updateSubject(tenant.tenantId, id, body);
+  }
+
+  @RequirePermissions(SystemPermissions.ACADEMICS_MANAGE)
+  @Delete('subjects/:id')
+  async deleteSubject(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.academicsService.deleteSubject(tenant.tenantId, id);
   }
 
   // --- Enrollments & Promotions ---

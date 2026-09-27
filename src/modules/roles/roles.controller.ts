@@ -5,7 +5,7 @@ import type { TenantContext } from '../../common/types/tenant-context.interface.
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
 
-@Controller('api/v1/roles')
+@Controller(['api/v1/roles', 'roles'])
 export class RolesController {
   constructor(private readonly rolesService: RolesService) {}
 

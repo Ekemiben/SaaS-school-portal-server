@@ -154,7 +154,6 @@ export class ImpersonationService {
     };
 
     const token = this.jwtService.sign(tokenPayload, {
-      secret: process.env.JWT_ACCESS_SECRET || 'dev_access_secret_key_change_in_production_123',
       expiresIn: `${durationMinutes}m`,
     });
 

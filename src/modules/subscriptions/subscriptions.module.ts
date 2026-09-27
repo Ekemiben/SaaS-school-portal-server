@@ -1,5 +1,6 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { PrismaModule } from '../../database/prisma.module.js';
+import { BillingModule } from '../billing/billing.module.js';
 import { SubscriptionsController } from './subscriptions.controller.js';
 import { PlatformSubscriptionsController } from './platform-subscriptions.controller.js';
 import { SubscriptionsService } from './subscriptions.service.js';
@@ -7,7 +8,7 @@ import { UsageMeteringService } from './usage-metering.service.js';
 import { TenantLifecycleService } from './tenant-lifecycle.service.js';
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, forwardRef(() => BillingModule)],
   controllers: [SubscriptionsController, PlatformSubscriptionsController],
   providers: [
     SubscriptionsService,

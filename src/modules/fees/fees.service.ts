@@ -19,6 +19,30 @@ export class FeesService {
     tenantId: string,
     filters: { campusId?: string; academicYearId?: string; termId?: string; classId?: string },
   ) {
+    if (this.prisma.isDbConnected) {
+      try {
+        const whereClause: any = { tenantId };
+        if (filters.campusId) whereClause.campusId = filters.campusId;
+        if (filters.academicYearId) whereClause.academicYearId = filters.academicYearId;
+        if (filters.termId) whereClause.termId = filters.termId;
+        if (filters.classId) whereClause.classId = filters.classId;
+
+        const dbStructures = await this.prisma.feeStructure.findMany({
+          where: whereClause,
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (dbStructures.length > 0) {
+          return dbStructures.map((f) => ({
+            ...f,
+            items: Array.isArray(f.items) ? f.items : [],
+          }));
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not query fee structures from DB: ${err.message}`);
+      }
+    }
+
     let list = Array.from(this.prisma.memoryStore.feeStructures.values()).filter(
       (f: any) => f.tenantId === tenantId,
     );
@@ -32,6 +56,23 @@ export class FeesService {
   }
 
   async getFeeStructureById(tenantId: string, id: string) {
+    if (this.prisma.isDbConnected) {
+      try {
+        const dbFee = await this.prisma.feeStructure.findFirst({
+          where: { id, tenantId },
+          include: { feeWaivers: true },
+        });
+        if (dbFee) {
+          return {
+            ...dbFee,
+            items: Array.isArray(dbFee.items) ? dbFee.items : [],
+          };
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not find fee structure ${id} in DB: ${err.message}`);
+      }
+    }
+
     const fee = this.prisma.memoryStore.feeStructures.get(id);
     if (!fee || fee.tenantId !== tenantId) {
       throw new NotFoundException('Fee structure not found');
@@ -48,18 +89,37 @@ export class FeesService {
 
     const totalAmount = dto.amount !== undefined ? Number(dto.amount) : calculatedMandatoryAmount;
 
+    // Resolve campusId and academicYearId if not provided
+    let campusId = dto.campusId;
+    if (!campusId && this.prisma.isDbConnected) {
+      const firstCampus = await this.prisma.campus.findFirst({ where: { tenantId } });
+      if (firstCampus) campusId = firstCampus.id;
+    }
+    if (!campusId) {
+      campusId = Array.from(this.prisma.memoryStore.campuses.values()).find((c: any) => c.tenantId === tenantId)?.id || 'campus_main';
+    }
+
+    let academicYearId = dto.academicYearId;
+    if (!academicYearId && this.prisma.isDbConnected) {
+      const firstAY = await this.prisma.academicYear.findFirst({ where: { tenantId } });
+      if (firstAY) academicYearId = firstAY.id;
+    }
+    if (!academicYearId) {
+      academicYearId = 'ay_2026_2027';
+    }
+
     const fee = {
       id,
       tenantId,
-      campusId: dto.campusId,
-      academicYearId: dto.academicYearId,
+      campusId,
+      academicYearId,
       termId: dto.termId || null,
       classId: dto.classId || null,
       name: dto.name,
       code: dto.code || dto.name.toUpperCase().replace(/\s+/g, '_'),
       description: dto.description || null,
       amount: totalAmount,
-      currency: dto.currency || 'USD',
+      currency: dto.currency || 'NGN',
       items,
       targetAudience: dto.targetAudience || 'ALL',
       dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
@@ -73,6 +133,42 @@ export class FeesService {
       updatedAt: new Date(),
     };
 
+    if (this.prisma.isDbConnected) {
+      try {
+        const created = await this.prisma.feeStructure.create({
+          data: {
+            id: fee.id,
+            tenantId: fee.tenantId,
+            campusId: fee.campusId,
+            academicYearId: fee.academicYearId,
+            termId: fee.termId,
+            classId: fee.classId,
+            name: fee.name,
+            code: fee.code,
+            description: fee.description,
+            amount: fee.amount,
+            currency: fee.currency,
+            items: fee.items as any,
+            targetAudience: fee.targetAudience,
+            lateFeePercentage: fee.lateFeePercentage,
+            lateFeeGraceDays: fee.lateFeeGraceDays,
+            earlyBirdDiscountPercentage: fee.earlyBirdDiscountPercentage,
+            earlyBirdCutoffDate: fee.earlyBirdCutoffDate,
+            status: fee.status,
+            dueDate: fee.dueDate,
+            applicableGradeLevel: fee.applicableGradeLevel,
+          },
+        });
+        this.prisma.memoryStore.feeStructures.set(id, { ...fee, ...created });
+        return {
+          ...created,
+          items: Array.isArray(created.items) ? created.items : items,
+        };
+      } catch (err: any) {
+        this.logger.warn(`Could not persist fee structure to DB: ${err.message}`);
+      }
+    }
+
     this.prisma.memoryStore.feeStructures.set(id, fee);
     return fee;
   }
@@ -80,35 +176,65 @@ export class FeesService {
   async updateFeeStructure(tenantId: string, id: string, dto: UpdateFeeStructureDto) {
     const fee = await this.getFeeStructureById(tenantId, id);
 
-    if (dto.name) fee.name = dto.name;
-    if (dto.code) fee.code = dto.code;
-    if (dto.description !== undefined) fee.description = dto.description;
-    if (dto.termId !== undefined) fee.termId = dto.termId;
-    if (dto.classId !== undefined) fee.classId = dto.classId;
-    if (dto.applicableGradeLevel !== undefined) fee.applicableGradeLevel = dto.applicableGradeLevel;
-    if (dto.targetAudience !== undefined) fee.targetAudience = dto.targetAudience;
-    if (dto.currency !== undefined) fee.currency = dto.currency;
-    if (dto.dueDate !== undefined) fee.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
-    if (dto.lateFeePercentage !== undefined) fee.lateFeePercentage = dto.lateFeePercentage;
-    if (dto.lateFeeGraceDays !== undefined) fee.lateFeeGraceDays = dto.lateFeeGraceDays;
-    if (dto.earlyBirdDiscountPercentage !== undefined) fee.earlyBirdDiscountPercentage = dto.earlyBirdDiscountPercentage;
+    const updateData: any = {};
+    if (dto.name) updateData.name = dto.name;
+    if (dto.code) updateData.code = dto.code;
+    if (dto.description !== undefined) updateData.description = dto.description;
+    if (dto.termId !== undefined) updateData.termId = dto.termId;
+    if (dto.classId !== undefined) updateData.classId = dto.classId;
+    if (dto.applicableGradeLevel !== undefined) updateData.applicableGradeLevel = dto.applicableGradeLevel;
+    if (dto.targetAudience !== undefined) updateData.targetAudience = dto.targetAudience;
+    if (dto.currency !== undefined) updateData.currency = dto.currency;
+    if (dto.dueDate !== undefined) updateData.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
+    if (dto.lateFeePercentage !== undefined) updateData.lateFeePercentage = dto.lateFeePercentage;
+    if (dto.lateFeeGraceDays !== undefined) updateData.lateFeeGraceDays = dto.lateFeeGraceDays;
+    if (dto.earlyBirdDiscountPercentage !== undefined) updateData.earlyBirdDiscountPercentage = dto.earlyBirdDiscountPercentage;
     if (dto.earlyBirdCutoffDate !== undefined) {
-      fee.earlyBirdCutoffDate = dto.earlyBirdCutoffDate ? new Date(dto.earlyBirdCutoffDate) : null;
+      updateData.earlyBirdCutoffDate = dto.earlyBirdCutoffDate ? new Date(dto.earlyBirdCutoffDate) : null;
     }
     if (dto.items) {
-      fee.items = dto.items;
-      fee.amount = dto.items
+      updateData.items = dto.items;
+      updateData.amount = dto.items
         .filter((it) => !it.isOptional)
         .reduce((sum, it) => sum + (Number(it.amount) || 0), 0);
     }
-    fee.updatedAt = new Date();
+    updateData.updatedAt = new Date();
 
-    this.prisma.memoryStore.feeStructures.set(id, fee);
-    return fee;
+    if (this.prisma.isDbConnected) {
+      try {
+        const updated = await this.prisma.feeStructure.update({
+          where: { id },
+          data: updateData,
+        });
+        const merged = { ...fee, ...updated };
+        this.prisma.memoryStore.feeStructures.set(id, merged);
+        return {
+          ...updated,
+          items: Array.isArray(updated.items) ? updated.items : dto.items || fee.items || [],
+        };
+      } catch (err: any) {
+        this.logger.warn(`Could not update fee structure in DB: ${err.message}`);
+      }
+    }
+
+    const merged = { ...fee, ...updateData };
+    this.prisma.memoryStore.feeStructures.set(id, merged);
+    return merged;
   }
 
   async deleteFeeStructure(tenantId: string, id: string) {
     const fee = await this.getFeeStructureById(tenantId, id);
+
+    if (this.prisma.isDbConnected) {
+      try {
+        await this.prisma.feeStructure.delete({
+          where: { id },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Could not delete fee structure from DB: ${err.message}`);
+      }
+    }
+
     this.prisma.memoryStore.feeStructures.delete(id);
     return { success: true, message: `Fee structure "${fee.name}" deleted successfully` };
   }
@@ -116,7 +242,20 @@ export class FeesService {
   // --- Fee Evaluation & Student Breakdown ---
   async evaluateStudentFee(tenantId: string, dto: EvaluateStudentFeeDto) {
     const fee = await this.getFeeStructureById(tenantId, dto.feeStructureId);
-    const student = this.prisma.memoryStore.students.get(dto.studentId);
+    let student: any = null;
+
+    if (this.prisma.isDbConnected) {
+      try {
+        student = await this.prisma.student.findFirst({
+          where: { id: dto.studentId, tenantId },
+        });
+      } catch {}
+    }
+
+    if (!student) {
+      student = this.prisma.memoryStore.students.get(dto.studentId);
+    }
+
     if (!student || student.tenantId !== tenantId) {
       throw new NotFoundException('Student record not found');
     }
@@ -303,7 +442,8 @@ export class FeesService {
         let targetStudentIds: string[] = [];
 
         if (isStudent) {
-          let student = await this.prisma.student.findFirst({
+          // Fail-closed exact resolution: match by email or phone
+          const student = await this.prisma.student.findFirst({
             where: {
               tenantId,
               OR: [
@@ -313,22 +453,11 @@ export class FeesService {
             },
           });
 
-          if (!student) {
-            const cleanPrefix = user.email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
-            const candidates = await this.prisma.student.findMany({
-              where: {
-                tenantId,
-                OR: [{ firstName: user.firstName, lastName: user.lastName }],
-              },
-            });
-            student =
-              candidates.find((s) => s.admissionNumber.toLowerCase().replace(/[^a-z0-9]/g, '') === cleanPrefix) ||
-              candidates[0] ||
-              null;
-          }
-
           if (student) {
             targetStudentIds.push(student.id);
+          } else {
+            // Fail closed: Do NOT fallback to arbitrary candidate[0]
+            return [];
           }
         } else if (isParent) {
           const cleanPhone = (user.phone || '').replace(/[^0-9+]/g, '');
@@ -348,6 +477,8 @@ export class FeesService {
 
           if (parent && parent.students) {
             targetStudentIds = parent.students.map((sp) => sp.studentId);
+          } else {
+            return [];
           }
         }
 
@@ -452,17 +583,37 @@ export class FeesService {
     tenantId: string,
     data: any,
   ) {
-    let student = data.studentId ? this.prisma.memoryStore.students.get(data.studentId) : null;
-    if (!student && data.studentId) {
-      student = Array.from(this.prisma.memoryStore.students.values()).find(
-        (s: any) =>
-          s.tenantId === tenantId && (s.admissionNumber === data.studentId || s.id === data.studentId),
-      );
+    let student: any = null;
+    let fee: any = null;
+
+    if (this.prisma.isDbConnected) {
+      try {
+        if (data.studentId) {
+          student = await this.prisma.student.findFirst({
+            where: {
+              tenantId,
+              OR: [{ id: data.studentId }, { admissionNumber: data.studentId }],
+            },
+          });
+        }
+        if (data.feeStructureId) {
+          fee = await this.prisma.feeStructure.findFirst({
+            where: { id: data.feeStructureId, tenantId },
+          });
+        }
+      } catch {}
     }
 
-    const fee = data.feeStructureId
-      ? this.prisma.memoryStore.feeStructures.get(data.feeStructureId)
-      : null;
+    if (!student && data.studentId) {
+      student = this.prisma.memoryStore.students.get(data.studentId) ||
+        Array.from(this.prisma.memoryStore.students.values()).find(
+          (s: any) => s.tenantId === tenantId && (s.admissionNumber === data.studentId || s.id === data.studentId),
+        );
+    }
+
+    if (!fee && data.feeStructureId) {
+      fee = this.prisma.memoryStore.feeStructures.get(data.feeStructureId);
+    }
 
     let subtotal = 0;
     let discountAmount = 0;
@@ -512,10 +663,14 @@ export class FeesService {
     const invoiceNumber = `INV-${new Date().getFullYear()}-${count.toString().padStart(4, '0')}`;
     const id = `inv_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
 
-    const invoice = {
+    const studentId = student?.id || data.studentId || 'std_adhoc';
+    const dueDate = data.dueDate ? new Date(data.dueDate) : fee?.dueDate || new Date();
+    const status = totalAmount === 0 ? 'PAID' : 'PENDING';
+
+    const invoiceObj: any = {
       id,
       tenantId,
-      studentId: student?.id || data.studentId || 'std_adhoc',
+      studentId,
       student: data.student || (student ? `${student.firstName} ${student.lastName}` : 'Student'),
       feeStructureId: data.feeStructureId || fee?.id || null,
       classId: student?.currentClassId || data.class || 'JSS 1A',
@@ -535,21 +690,62 @@ export class FeesService {
       lineItems,
       items: lineItems,
       notes: data.notes || null,
-      dueDate: data.dueDate ? new Date(data.dueDate) : fee?.dueDate || new Date(),
-      status: totalAmount === 0 ? 'PAID' : 'PENDING',
+      dueDate,
+      status,
       issuedAt: new Date(),
       createdAt: new Date(),
       updatedAt: new Date(),
     };
 
-    this.prisma.memoryStore.invoices.set(id, invoice);
+    if (this.prisma.isDbConnected && student?.id) {
+      try {
+        const createdInv = await this.prisma.invoice.create({
+          data: {
+            id,
+            tenantId,
+            studentId,
+            feeStructureId: invoiceObj.feeStructureId,
+            classId: invoiceObj.classId,
+            academicYearId: invoiceObj.academicYearId,
+            termId: invoiceObj.termId,
+            invoiceNumber,
+            subtotal,
+            discountAmount,
+            waiverAmount,
+            latePenaltyAmount,
+            totalAmount,
+            paidAmount: 0,
+            balanceAmount: totalAmount,
+            currency: invoiceObj.currency,
+            lineItems: invoiceObj.lineItems,
+            notes: invoiceObj.notes,
+            dueDate,
+            status: status as any,
+          },
+        });
+        this.prisma.memoryStore.invoices.set(id, { ...invoiceObj, ...createdInv });
+        return {
+          ...invoiceObj,
+          ...createdInv,
+          amount: totalAmount,
+          paid: 0,
+          balance: totalAmount,
+          dueDate: typeof createdInv.dueDate === 'string' ? createdInv.dueDate : createdInv.dueDate.toISOString().split('T')[0],
+          payments: [],
+        };
+      } catch (err: any) {
+        this.logger.warn(`Could not write invoice to DB: ${err.message}`);
+      }
+    }
+
+    this.prisma.memoryStore.invoices.set(id, invoiceObj);
     return {
-      ...invoice,
+      ...invoiceObj,
       amount: totalAmount,
       paid: 0,
       balance: totalAmount,
-      status: invoice.status,
-      dueDate: typeof invoice.dueDate === 'string' ? invoice.dueDate : invoice.dueDate.toISOString().split('T')[0],
+      status: invoiceObj.status,
+      dueDate: typeof invoiceObj.dueDate === 'string' ? invoiceObj.dueDate : invoiceObj.dueDate.toISOString().split('T')[0],
       payments: [],
     };
   }
@@ -560,31 +756,107 @@ export class FeesService {
     data: {
       invoiceId: string;
       studentId: string;
-      waiverType: 'SIBLING_DISCOUNT' | 'SCHOLARSHIP' | 'FINANCIAL_AID' | 'STAFF_CHILD';
+      feeStructureId?: string;
+      waiverType?: 'SIBLING_DISCOUNT' | 'SCHOLARSHIP' | 'FINANCIAL_AID' | 'STAFF_CHILD';
       amount: number;
       reason: string;
+      approvedByUserId?: string;
     },
   ) {
+    const waiverId = `wv_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
+    const waiver = {
+      id: waiverId,
+      tenantId,
+      studentId: data.studentId,
+      feeStructureId: data.feeStructureId || data.invoiceId,
+      amount: Number(data.amount),
+      waiverAmount: Number(data.amount),
+      reason: data.reason,
+      approvedByUserId: data.approvedByUserId || null,
+      createdAt: new Date(),
+    };
+
+    if (this.prisma.isDbConnected) {
+      try {
+        await this.prisma.feeWaiver.create({
+          data: {
+            id: waiver.id,
+            tenantId: waiver.tenantId,
+            studentId: waiver.studentId,
+            feeStructureId: waiver.feeStructureId,
+            waiverAmount: waiver.waiverAmount,
+            reason: waiver.reason,
+            approvedByUserId: waiver.approvedByUserId,
+          },
+        });
+
+        // Update invoice in DB
+        const dbInv = await this.prisma.invoice.findFirst({
+          where: { id: data.invoiceId, tenantId },
+        });
+
+        if (dbInv) {
+          const newWaiverAmount = Number(dbInv.waiverAmount || 0) + Number(data.amount);
+          const newTotalAmount = Math.max(0, Number(dbInv.subtotal) - Number(dbInv.discountAmount) - newWaiverAmount + Number(dbInv.latePenaltyAmount));
+          const newBalanceAmount = Math.max(0, newTotalAmount - Number(dbInv.paidAmount));
+          const newStatus = newBalanceAmount === 0 && Number(dbInv.paidAmount) > 0 ? 'PAID' : dbInv.status;
+
+          const updatedInv = await this.prisma.invoice.update({
+            where: { id: data.invoiceId },
+            data: {
+              waiverAmount: newWaiverAmount,
+              totalAmount: newTotalAmount,
+              balanceAmount: newBalanceAmount,
+              status: newStatus,
+            },
+          });
+
+          await this.prisma.auditLog.create({
+            data: {
+              tenantId,
+              actorUserId: data.approvedByUserId || null,
+              action: 'FEE_WAIVER_APPLIED',
+              resourceType: 'Invoice',
+              resourceId: data.invoiceId,
+              beforeData: {
+                waiverAmount: dbInv.waiverAmount,
+                totalAmount: dbInv.totalAmount,
+                balanceAmount: dbInv.balanceAmount,
+              } as any,
+              afterData: {
+                studentId: data.studentId,
+                waiverId,
+                waiverAmount: newWaiverAmount,
+                adjustmentAmount: Number(data.amount),
+                newBalanceAmount,
+                reason: data.reason,
+                waiverType: data.waiverType,
+              } as any,
+            },
+          });
+
+          this.prisma.memoryStore.feeWaivers.set(waiverId, waiver);
+          this.prisma.memoryStore.invoices.set(data.invoiceId, updatedInv);
+
+          return {
+            waiver,
+            updatedInvoice: updatedInv,
+            message: `Waiver of ${data.amount} successfully applied to invoice.`,
+          };
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not record fee waiver in DB: ${err.message}`);
+      }
+    }
+
     const invoice = this.prisma.memoryStore.invoices.get(data.invoiceId);
     if (!invoice || invoice.tenantId !== tenantId) {
       throw new NotFoundException('Invoice not found');
     }
 
-    const waiverId = `wv_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const waiver = {
-      id: waiverId,
-      tenantId,
-      invoiceId: data.invoiceId,
-      studentId: data.studentId,
-      waiverType: data.waiverType,
-      amount: Number(data.amount),
-      reason: data.reason,
-      appliedAt: new Date(),
-    };
-
     this.prisma.memoryStore.feeWaivers.set(waiverId, waiver);
 
-    // Update invoice totals
+    // Update invoice totals in memory
     const subtotal = invoice.subtotal !== undefined ? Number(invoice.subtotal) : Number(invoice.totalAmount || 0);
     const discountAmount = Number(invoice.discountAmount || 0);
     const latePenaltyAmount = Number(invoice.latePenaltyAmount || 0);
@@ -600,11 +872,30 @@ export class FeesService {
     return {
       waiver,
       updatedInvoice: invoice,
-      message: `${data.waiverType} of ${data.amount} successfully applied to invoice.`,
+      message: `Waiver of ${data.amount} successfully applied to invoice.`,
     };
   }
 
   async getWaivers(tenantId: string, studentId?: string) {
+    if (this.prisma.isDbConnected) {
+      try {
+        const whereClause: any = { tenantId };
+        if (studentId) whereClause.studentId = studentId;
+
+        const dbWaivers = await this.prisma.feeWaiver.findMany({
+          where: whereClause,
+          include: { student: true, feeStructure: true },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (dbWaivers.length > 0) {
+          return dbWaivers;
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not query fee waivers from DB: ${err.message}`);
+      }
+    }
+
     return Array.from(this.prisma.memoryStore.feeWaivers.values()).filter(
       (w: any) => w.tenantId === tenantId && (!studentId || w.studentId === studentId),
     );

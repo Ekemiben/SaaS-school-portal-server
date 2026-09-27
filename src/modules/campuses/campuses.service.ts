@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
 import { randomUUID } from 'crypto';
 
@@ -66,6 +66,17 @@ export class CampusesService {
   }) {
     if (this.prisma.isDbConnected) {
       try {
+        const sub = await this.prisma.subscription.findFirst({
+          where: { tenantId },
+        });
+        const maxCampuses = sub?.maxCampuses ?? 1;
+        const currentCount = await this.prisma.campus.count({ where: { tenantId } });
+        if (currentCount >= maxCampuses) {
+          throw new ForbiddenException(
+            `Campus limit reached for your subscription tier (${currentCount}/${maxCampuses}). Please upgrade your plan to add more campuses.`
+          );
+        }
+
         const existingDb = await this.prisma.campus.findFirst({
           where: { tenantId, code: data.code.toUpperCase() },
         });
@@ -73,8 +84,19 @@ export class CampusesService {
           throw new ConflictException(`Campus code "${data.code}" already exists in this school.`);
         }
       } catch (err: any) {
-        if (err instanceof ConflictException) throw err;
+        if (err instanceof ConflictException || err instanceof ForbiddenException) throw err;
       }
+    }
+
+    const currentMemoryCount = Array.from(this.prisma.memoryStore.campuses.values()).filter(
+      (c) => c.tenantId === tenantId,
+    ).length;
+    const memorySub = this.prisma.memoryStore.subscriptions?.get(tenantId);
+    const maxCampusesMem = memorySub?.maxCampuses ?? 1;
+    if (currentMemoryCount >= maxCampusesMem) {
+      throw new ForbiddenException(
+        `Campus limit reached for your subscription tier (${currentMemoryCount}/${maxCampusesMem}). Please upgrade your plan to add more campuses.`
+      );
     }
 
     const existing = Array.from(this.prisma.memoryStore.campuses.values()).find(
@@ -118,6 +140,21 @@ export class CampusesService {
             isMain: !!data.isMain,
           },
         });
+        await this.prisma.auditLog.create({
+          data: {
+            tenantId,
+            action: 'CAMPUS_CREATED',
+            resourceType: 'Campus',
+            resourceId: campusId,
+            afterData: {
+              name: data.name,
+              code: data.code.toUpperCase(),
+              isMain: !!data.isMain,
+              phone: data.phone,
+              email: data.email,
+            } as any,
+          },
+        });
         this.prisma.memoryStore.campuses.set(campusId, dbCampus);
         return dbCampus;
       } catch {}
@@ -133,6 +170,15 @@ export class CampusesService {
         await this.prisma.campus.updateMany({
           where: { id: campusId, tenantId },
           data,
+        });
+        await this.prisma.auditLog.create({
+          data: {
+            tenantId,
+            action: 'CAMPUS_UPDATED',
+            resourceType: 'Campus',
+            resourceId: campusId,
+            afterData: data as any,
+          },
         });
       } catch {}
     }

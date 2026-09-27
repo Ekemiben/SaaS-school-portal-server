@@ -73,8 +73,38 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON TABLES TO school_saas_app;
         ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO school_saas_app;
       `);
+      await this.ensureSchemaIntegrity();
     } catch (err: any) {
       this.logger.warn(`Could not verify school_saas_app role: ${err?.message}`);
+    }
+  }
+
+  private async ensureSchemaIntegrity() {
+    try {
+      await this.$executeRawUnsafe(`
+        DO $$ 
+        BEGIN 
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns 
+            WHERE table_name = 'Parent' AND column_name = 'userId'
+          ) THEN
+            ALTER TABLE "Parent" ADD COLUMN "userId" TEXT;
+          END IF;
+        END $$;
+        CREATE UNIQUE INDEX IF NOT EXISTS "Parent_userId_key" ON "Parent"("userId");
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.table_constraints 
+            WHERE constraint_name = 'Parent_userId_fkey'
+          ) THEN
+            ALTER TABLE "Parent" ADD CONSTRAINT "Parent_userId_fkey" 
+            FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+          END IF;
+        END $$;
+      `);
+    } catch (err: any) {
+      this.logger.warn(`Could not verify Parent.userId schema integrity in DB: ${err?.message}`);
     }
   }
 
