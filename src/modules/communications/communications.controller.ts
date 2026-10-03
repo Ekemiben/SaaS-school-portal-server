@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Put,
+  Delete,
   Body,
   Param,
   Query,
@@ -18,9 +19,9 @@ import type { TenantContext } from '../../common/types/tenant-context.interface.
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
 import { CreateAnnouncementDto, SendDirectMessageDto } from './dto/create-announcement.dto.js';
-import { CreateCampaignDto, CampaignFilterDto } from './dto/campaign.dto.js';
+import { CreateCampaignDto, CampaignFilterDto, CampaignChannel } from './dto/campaign.dto.js';
 import { ResolveAudienceDto } from './dto/audience.dto.js';
-import { CreateTemplateDto, TemplateCategory } from './dto/template.dto.js';
+import { CreateTemplateDto, UpdateTemplateDto, TemplateCategory } from './dto/template.dto.js';
 import { UpdateCommunicationSettingsDto } from './dto/communication-settings.dto.js';
 
 @Controller('api/v1/communications')
@@ -45,7 +46,6 @@ export class CommunicationsController {
   }
 
   @Get('announcements')
-  @RequirePermissions(SystemPermissions.COMMUNICATIONS_VIEW)
   getAnnouncements(
     @CurrentTenant() tenant: TenantContext,
     @Query('audience') audience?: string,
@@ -83,6 +83,33 @@ export class CommunicationsController {
     return this.campaignService.getCampaignById(tenant.tenantId, id);
   }
 
+  @Get('campaigns/:id/logs')
+  @RequirePermissions(SystemPermissions.COMMUNICATIONS_VIEW)
+  getCampaignLogs(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Query('status') status?: string,
+    @Query('channel') channel?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.campaignService.getCampaignLogs(tenant.tenantId, id, {
+      status,
+      channel,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      offset: offset ? parseInt(offset, 10) : undefined,
+    });
+  }
+
+  @Post('campaigns/:id/cancel')
+  @RequirePermissions(SystemPermissions.COMMUNICATIONS_MANAGE)
+  cancelCampaign(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.campaignService.cancelCampaign(tenant.tenantId, id);
+  }
+
   // --- Audience Resolution ---
   @Post('audiences/resolve')
   @RequirePermissions(SystemPermissions.COMMUNICATIONS_VIEW)
@@ -98,9 +125,10 @@ export class CommunicationsController {
   @RequirePermissions(SystemPermissions.COMMUNICATIONS_MANAGE)
   createTemplate(
     @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
     @Body() dto: CreateTemplateDto,
   ) {
-    return this.templateService.createTemplate(tenant.tenantId, dto);
+    return this.templateService.createTemplate(tenant.tenantId, dto, user?.sub);
   }
 
   @Get('templates')
@@ -108,8 +136,57 @@ export class CommunicationsController {
   listTemplates(
     @CurrentTenant() tenant: TenantContext,
     @Query('category') category?: TemplateCategory,
+    @Query('channel') channel?: CampaignChannel,
   ) {
-    return this.templateService.listTemplates(tenant.tenantId, category);
+    return this.templateService.listTemplates(tenant.tenantId, category, channel);
+  }
+
+  @Get('templates/:id')
+  @RequirePermissions(SystemPermissions.COMMUNICATIONS_VIEW)
+  getTemplate(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.templateService.getTemplateById(tenant.tenantId, id);
+  }
+
+  @Put('templates/:id')
+  @RequirePermissions(SystemPermissions.COMMUNICATIONS_MANAGE)
+  updateTemplate(
+    @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
+    @Param('id') id: string,
+    @Body() dto: UpdateTemplateDto,
+  ) {
+    return this.templateService.updateTemplate(tenant.tenantId, id, dto, user?.sub);
+  }
+
+  @Delete('templates/:id')
+  @RequirePermissions(SystemPermissions.COMMUNICATIONS_MANAGE)
+  deleteTemplate(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.templateService.deleteTemplate(tenant.tenantId, id);
+  }
+
+  @Get('templates/:id/versions')
+  @RequirePermissions(SystemPermissions.COMMUNICATIONS_VIEW)
+  getTemplateVersions(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.templateService.getTemplateVersions(tenant.tenantId, id);
+  }
+
+  @Post('templates/:id/preview')
+  @RequirePermissions(SystemPermissions.COMMUNICATIONS_VIEW)
+  previewTemplate(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body('variables') variables?: Record<string, any>,
+  ) {
+    return this.templateService.previewTemplate(tenant.tenantId, id, variables);
   }
 
   // --- Communication Settings & Policies ---
@@ -128,6 +205,12 @@ export class CommunicationsController {
     return this.policyService.updateSettings(tenant.tenantId, dto);
   }
 
+  @Post('settings/reset')
+  @RequirePermissions(SystemPermissions.COMMUNICATIONS_MANAGE)
+  resetSettings(@CurrentTenant() tenant: TenantContext) {
+    return this.policyService.resetDefaultSettings(tenant.tenantId);
+  }
+
   // --- Direct Messaging ---
   @Post('messages')
   @RequirePermissions(SystemPermissions.COMMUNICATIONS_VIEW)
@@ -136,7 +219,7 @@ export class CommunicationsController {
     @CurrentUser() user: any,
     @Body() dto: SendDirectMessageDto,
   ) {
-    return this.commsService.sendDirectMessage(tenant.tenantId, user?.sub || 'user_demo', dto);
+    return this.commsService.sendDirectMessage(tenant.tenantId, user?.id || user?.sub || 'user_demo', dto);
   }
 
   @Get('threads')
@@ -145,15 +228,26 @@ export class CommunicationsController {
     @CurrentTenant() tenant: TenantContext,
     @CurrentUser() user: any,
   ) {
-    return this.commsService.getUserThreads(tenant.tenantId, user?.sub || 'user_demo');
+    return this.commsService.getUserThreads(tenant.tenantId, user?.id || user?.sub || 'user_demo');
   }
 
   @Get('threads/:threadId')
   @RequirePermissions(SystemPermissions.COMMUNICATIONS_VIEW)
   getThreadMessages(
     @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
     @Param('threadId') threadId: string,
   ) {
-    return this.commsService.getThreadMessages(tenant.tenantId, threadId);
+    return this.commsService.getThreadMessages(tenant.tenantId, threadId, user?.id || user?.sub || 'user_demo');
+  }
+
+  @Post('threads/:threadId/read')
+  @RequirePermissions(SystemPermissions.COMMUNICATIONS_VIEW)
+  markThreadAsRead(
+    @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
+    @Param('threadId') threadId: string,
+  ) {
+    return this.commsService.markThreadAsRead(tenant.tenantId, threadId, user?.id || user?.sub || 'user_demo');
   }
 }

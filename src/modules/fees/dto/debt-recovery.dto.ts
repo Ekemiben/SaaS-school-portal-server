@@ -29,6 +29,9 @@ export enum ReminderChannel {
   EMAIL = 'EMAIL',
   SMS = 'SMS',
   BOTH = 'BOTH',
+  IN_APP = 'IN_APP',
+  WHATSAPP = 'WHATSAPP',
+  ALL = 'ALL',
 }
 
 export enum ExamType {
@@ -77,11 +80,21 @@ export class SendDebtReminderDto {
   @IsString()
   campusId?: string;
 
-  @IsEnum(ReminderChannel)
-  channel!: ReminderChannel;
+  @IsOptional()
+  @IsEnum(AgingBucket)
+  agingBucket?: AgingBucket;
 
+  @IsOptional()
+  @IsEnum(ReminderChannel)
+  channel?: ReminderChannel;
+
+  @IsOptional()
   @IsEnum(ReminderLevel)
-  reminderLevel!: ReminderLevel;
+  reminderLevel?: ReminderLevel;
+
+  @IsOptional()
+  @IsString()
+  templateId?: string;
 
   @IsOptional()
   @IsString()

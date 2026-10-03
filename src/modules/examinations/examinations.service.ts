@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, ForbiddenException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
 import { randomUUID } from 'crypto';
 
@@ -7,6 +7,215 @@ export class ExaminationsService {
   private readonly logger = new Logger(ExaminationsService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  // ==========================================
+  // MASTER EXAMINATION HALLS
+  // ==========================================
+
+  async listExamHalls(tenantId: string, campusId?: string) {
+    if (this.prisma.isDbConnected) {
+      try {
+        return await this.prisma.examinationHall.findMany({
+          where: {
+            tenantId,
+            ...(campusId ? { OR: [{ campusId }, { campusId: null }] } : {}),
+          },
+          include: {
+            campus: { select: { id: true, name: true, code: true } },
+            _count: { select: { schedules: true } },
+          },
+          orderBy: { name: 'asc' },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Failed querying examination halls from DB: ${err.message}`);
+      }
+    }
+
+    const items = Array.from((this.prisma.memoryStore as any).examinationHalls?.values() || [])
+      .filter((h: any) => h.tenantId === tenantId && (!campusId || !h.campusId || h.campusId === campusId));
+    return items;
+  }
+
+  async getExamHallById(tenantId: string, id: string) {
+    if (this.prisma.isDbConnected) {
+      const hall = await this.prisma.examinationHall.findFirst({
+        where: { id, tenantId },
+        include: {
+          campus: { select: { id: true, name: true, code: true } },
+        },
+      });
+      if (!hall) throw new NotFoundException(`Examination hall "${id}" not found.`);
+      return hall;
+    }
+
+    const hall = (this.prisma.memoryStore as any).examinationHalls?.get(id);
+    if (!hall || hall.tenantId !== tenantId) throw new NotFoundException('Examination hall not found.');
+    return hall;
+  }
+
+  async createExamHall(
+    tenantId: string,
+    data: { name: string; campusId?: string; building?: string; roomNumber?: string; capacity?: number },
+  ) {
+    const name = data.name?.trim();
+    if (!name) throw new BadRequestException('Hall name is required.');
+
+    if (this.prisma.isDbConnected) {
+      if (data.campusId) {
+        const campus = await this.prisma.campus.findFirst({
+          where: { id: data.campusId, tenantId },
+        });
+        if (!campus) throw new ForbiddenException('Referenced campus does not belong to this school organization.');
+      }
+
+      const existing = await this.prisma.examinationHall.findFirst({
+        where: { tenantId, name: { equals: name, mode: 'insensitive' } },
+      });
+      if (existing) {
+        throw new ConflictException(`An examination hall with name "${name}" already exists.`);
+      }
+
+      const id = `hall_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+      return await this.prisma.examinationHall.create({
+        data: {
+          id,
+          tenantId,
+          campusId: data.campusId || null,
+          name,
+          building: data.building?.trim() || null,
+          roomNumber: data.roomNumber?.trim() || null,
+          capacity: data.capacity ? Number(data.capacity) : 100,
+        },
+        include: {
+          campus: { select: { id: true, name: true, code: true } },
+        },
+      });
+    }
+
+    const id = `hall_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
+    const hall = {
+      id,
+      tenantId,
+      campusId: data.campusId || null,
+      name,
+      building: data.building || null,
+      roomNumber: data.roomNumber || null,
+      capacity: data.capacity || 100,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    if (!(this.prisma.memoryStore as any).examinationHalls) {
+      (this.prisma.memoryStore as any).examinationHalls = new Map();
+    }
+    (this.prisma.memoryStore as any).examinationHalls.set(id, hall);
+    return hall;
+  }
+
+  async updateExamHall(
+    tenantId: string,
+    id: string,
+    data: { name?: string; campusId?: string | null; building?: string; roomNumber?: string; capacity?: number },
+  ) {
+    if (this.prisma.isDbConnected) {
+      const existing = await this.prisma.examinationHall.findFirst({ where: { id, tenantId } });
+      if (!existing) throw new NotFoundException(`Examination hall "${id}" not found.`);
+
+      if (data.name) {
+        const duplicate = await this.prisma.examinationHall.findFirst({
+          where: {
+            tenantId,
+            id: { not: id },
+            name: { equals: data.name.trim(), mode: 'insensitive' },
+          },
+        });
+        if (duplicate) throw new ConflictException(`Another examination hall with name "${data.name.trim()}" already exists.`);
+      }
+
+      if (data.campusId) {
+        const campus = await this.prisma.campus.findFirst({ where: { id: data.campusId, tenantId } });
+        if (!campus) throw new ForbiddenException('Referenced campus does not belong to this school organization.');
+      }
+
+      return await this.prisma.examinationHall.update({
+        where: { id },
+        data: {
+          ...(data.name && { name: data.name.trim() }),
+          ...(data.campusId !== undefined && { campusId: data.campusId }),
+          ...(data.building !== undefined && { building: data.building?.trim() || null }),
+          ...(data.roomNumber !== undefined && { roomNumber: data.roomNumber?.trim() || null }),
+          ...(data.capacity !== undefined && { capacity: Number(data.capacity) }),
+        },
+        include: {
+          campus: { select: { id: true, name: true, code: true } },
+        },
+      });
+    }
+
+    const hall = (this.prisma.memoryStore as any).examinationHalls?.get(id);
+    if (!hall || hall.tenantId !== tenantId) throw new NotFoundException('Examination hall not found.');
+    Object.assign(hall, data, { updatedAt: new Date() });
+    return hall;
+  }
+
+  async deleteExamHall(tenantId: string, id: string) {
+    if (this.prisma.isDbConnected) {
+      const existing = await this.prisma.examinationHall.findFirst({ where: { id, tenantId } });
+      if (!existing) throw new NotFoundException(`Examination hall "${id}" not found.`);
+
+      await this.prisma.examSchedule.updateMany({
+        where: { hallId: id },
+        data: { hallId: null },
+      });
+
+      await this.prisma.examinationHall.delete({ where: { id } });
+      return { success: true, message: `Examination hall "${existing.name}" removed successfully.` };
+    }
+
+    (this.prisma.memoryStore as any).examinationHalls?.delete(id);
+    return { success: true, message: 'Examination hall removed successfully.' };
+  }
+
+  // ==========================================
+  // EXAM CYCLES & SITTINGS
+  // ==========================================
+
+  private formatSchedule(s: any) {
+    const invigilatorName = s.chiefInvigilator
+      ? `${s.chiefInvigilator.firstName} ${s.chiefInvigilator.lastName}`.trim()
+      : 'Chief Invigilator';
+
+    const assistantName = s.assistantInvigilator
+      ? `${s.assistantInvigilator.firstName} ${s.assistantInvigilator.lastName}`.trim()
+      : '';
+
+    const hallName = s.hall?.name || s.hallName || 'Main Examination Hall';
+
+    return {
+      id: s.id,
+      examCycleId: s.examinationId,
+      subjectId: s.subjectId,
+      subject: s.subject?.name || 'Subject',
+      paperCode: s.paperCode || s.subject?.code || 'PAPER',
+      classId: s.classId,
+      classLevel: s.class?.name || 'Class',
+      date: s.examDate ? (typeof s.examDate === 'string' ? s.examDate.slice(0, 10) : s.examDate.toISOString().split('T')[0]) : '',
+      startTime: s.startTime || '09:00 AM',
+      endTime: s.endTime || '11:30 AM',
+      duration: s.duration || '2h 30m',
+      hallId: s.hallId || null,
+      hall: hallName,
+      chiefInvigilatorId: s.chiefInvigilatorId || null,
+      invigilator: invigilatorName,
+      assistantInvigilatorId: s.assistantInvigilatorId || null,
+      assistantInvigilator: assistantName,
+      candidatesCount: s.candidatesCount !== undefined ? s.candidatesCount : 0,
+      maxMarks: s.maxMarks || 100,
+      maxScore: s.maxMarks || 100,
+      passMarks: s.passMarks || 40,
+      weightPercentage: s.weightPercentage || 60,
+      instructions: s.instructions || '',
+    };
+  }
 
   async findAll(tenantId: string, campusId?: string) {
     if (this.prisma.isDbConnected) {
@@ -24,6 +233,9 @@ export class ExaminationsService {
               include: {
                 subject: true,
                 class: true,
+                hall: true,
+                chiefInvigilator: true,
+                assistantInvigilator: true,
               },
               orderBy: { examDate: 'asc' },
             },
@@ -36,44 +248,36 @@ export class ExaminationsService {
             where: { tenantId, status: 'ACTIVE', ...(campusId ? { campusId } : {}) },
           });
 
-          return exams.map((e) => ({
-            id: e.id,
-            tenantId: e.tenantId,
-            campusId: e.campusId,
-            campus: e.campus?.name || 'Main Campus',
-            academicYearId: e.academicYearId,
-            termId: e.termId,
-            title: e.name,
-            name: e.name,
-            examType: e.examType || 'Terminal Examination',
-            session: e.academicYear?.name || '2024/2025',
-            term: e.term?.name || 'First Term',
-            startDate: e.startDate,
-            endDate: e.endDate,
-            status: e.isPublished ? 'Published / Completed' : 'Scheduled',
-            isPublished: e.isPublished,
-            registeredCandidates: studentCount || 0,
-            hallCount: 1,
-            papersCount: e.schedules.length,
-            moderationProgress: e.isPublished ? 100 : 0,
-            papers: e.schedules.map((s) => ({
-              id: s.id,
-              examCycleId: s.examinationId,
-              subjectId: s.subjectId,
-              subject: s.subject?.name || 'Subject',
-              classId: s.classId,
-              classLevel: s.class?.name || 'Class',
-              date: s.examDate ? s.examDate.toISOString().split('T')[0] : '',
-              startTime: s.startTime,
-              endTime: s.endTime,
-              maxMarks: s.maxMarks,
-              passMarks: s.passMarks,
-              paperCode: s.subject?.code || 'PAPER',
-              hall: 'Hall A',
-              invigilator: 'Staff Invigilator',
-            })),
-            createdAt: e.createdAt,
-          }));
+          return exams.map((e) => {
+            const papers = e.schedules.map((s) => this.formatSchedule(s));
+            const distinctHalls = new Set(papers.map((p) => p.hallId || p.hall).filter(Boolean));
+
+            return {
+              id: e.id,
+              tenantId: e.tenantId,
+              campusId: e.campusId,
+              campus: e.campus?.name || 'Main Campus',
+              academicYearId: e.academicYearId,
+              termId: e.termId,
+              title: e.name,
+              name: e.name,
+              examType: e.examType || 'Terminal Examination',
+              session: e.academicYear?.name || '2026/2027',
+              term: e.term?.name || 'First Term',
+              startDate: e.startDate,
+              endDate: e.endDate,
+              status: e.status || (e.isPublished ? 'Published / Completed' : 'Scheduled'),
+              isPublished: e.isPublished,
+              registeredCandidates: studentCount || 0,
+              hallCount: distinctHalls.size || 1,
+              papersCount: papers.length,
+              moderationProgress: e.isPublished ? 100 : 0,
+              instructions: e.instructions || '',
+              regulations: e.regulations || '',
+              papers,
+              createdAt: e.createdAt,
+            };
+          });
         }
       } catch (err: any) {
         this.logger.warn(`Failed querying examinations from DB: ${err.message}`);
@@ -86,13 +290,15 @@ export class ExaminationsService {
         ...e,
         title: e.title || e.name,
         name: e.name || e.title,
-        session: e.session || '2024/2025',
+        session: e.session || '2026/2027',
         term: e.term || 'First Term',
         papersCount: e.papers ? e.papers.length : e.papersCount || 0,
         hallCount: e.hallCount || 3,
         status: e.status || (e.isPublished ? 'Published / Completed' : 'Scheduled'),
         registeredCandidates: e.registeredCandidates || 540,
         moderationProgress: e.moderationProgress || 0,
+        instructions: e.instructions || '',
+        regulations: e.regulations || '',
         papers: e.papers || [],
       }));
   }
@@ -110,66 +316,63 @@ export class ExaminationsService {
               include: {
                 subject: true,
                 class: true,
+                hall: true,
+                chiefInvigilator: true,
+                assistantInvigilator: true,
               },
+              orderBy: { examDate: 'asc' },
             },
           },
         });
 
         if (exam) {
+          const studentCount = await this.prisma.student.count({
+            where: { tenantId, status: 'ACTIVE', campusId: exam.campusId },
+          });
+          const papers = exam.schedules.map((s) => this.formatSchedule(s));
+          const distinctHalls = new Set(papers.map((p) => p.hallId || p.hall).filter(Boolean));
+
           return {
             id: exam.id,
             tenantId: exam.tenantId,
             campusId: exam.campusId,
+            campus: exam.campus?.name || 'Main Campus',
             academicYearId: exam.academicYearId,
             termId: exam.termId,
             title: exam.name,
             name: exam.name,
-            examType: exam.examType,
-            session: exam.academicYear?.name || '2024/2025',
+            examType: exam.examType || 'Terminal Examination',
+            session: exam.academicYear?.name || '2026/2027',
             term: exam.term?.name || 'First Term',
             startDate: exam.startDate,
             endDate: exam.endDate,
-            status: exam.isPublished ? 'Published / Completed' : 'Scheduled',
+            status: exam.status || (exam.isPublished ? 'Published / Completed' : 'Scheduled'),
             isPublished: exam.isPublished,
-            papersCount: exam.schedules.length,
-            papers: exam.schedules.map((s) => ({
-              id: s.id,
-              examCycleId: s.examinationId,
-              subjectId: s.subjectId,
-              subject: s.subject?.name || 'Subject',
-              classId: s.classId,
-              classLevel: s.class?.name || 'Class',
-              date: s.examDate ? s.examDate.toISOString().split('T')[0] : '',
-              startTime: s.startTime,
-              endTime: s.endTime,
-              maxMarks: s.maxMarks,
-              passMarks: s.passMarks,
-              paperCode: s.subject?.code || 'PAPER',
-              hall: 'Hall A',
-              invigilator: 'Staff Invigilator',
-            })),
+            registeredCandidates: studentCount || 0,
+            hallCount: distinctHalls.size || 1,
+            papersCount: papers.length,
+            moderationProgress: exam.isPublished ? 100 : 0,
+            instructions: exam.instructions || '',
+            regulations: exam.regulations || '',
+            papers,
+            createdAt: exam.createdAt,
           };
         }
       } catch (err: any) {
-        this.logger.warn(`Failed querying exam ${examId} from DB: ${err.message}`);
+        this.logger.warn(`Failed querying examination by ID from DB: ${err.message}`);
       }
     }
 
     const exam = this.prisma.memoryStore.examinations.get(examId);
     if (!exam || exam.tenantId !== tenantId) {
-      throw new NotFoundException('Examination not found');
+      throw new NotFoundException('Examination not found in this school');
     }
-    return {
-      ...exam,
-      title: exam.title || exam.name,
-      papersCount: exam.papers ? exam.papers.length : exam.papersCount || 0,
-      papers: exam.papers || [],
-    };
+    return exam;
   }
 
   async create(tenantId: string, data: any) {
-    const id = data.id || `exam_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const title = data.title || data.name || 'Terminal Examination';
+    const id = `exam_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
+    const title = data.title || data.name || 'Terminal Examination Series';
     const startDate = data.startDate ? new Date(data.startDate) : new Date();
     const endDate = data.endDate ? new Date(data.endDate) : new Date(Date.now() + 14 * 86400000);
 
@@ -180,26 +383,38 @@ export class ExaminationsService {
     if (this.prisma.isDbConnected) {
       try {
         if (!campusId) {
-          const defaultCampus = await this.prisma.campus.findFirst({ where: { tenantId } });
-          campusId = defaultCampus?.id;
+          const c = await this.prisma.campus.findFirst({ where: { tenantId } });
+          campusId = c?.id;
         }
         if (!academicYearId) {
-          const matchedYear = data.session
-            ? await this.prisma.academicYear.findFirst({ where: { tenantId, name: { contains: data.session, mode: 'insensitive' } } })
-            : null;
-          const defaultYear = matchedYear || (await this.prisma.academicYear.findFirst({ where: { tenantId, isCurrent: true } })) || (await this.prisma.academicYear.findFirst({ where: { tenantId } }));
-          academicYearId = defaultYear?.id;
+          if (data.session) {
+            const ay = await this.prisma.academicYear.findFirst({
+              where: { tenantId, name: data.session },
+            });
+            academicYearId = ay?.id;
+          }
+          if (!academicYearId) {
+            const ay = await this.prisma.academicYear.findFirst({
+              where: { tenantId, isCurrent: true },
+            }) || await this.prisma.academicYear.findFirst({ where: { tenantId } });
+            academicYearId = ay?.id;
+          }
         }
         if (!termId) {
-          const matchedTerm = data.term
-            ? await this.prisma.term.findFirst({ where: { tenantId, name: { contains: data.term, mode: 'insensitive' } } })
-            : null;
-          const defaultTerm = matchedTerm || (await this.prisma.term.findFirst({ where: { tenantId, isCurrent: true } })) || (await this.prisma.term.findFirst({ where: { tenantId } }));
-          termId = defaultTerm?.id;
+          if (data.term && academicYearId) {
+            const t = await this.prisma.term.findFirst({
+              where: { tenantId, academicYearId, name: data.term },
+            });
+            termId = t?.id;
+          }
+          if (!termId && academicYearId) {
+            const t = await this.prisma.term.findFirst({ where: { tenantId, academicYearId } });
+            termId = t?.id;
+          }
         }
 
         if (campusId && academicYearId && termId) {
-          const created = await this.prisma.examination.create({
+          await this.prisma.examination.create({
             data: {
               id,
               tenantId,
@@ -208,12 +423,15 @@ export class ExaminationsService {
               termId,
               name: title,
               examType: data.examType || 'TERM_EXAM',
+              status: data.status || 'Scheduled',
+              instructions: data.instructions?.trim() || null,
+              regulations: data.regulations?.trim() || null,
               startDate,
               endDate,
               isPublished: data.status === 'Published / Completed' || !!data.isPublished,
             },
           });
-          this.logger.log(`Created examination ${id} in PostgreSQL`);
+          this.logger.log(`Created examination ${id} in PostgreSQL with instructions`);
         }
       } catch (err: any) {
         this.logger.warn(`Could not persist examination to DB: ${err.message}`);
@@ -229,16 +447,17 @@ export class ExaminationsService {
       title,
       name: title,
       examType: data.examType || 'Terminal Examination',
-      session: data.session || '2024/2025',
+      session: data.session || '2026/2027',
       term: data.term || 'First Term',
       startDate,
       endDate,
       status: data.status || 'Scheduled',
-      registeredCandidates: data.registeredCandidates || 540,
-      hallCount: data.hallCount || 3,
+      registeredCandidates: data.registeredCandidates || 0,
+      hallCount: data.hallCount || 1,
       papersCount: data.papers ? data.papers.length : data.papersCount || 0,
       moderationProgress: data.moderationProgress || 0,
       instructions: data.instructions || '',
+      regulations: data.regulations || '',
       papers: data.papers || [],
       isPublished: data.status === 'Published / Completed' || !!data.isPublished,
       createdAt: new Date(),
@@ -256,6 +475,9 @@ export class ExaminationsService {
           data: {
             ...(data.title || data.name ? { name: data.title || data.name } : {}),
             ...(data.examType ? { examType: data.examType } : {}),
+            ...(data.status ? { status: data.status } : {}),
+            ...(data.instructions !== undefined ? { instructions: data.instructions?.trim() || null } : {}),
+            ...(data.regulations !== undefined ? { regulations: data.regulations?.trim() || null } : {}),
             ...(data.startDate ? { startDate: new Date(data.startDate) } : {}),
             ...(data.endDate ? { endDate: new Date(data.endDate) } : {}),
             ...(data.isPublished !== undefined ? { isPublished: data.isPublished } : {}),
@@ -272,6 +494,9 @@ export class ExaminationsService {
       ...data,
       title: data.title || data.name || exam.title,
       name: data.name || data.title || exam.name,
+      instructions: data.instructions !== undefined ? data.instructions : exam.instructions,
+      regulations: data.regulations !== undefined ? data.regulations : exam.regulations,
+      status: data.status || exam.status,
       updatedAt: new Date(),
     };
     this.prisma.memoryStore.examinations.set(examId, updated);
@@ -299,7 +524,7 @@ export class ExaminationsService {
       try {
         await this.prisma.examination.updateMany({
           where: { id: examId, tenantId },
-          data: { isPublished: true },
+          data: { isPublished: true, status: 'Published / Completed' },
         });
       } catch (err: any) {
         this.logger.warn(`Could not publish exam in DB: ${err.message}`);
@@ -312,6 +537,87 @@ export class ExaminationsService {
     exam.moderationProgress = 100;
     exam.updatedAt = new Date();
     this.prisma.memoryStore.examinations.set(examId, exam);
+
+    // Cross-Module Trigger: Dispatch Academic Result Notifications to Parents
+    const examTitle = exam.title || exam.name || 'Terminal Examination';
+    const notifTitle = `Examination Results Published: ${examTitle}`;
+    const notifMessage = `Terminal examination results for "${examTitle}" have been approved and published. You can now view your child's report card and performance on the portal.`;
+
+    let notifiedInDb = false;
+    if (this.prisma.isDbConnected) {
+      try {
+        const studentParents = await this.prisma.studentParent.findMany({
+          where: {
+            student: {
+              tenantId,
+              status: 'ACTIVE',
+              ...(exam.campusId ? { campusId: exam.campusId } : {}),
+            },
+          },
+          include: {
+            parent: {
+              select: { userId: true },
+            },
+          },
+        });
+
+        if (studentParents.length > 0) {
+          notifiedInDb = true;
+          const parentUserIds = new Set<string>();
+          for (const sp of studentParents) {
+            if (sp.parent?.userId) parentUserIds.add(sp.parent.userId);
+          }
+
+          for (const pUserId of parentUserIds) {
+            await this.prisma.inAppInboxItem.create({
+              data: {
+                id: `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                tenantId,
+                recipientUserId: pUserId,
+                category: 'ACADEMIC',
+                priority: 'HIGH',
+                title: notifTitle,
+                message: notifMessage,
+                actionUrl: '/parent',
+                isRead: false,
+              },
+            }).catch(() => {});
+          }
+        }
+      } catch (err: any) {
+        this.logger.warn(`Failed to dispatch DB academic result notifications: ${err.message}`);
+      }
+    }
+
+    // Memory store fallback & synchronization
+    const memory = this.prisma.memoryStore as any;
+    if (memory && (!notifiedInDb || !this.prisma.isDbConnected)) {
+      const parentUserIds = new Set<string>();
+      const allParents = Array.from(memory.parents?.values() || []).filter(
+        (p: any) => p.tenantId === tenantId,
+      );
+      for (const p of allParents as any[]) {
+        const pUserId = p.userId || p.user?.id || `usr_${p.id}`;
+        if (pUserId) parentUserIds.add(pUserId);
+      }
+
+      for (const pUserId of parentUserIds) {
+        const inbId = `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+        memory.inboxItems?.set(inbId, {
+          id: inbId,
+          tenantId,
+          recipientUserId: pUserId,
+          category: 'ACADEMIC',
+          priority: 'HIGH',
+          title: notifTitle,
+          message: notifMessage,
+          actionUrl: '/parent',
+          isRead: false,
+          createdAt: new Date(),
+        });
+      }
+    }
+
     return exam;
   }
 
@@ -322,12 +628,14 @@ export class ExaminationsService {
 
     if (this.prisma.isDbConnected) {
       try {
+        // 1. Resolve class
         let classId = paperData.classId;
-        let subjectId = paperData.subjectId;
-
         if (!classId && paperData.classLevel) {
           const cls = await this.prisma.class.findFirst({
-            where: { tenantId, name: paperData.classLevel },
+            where: {
+              tenantId,
+              OR: [{ id: paperData.classLevel }, { name: { equals: paperData.classLevel, mode: 'insensitive' } }],
+            },
           });
           classId = cls?.id;
         }
@@ -336,21 +644,115 @@ export class ExaminationsService {
           classId = cls?.id;
         }
 
+        // 2. Resolve subject
+        let subjectId = paperData.subjectId;
+        let subjectCode = paperData.paperCode;
         if (!subjectId && (paperData.subject || paperData.paperCode)) {
           const sub = await this.prisma.subject.findFirst({
             where: {
               tenantId,
               OR: [
-                { name: paperData.subject },
-                { code: paperData.paperCode || paperData.subject },
+                { id: paperData.subject },
+                { name: { equals: paperData.subject, mode: 'insensitive' } },
+                { code: { equals: paperData.paperCode || paperData.subject, mode: 'insensitive' } },
               ],
             },
           });
           subjectId = sub?.id;
+          if (sub?.code && !subjectCode) subjectCode = sub.code;
         }
         if (!subjectId) {
           const sub = await this.prisma.subject.findFirst({ where: { tenantId } });
           subjectId = sub?.id;
+          if (sub?.code && !subjectCode) subjectCode = sub.code;
+        }
+
+        // 3. Resolve Hall
+        let hallId = paperData.hallId || null;
+        let hallName = paperData.hall || null;
+        if (hallId) {
+          const hall = await this.prisma.examinationHall.findFirst({
+            where: { id: hallId, tenantId },
+          });
+          if (hall) hallName = hall.name;
+        } else if (paperData.hall) {
+          const hall = await this.prisma.examinationHall.findFirst({
+            where: { tenantId, name: { equals: paperData.hall, mode: 'insensitive' } },
+          });
+          if (hall) {
+            hallId = hall.id;
+            hallName = hall.name;
+          }
+        }
+
+        // 4. Resolve Chief Invigilator
+        let chiefInvigilatorId = paperData.chiefInvigilatorId || null;
+        if (!chiefInvigilatorId && paperData.invigilator) {
+          const staff = await this.prisma.staff.findFirst({
+            where: {
+              tenantId,
+              OR: [
+                { id: paperData.invigilator },
+                { employeeNumber: paperData.invigilator },
+                { firstName: { contains: paperData.invigilator.split(' ')[0] || '', mode: 'insensitive' } },
+              ],
+            },
+          });
+          if (staff) {
+            chiefInvigilatorId = staff.id;
+          } else {
+            const teacher = await this.prisma.teacher.findFirst({
+              where: {
+                tenantId,
+                OR: [
+                  { id: paperData.invigilator },
+                  { employeeNumber: paperData.invigilator },
+                  { firstName: { contains: paperData.invigilator.split(' ')[0] || '', mode: 'insensitive' } },
+                ],
+              },
+            });
+            if (teacher) chiefInvigilatorId = teacher.id;
+          }
+        }
+
+        // 5. Resolve Assistant Invigilator
+        let assistantInvigilatorId = paperData.assistantInvigilatorId || null;
+        if (!assistantInvigilatorId && paperData.assistantInvigilator) {
+          const staff = await this.prisma.staff.findFirst({
+            where: {
+              tenantId,
+              OR: [
+                { id: paperData.assistantInvigilator },
+                { employeeNumber: paperData.assistantInvigilator },
+                { firstName: { contains: paperData.assistantInvigilator.split(' ')[0] || '', mode: 'insensitive' } },
+              ],
+            },
+          });
+          if (staff) {
+            assistantInvigilatorId = staff.id;
+          } else {
+            const teacher = await this.prisma.teacher.findFirst({
+              where: {
+                tenantId,
+                OR: [
+                  { id: paperData.assistantInvigilator },
+                  { employeeNumber: paperData.assistantInvigilator },
+                  { firstName: { contains: paperData.assistantInvigilator.split(' ')[0] || '', mode: 'insensitive' } },
+                ],
+              },
+            });
+            if (teacher) assistantInvigilatorId = teacher.id;
+          }
+        }
+
+        // 6. Resolve Candidate Count (auto count from enrollment if 0/empty)
+        let candidatesCount = Number(paperData.candidatesCount);
+        if (isNaN(candidatesCount) || candidatesCount <= 0) {
+          if (classId) {
+            candidatesCount = await this.prisma.enrollment.count({
+              where: { tenantId, classId, status: 'ACTIVE' },
+            });
+          }
         }
 
         if (classId && subjectId) {
@@ -360,14 +762,23 @@ export class ExaminationsService {
               examinationId: examId,
               classId,
               subjectId,
+              hallId,
+              hallName,
+              chiefInvigilatorId,
+              assistantInvigilatorId,
+              paperCode: subjectCode || 'PAPER-01',
+              candidatesCount: candidatesCount || 0,
+              instructions: paperData.instructions?.trim() || null,
+              weightPercentage: Number(paperData.weightPercentage) || 60,
+              duration: paperData.duration?.trim() || '2h 30m',
               examDate,
               startTime: paperData.startTime || '09:00 AM',
-              endTime: paperData.endTime || '11:00 AM',
-              maxMarks: Number(paperData.maxMarks) || 100,
+              endTime: paperData.endTime || '11:30 AM',
+              maxMarks: Number(paperData.maxMarks || paperData.maxScore) || 100,
               passMarks: Number(paperData.passMarks) || 40,
             },
           });
-          this.logger.log(`Created ExamSchedule ${paperId} in PostgreSQL`);
+          this.logger.log(`Created ExamSchedule ${paperId} with real invigilators and hall in PostgreSQL`);
         }
       } catch (err: any) {
         this.logger.warn(`Could not create exam schedule in DB: ${err.message}`);
@@ -379,6 +790,7 @@ export class ExaminationsService {
       ...paperData,
       id: paperId,
       examCycleId: examId,
+      candidatesCount: Number(paperData.candidatesCount) || 0,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -393,15 +805,25 @@ export class ExaminationsService {
   async updatePaper(tenantId: string, examId: string, paperId: string, paperData: any) {
     if (this.prisma.isDbConnected) {
       try {
+        const updateData: any = {};
+        if (paperData.date) updateData.examDate = new Date(paperData.date);
+        if (paperData.startTime) updateData.startTime = paperData.startTime;
+        if (paperData.endTime) updateData.endTime = paperData.endTime;
+        if (paperData.duration) updateData.duration = paperData.duration;
+        if (paperData.maxMarks || paperData.maxScore) updateData.maxMarks = Number(paperData.maxMarks || paperData.maxScore);
+        if (paperData.passMarks) updateData.passMarks = Number(paperData.passMarks);
+        if (paperData.weightPercentage) updateData.weightPercentage = Number(paperData.weightPercentage);
+        if (paperData.candidatesCount !== undefined) updateData.candidatesCount = Number(paperData.candidatesCount);
+        if (paperData.instructions !== undefined) updateData.instructions = paperData.instructions?.trim() || null;
+        if (paperData.paperCode) updateData.paperCode = paperData.paperCode.trim();
+
+        if (paperData.hallId !== undefined) updateData.hallId = paperData.hallId || null;
+        if (paperData.chiefInvigilatorId !== undefined) updateData.chiefInvigilatorId = paperData.chiefInvigilatorId || null;
+        if (paperData.assistantInvigilatorId !== undefined) updateData.assistantInvigilatorId = paperData.assistantInvigilatorId || null;
+
         await this.prisma.examSchedule.updateMany({
           where: { id: paperId, examinationId: examId },
-          data: {
-            ...(paperData.date ? { examDate: new Date(paperData.date) } : {}),
-            ...(paperData.startTime ? { startTime: paperData.startTime } : {}),
-            ...(paperData.endTime ? { endTime: paperData.endTime } : {}),
-            ...(paperData.maxMarks ? { maxMarks: Number(paperData.maxMarks) } : {}),
-            ...(paperData.passMarks ? { passMarks: Number(paperData.passMarks) } : {}),
-          },
+          data: updateData,
         });
       } catch (err: any) {
         this.logger.warn(`Could not update exam schedule in DB: ${err.message}`);
@@ -449,116 +871,47 @@ export class ExaminationsService {
         });
 
         if (dbScales.length > 0) {
-          // Group by scale name
-          const scaleGroups = new Map<string, any>();
-          for (const scale of dbScales) {
-            if (!scaleGroups.has(scale.name)) {
-              scaleGroups.set(scale.name, {
-                id: scale.id,
-                tenantId: scale.tenantId,
-                name: scale.name,
-                code: scale.name.toUpperCase().replace(/\s+/g, '_'),
-                description: scale.description || '',
-                division: 'School Standard',
-                passThreshold: 40,
-                bands: [],
-              });
-            }
-            scaleGroups.get(scale.name).bands.push({
-              id: scale.id,
-              symbol: scale.grade,
-              grade: scale.grade,
-              minScore: scale.minScore,
-              maxScore: scale.maxScore,
-              gradePoint: scale.gradePoint,
-              remark: scale.description || scale.grade,
-            });
-          }
-          return Array.from(scaleGroups.values());
+          return dbScales;
         }
       } catch (err: any) {
-        this.logger.warn(`Could not query grading scales from DB: ${err.message}`);
+        this.logger.warn(`Failed querying grading scales from DB: ${err.message}`);
       }
     }
 
-    const custom = Array.from(this.prisma.memoryStore.gradingScales.values()).filter(
-      (gs) => gs.tenantId === tenantId,
+    return Array.from(this.prisma.memoryStore.gradingScales.values()).filter(
+      (g: any) => g.tenantId === tenantId,
     );
-
-    if (custom.length > 0) return custom;
-
-    return [
-      {
-        id: 'scale_waec',
-        tenantId,
-        name: 'WAEC / WASSCE Standard 9-Point Scale',
-        code: 'WAEC_9P',
-        description: 'Standard West African Examinations Council grading scale used for Senior Secondary.',
-        division: 'Senior Secondary (SSS 1 - SSS 3)',
-        passThreshold: 50,
-        bands: [
-          { id: 'b1', symbol: 'A1', minScore: 75, maxScore: 100, gradePoint: 4.0, remark: 'Excellent / Distinction', badgeColor: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
-          { id: 'b2', symbol: 'B2', minScore: 70, maxScore: 74, gradePoint: 3.6, remark: 'Very Good', badgeColor: 'text-emerald-600 bg-emerald-50 border-emerald-200' },
-          { id: 'b3', symbol: 'B3', minScore: 65, maxScore: 69, gradePoint: 3.2, remark: 'Good', badgeColor: 'text-teal-700 bg-teal-50 border-teal-200' },
-          { id: 'b4', symbol: 'C4', minScore: 60, maxScore: 64, gradePoint: 2.8, remark: 'Credit (High)', badgeColor: 'text-indigo-700 bg-indigo-50 border-indigo-200' },
-          { id: 'b5', symbol: 'C5', minScore: 55, maxScore: 59, gradePoint: 2.4, remark: 'Credit (Middle)', badgeColor: 'text-indigo-600 bg-indigo-50 border-indigo-200' },
-          { id: 'b6', symbol: 'C6', minScore: 50, maxScore: 54, gradePoint: 2.0, remark: 'Credit (Pass)', badgeColor: 'text-blue-700 bg-blue-50 border-blue-200' },
-          { id: 'b7', symbol: 'D7', minScore: 45, maxScore: 49, gradePoint: 1.6, remark: 'Pass (Weak)', badgeColor: 'text-amber-700 bg-amber-50 border-amber-200' },
-          { id: 'b8', symbol: 'E8', minScore: 40, maxScore: 44, gradePoint: 1.2, remark: 'Pass (Marginal)', badgeColor: 'text-orange-700 bg-orange-50 border-orange-200' },
-          { id: 'b9', symbol: 'F9', minScore: 0, maxScore: 39, gradePoint: 0.0, remark: 'Fail', badgeColor: 'text-rose-700 bg-rose-50 border-rose-200' },
-        ],
-      },
-    ];
   }
 
   async createGradingScale(tenantId: string, data: any) {
-    const id = data.id || `gs_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const bands = data.bands || data.rules || [];
-
-    if (this.prisma.isDbConnected && bands.length > 0) {
+    const id = `gs_${randomUUID().replace(/-/g, '').substring(0, 8)}`;
+    if (this.prisma.isDbConnected) {
       try {
-        for (const band of bands) {
-          const bandId = band.id || `scale_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-          await this.prisma.gradingScale.upsert({
-            where: {
-              tenantId_name_grade: {
-                tenantId,
-                name: data.name || 'Standard Scale',
-                grade: band.symbol || band.grade || 'A',
-              },
-            },
-            update: {
-              minScore: Number(band.minScore) || 0,
-              maxScore: Number(band.maxScore) || 100,
-              gradePoint: Number(band.gradePoint) || 0,
-              description: band.remark || band.description || null,
-            },
-            create: {
-              id: bandId,
-              tenantId,
-              name: data.name || 'Standard Scale',
-              grade: band.symbol || band.grade || 'A',
-              minScore: Number(band.minScore) || 0,
-              maxScore: Number(band.maxScore) || 100,
-              gradePoint: Number(band.gradePoint) || 0,
-              description: band.remark || band.description || null,
-            },
-          });
-        }
+        const created = await this.prisma.gradingScale.create({
+          data: {
+            id,
+            tenantId,
+            name: data.name || `Grade ${data.grade}`,
+            grade: data.grade,
+            minScore: Number(data.minScore),
+            maxScore: Number(data.maxScore),
+            description: data.remark || data.description || 'Good',
+            gradePoint: Number(data.gradePoint || 0),
+          },
+        });
+        return created;
       } catch (err: any) {
-        this.logger.warn(`Could not save grading scale in DB: ${err.message}`);
+        this.logger.warn(`Could not create grading scale in DB: ${err.message}`);
       }
     }
 
     const scale = {
       id,
       tenantId,
-      name: data.name,
-      code: data.code || data.name.toUpperCase().replace(/\s+/g, '_'),
-      description: data.description || '',
-      division: data.division || 'Senior Secondary',
-      passThreshold: Number(data.passThreshold) || 50,
-      bands,
+      ...data,
+      name: data.name || `Grade ${data.grade}`,
+      minScore: Number(data.minScore),
+      maxScore: Number(data.maxScore),
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -566,78 +919,47 @@ export class ExaminationsService {
     return scale;
   }
 
-  async updateGradingScale(tenantId: string, scaleId: string, data: any) {
-    const bands = data.bands || data.rules || [];
-    if (this.prisma.isDbConnected && bands.length > 0) {
+  async updateGradingScale(tenantId: string, id: string, data: any) {
+    if (this.prisma.isDbConnected) {
       try {
-        for (const band of bands) {
-          const bandId = band.id || `scale_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-          await this.prisma.gradingScale.upsert({
-            where: {
-              tenantId_name_grade: {
-                tenantId,
-                name: data.name || 'Standard Scale',
-                grade: band.symbol || band.grade || 'A',
-              },
-            },
-            update: {
-              minScore: Number(band.minScore) || 0,
-              maxScore: Number(band.maxScore) || 100,
-              gradePoint: Number(band.gradePoint) || 0,
-              description: band.remark || band.description || null,
-            },
-            create: {
-              id: bandId,
-              tenantId,
-              name: data.name || 'Standard Scale',
-              grade: band.symbol || band.grade || 'A',
-              minScore: Number(band.minScore) || 0,
-              maxScore: Number(band.maxScore) || 100,
-              gradePoint: Number(band.gradePoint) || 0,
-              description: band.remark || band.description || null,
-            },
-          });
-        }
+        await this.prisma.gradingScale.updateMany({
+          where: { id, tenantId },
+          data: {
+            ...(data.name ? { name: data.name } : {}),
+            ...(data.grade ? { grade: data.grade } : {}),
+            ...(data.minScore !== undefined ? { minScore: Number(data.minScore) } : {}),
+            ...(data.maxScore !== undefined ? { maxScore: Number(data.maxScore) } : {}),
+            ...(data.description !== undefined || data.remark !== undefined
+              ? { description: data.description || data.remark }
+              : {}),
+            ...(data.gradePoint !== undefined ? { gradePoint: Number(data.gradePoint) } : {}),
+          },
+        });
       } catch (err: any) {
         this.logger.warn(`Could not update grading scale in DB: ${err.message}`);
       }
     }
 
-    let scale = this.prisma.memoryStore.gradingScales.get(scaleId);
-    if (!scale || scale.tenantId !== tenantId) {
-      scale = {
-        id: scaleId,
-        tenantId,
-        name: data.name || 'Grading Scale',
-        code: data.code || 'SCALE',
-        description: data.description || '',
-        division: data.division || 'Senior Secondary',
-        passThreshold: Number(data.passThreshold) || 50,
-        bands,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-    } else {
-      Object.assign(scale, data, {
-        bands: bands.length > 0 ? bands : scale.bands,
-        updatedAt: new Date(),
-      });
-    }
-    this.prisma.memoryStore.gradingScales.set(scaleId, scale);
+    const scale = Array.from(this.prisma.memoryStore.gradingScales.values()).find(
+      (g: any) => g.id === id && g.tenantId === tenantId,
+    );
+    if (!scale) throw new NotFoundException('Grading scale not found');
+    Object.assign(scale, data, { updatedAt: new Date() });
     return scale;
   }
 
-  async deleteGradingScale(tenantId: string, scaleId: string) {
+  async deleteGradingScale(tenantId: string, id: string) {
     if (this.prisma.isDbConnected) {
       try {
         await this.prisma.gradingScale.deleteMany({
-          where: { tenantId, id: scaleId },
+          where: { id, tenantId },
         });
       } catch (err: any) {
         this.logger.warn(`Could not delete grading scale from DB: ${err.message}`);
       }
     }
-    this.prisma.memoryStore.gradingScales.delete(scaleId);
+
+    this.prisma.memoryStore.gradingScales.delete(id);
     return { success: true, message: 'Grading scale deleted' };
   }
 }

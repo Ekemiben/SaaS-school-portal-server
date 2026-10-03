@@ -1,5 +1,8 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, Logger, Optional, Inject, forwardRef } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
+import { ReportCardService } from '../results/services/report-card.service.js';
+import { AcademicSummaryService } from '../results/services/academic-summary.service.js';
+import { ParentLiveTrackingService } from '../transport/parent-live-tracking.service.js';
 import * as bcrypt from 'bcryptjs';
 import { randomBytes, randomUUID } from 'crypto';
 
@@ -7,7 +10,12 @@ import { randomBytes, randomUUID } from 'crypto';
 export class ParentsService {
   private readonly logger = new Logger(ParentsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() @Inject(forwardRef(() => ReportCardService)) private readonly reportCardService?: ReportCardService,
+    @Optional() @Inject(forwardRef(() => AcademicSummaryService)) private readonly academicSummaryService?: AcademicSummaryService,
+    @Optional() @Inject(forwardRef(() => ParentLiveTrackingService)) private readonly parentLiveTrackingService?: ParentLiveTrackingService,
+  ) {}
 
   /**
    * Authoritative helper to provision or link a User record with role PARENT
@@ -629,4 +637,1044 @@ export class ParentsService {
       },
     };
   }
+
+  async validateParentWardAccess(tenantId: string, userId: string, studentId: string) {
+    let parent: any = null;
+    let student: any = null;
+
+    if (this.prisma.isDbConnected) {
+      const user = await this.prisma.user.findUnique({ where: { id: userId } });
+      parent = await this.prisma.parent.findFirst({
+        where: {
+          tenantId,
+          OR: [
+            { userId: userId },
+            ...(user?.email ? [{ email: user.email.toLowerCase().trim() }] : []),
+            ...(user?.phone ? [{ phone: user.phone.trim() }] : []),
+          ],
+        },
+      });
+
+      if (!parent) {
+        throw new NotFoundException('Parent profile not found for this user account.');
+      }
+
+      const link = await this.prisma.studentParent.findFirst({
+        where: { parentId: parent.id, studentId },
+      });
+
+      if (!link) {
+        throw new ForbiddenException('You are not authorized to access records for this student.');
+      }
+
+      student = await this.prisma.student.findFirst({
+        where: { id: studentId, tenantId },
+        include: {
+          campus: true,
+          enrollments: {
+            where: { status: 'ACTIVE' },
+            include: { class: true },
+            take: 1,
+          },
+        },
+      });
+    } else {
+      parent = Array.from(this.prisma.memoryStore.parents.values()).find(
+        (p: any) => p.tenantId === tenantId && (p.userId === userId || p.email === userId),
+      );
+      if (!parent) {
+        throw new NotFoundException('Parent profile not found.');
+      }
+      const linkedWards = parent.linkedWards || [];
+      const isLinked = linkedWards.some((w: any) => w.id === studentId || w.studentId === studentId);
+      if (!isLinked) {
+        throw new ForbiddenException('You are not authorized to access records for this student.');
+      }
+      student = this.prisma.memoryStore.students.get(studentId);
+    }
+
+    if (!student) {
+      throw new NotFoundException('Student record not found.');
+    }
+
+    return { parent, student };
+  }
+
+  async getWardAttendance(tenantId: string, userId: string, studentId: string, query?: any) {
+    const { student } = await this.validateParentWardAccess(tenantId, userId, studentId);
+    let records: any[] = [];
+    if (this.prisma.isDbConnected) {
+      try {
+        records = await this.prisma.attendance.findMany({
+          where: { tenantId, studentId },
+          orderBy: { date: 'desc' },
+          take: 100,
+        });
+      } catch {}
+    }
+    if (records.length === 0) {
+      records = Array.from(this.prisma.memoryStore.attendance.values()).filter(
+        (a: any) => a.tenantId === tenantId && a.studentId === studentId,
+      );
+      records.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    }
+
+    const totalDays = records.length;
+    const presentDays = records.filter((r) => r.status === 'PRESENT' || r.status === 'LATE').length;
+    const absentDays = records.filter((r) => r.status === 'ABSENT').length;
+    const lateDays = records.filter((r) => r.status === 'LATE').length;
+    const percentage = totalDays > 0 ? Math.round((presentDays / totalDays) * 100) : 100;
+
+    return {
+      student: {
+        id: student.id,
+        fullName: `${student.firstName} ${student.lastName}`.trim(),
+        admissionNumber: student.admissionNumber,
+      },
+      stats: {
+        totalDays,
+        presentDays,
+        absentDays,
+        lateDays,
+        percentage,
+      },
+      records: records.map((r) => ({
+        id: r.id,
+        date: r.date,
+        status: r.status,
+        sessionType: r.sessionType || 'DAILY',
+        remarks: r.remarks || null,
+      })),
+    };
+  }
+
+  async getWardResults(tenantId: string, userId: string, studentId: string) {
+    const { student } = await this.validateParentWardAccess(tenantId, userId, studentId);
+    let exams: any[] = [];
+    let results: any[] = [];
+
+    if (this.prisma.isDbConnected) {
+      try {
+        exams = await this.prisma.examination.findMany({
+          where: { tenantId, isPublished: true },
+          orderBy: { startDate: 'desc' },
+        });
+        const examIds = exams.map((e) => e.id);
+        results = await this.prisma.result.findMany({
+          where: { tenantId, studentId, examinationId: { in: examIds } },
+          include: { subject: true, examination: true },
+        });
+      } catch {}
+    }
+    if (exams.length === 0) {
+      exams = Array.from(this.prisma.memoryStore.examinations.values()).filter(
+        (e: any) => e.tenantId === tenantId && (e.isPublished || e.status === 'PUBLISHED'),
+      );
+      const examIds = new Set(exams.map((e) => e.id));
+      results = Array.from(this.prisma.memoryStore.results.values()).filter(
+        (r: any) => r.tenantId === tenantId && r.studentId === studentId && examIds.has(r.examinationId),
+      );
+    }
+
+    return {
+      student: {
+        id: student.id,
+        fullName: `${student.firstName} ${student.lastName}`.trim(),
+        admissionNumber: student.admissionNumber,
+      },
+      publishedExaminations: exams.map((e) => ({
+        id: e.id,
+        name: e.name,
+        termId: e.termId,
+        academicYearId: e.academicYearId,
+        startDate: e.startDate,
+        endDate: e.endDate,
+      })),
+      results: results.map((r) => {
+        const subject = r.subject || this.prisma.memoryStore.subjects?.get(r.subjectId);
+        const exam = r.examination || this.prisma.memoryStore.examinations?.get(r.examinationId);
+        return {
+          id: r.id,
+          examinationId: r.examinationId,
+          examinationName: exam?.name || 'Term Exam',
+          subjectId: r.subjectId,
+          subjectName: subject?.name || 'Subject',
+          marksObtained: r.marksObtained,
+          maxMarks: r.maxMarks || 100,
+          percentage: Number(((r.marksObtained / (r.maxMarks || 100)) * 100).toFixed(1)),
+          grade: r.grade || 'N/A',
+          remarks: r.remarks || 'Satisfactory',
+          componentScores: r.componentScores || null,
+        };
+      }),
+    };
+  }
+
+  async getWardReportCard(tenantId: string, userId: string, studentId: string, examinationId: string) {
+    await this.validateParentWardAccess(tenantId, userId, studentId);
+    if (this.reportCardService) {
+      return this.reportCardService.prepareReportCardData(tenantId, studentId, examinationId);
+    }
+    throw new NotFoundException('Report card generation service unavailable.');
+  }
+
+  async getWardTimetable(tenantId: string, userId: string, studentId: string) {
+    const { student } = await this.validateParentWardAccess(tenantId, userId, studentId);
+    const classId = student.currentClassId || student.enrollments?.[0]?.classId || student.classId;
+    let entries: any[] = [];
+    if (classId) {
+      if (this.prisma.isDbConnected) {
+        try {
+          entries = await this.prisma.timetableEntry.findMany({
+            where: { timetable: { tenantId, classId } },
+            include: { subject: true, teacher: true },
+            orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }],
+          });
+        } catch {}
+      }
+      if (entries.length === 0) {
+        entries = Array.from(this.prisma.memoryStore.timetableEntries.values()).filter(
+          (t: any) => t.tenantId === tenantId && t.classId === classId,
+        );
+      }
+    }
+
+    const cls = this.prisma.memoryStore.classes?.get(classId) || student.enrollments?.[0]?.class;
+
+    return {
+      student: {
+        id: student.id,
+        fullName: `${student.firstName} ${student.lastName}`.trim(),
+        admissionNumber: student.admissionNumber,
+      },
+      class: {
+        id: classId,
+        name: cls?.name || 'Class',
+      },
+      schedule: entries.map((entry) => {
+        const subject = entry.subject || this.prisma.memoryStore.subjects?.get(entry.subjectId);
+        return {
+          id: entry.id,
+          dayOfWeek: entry.dayOfWeek,
+          periodNumber: entry.periodNumber,
+          startTime: entry.startTime,
+          endTime: entry.endTime,
+          subjectName: subject?.name || 'General',
+          teacherName: entry.teacherName || `${entry.teacher?.firstName || ''} ${entry.teacher?.lastName || ''}`.trim() || 'Teacher',
+          room: entry.room || entry.roomName || 'Main Hall',
+        };
+      }),
+    };
+  }
+
+  async getWardHomework(tenantId: string, userId: string, studentId: string) {
+    const { student } = await this.validateParentWardAccess(tenantId, userId, studentId);
+    const classId = student.currentClassId || student.enrollments?.[0]?.classId || student.classId;
+    let assignments: any[] = [];
+    if (classId) {
+      assignments = Array.from(this.prisma.memoryStore.homework.values()).filter(
+        (h: any) => h.tenantId === tenantId && h.classId === classId && (h.status === 'PUBLISHED' || !h.status),
+      );
+    }
+
+    return {
+      student: {
+        id: student.id,
+        fullName: `${student.firstName} ${student.lastName}`.trim(),
+        admissionNumber: student.admissionNumber,
+      },
+      assignments: assignments.map((h) => {
+        const subject = this.prisma.memoryStore.subjects?.get(h.subjectId);
+        const submission = Array.from(this.prisma.memoryStore.homeworkSubmissions.values()).find(
+          (s: any) => s.tenantId === tenantId && s.homeworkId === h.id && s.studentId === studentId,
+        );
+        return {
+          id: h.id,
+          title: h.title,
+          description: h.description,
+          subjectName: subject?.name || 'Subject',
+          dueDate: h.dueDate,
+          maxMarks: h.maxMarks,
+          attachments: h.attachments || [],
+          submission: submission
+            ? {
+                id: submission.id,
+                submittedAt: submission.submittedAt,
+                marksObtained: submission.marksObtained,
+                status: submission.status,
+                grade: submission.grade,
+                feedback: submission.feedback,
+              }
+            : null,
+        };
+      }),
+    };
+  }
+
+  async getWardMedical(tenantId: string, userId: string, studentId: string) {
+    const { student } = await this.validateParentWardAccess(tenantId, userId, studentId);
+    const memory = this.prisma.memoryStore as any;
+    const studentVisits = Array.from(memory.clinicVisits?.values() || []).filter(
+      (v: any) => v.tenantId === tenantId && (v.patientId === student.id || v.studentId === student.admissionNumber),
+    );
+
+    const profile = {
+      bloodGroup: student.bloodGroup || 'O+',
+      genotype: student.genotype || 'AA',
+      allergies: student.allergies ? [student.allergies] : ['None Reported'],
+      chronicConditions: [],
+      emergencyContact: {
+        name: student.emergencyContactName || `${student.firstName}'s Parent`,
+        phone: student.emergencyContactPhone || student.phone || 'On File',
+        relationship: 'Parent',
+      },
+      recentVisits: studentVisits.slice(-5),
+    };
+
+    return {
+      student: {
+        id: student.id,
+        fullName: `${student.firstName} ${student.lastName}`.trim(),
+        admissionNumber: student.admissionNumber,
+      },
+      medicalProfile: profile,
+    };
+  }
+
+  async getWardTransport(tenantId: string, userId: string, studentId: string) {
+    await this.validateParentWardAccess(tenantId, userId, studentId);
+    if (this.parentLiveTrackingService) {
+      return this.parentLiveTrackingService.getStudentLiveTransport(tenantId, studentId, { parentUserId: userId });
+    }
+    return {
+      hasActiveRoute: false,
+      message: 'Transport tracking is not active for this student.',
+    };
+  }
+
+  async getWardTranscript(tenantId: string, userId: string, studentId: string) {
+    await this.validateParentWardAccess(tenantId, userId, studentId);
+    if (this.academicSummaryService) {
+      return this.academicSummaryService.getStudentTranscript(tenantId, studentId);
+    }
+    throw new NotFoundException('Academic transcript service unavailable.');
+  }
+
+  async getWardTeachers(tenantId: string, userId: string, studentId: string) {
+    const { student } = await this.validateParentWardAccess(tenantId, userId, studentId);
+    if (!student.classId) {
+      return { teachers: [] };
+    }
+
+    const teacherMap = new Map<string, any>();
+
+    if (this.prisma.isDbConnected) {
+      try {
+        const classObj = await this.prisma.class.findFirst({
+          where: { tenantId, id: student.classId },
+          include: {
+            classTeacher: {
+              include: { user: true },
+            },
+          },
+        });
+
+        if (classObj?.classTeacher) {
+          const ct = classObj.classTeacher;
+          teacherMap.set(ct.id, {
+            id: ct.id,
+            userId: ct.userId || ct.user?.id || null,
+            name: `${ct.firstName} ${ct.lastName}`.trim(),
+            role: 'Class Teacher',
+            isClassTeacher: true,
+            subject: 'Class Teacher',
+            email: ct.email || ct.user?.email || '',
+            phone: ct.phone || '',
+          });
+        }
+
+        const classSubjects = await this.prisma.classSubject.findMany({
+          where: { tenantId, classId: student.classId },
+          include: {
+            subject: true,
+            teacher: {
+              include: { user: true },
+            },
+          },
+        });
+
+        for (const cs of classSubjects) {
+          if (cs.teacher) {
+            const t = cs.teacher;
+            const existing = teacherMap.get(t.id);
+            const subjectName = cs.subject?.name || 'Subject';
+            if (existing) {
+              existing.subject = `${existing.subject}, ${subjectName}`;
+            } else {
+              teacherMap.set(t.id, {
+                id: t.id,
+                userId: t.userId || t.user?.id || null,
+                name: `${t.firstName} ${t.lastName}`.trim(),
+                role: 'Subject Teacher',
+                isClassTeacher: false,
+                subject: subjectName,
+                email: t.email || t.user?.email || '',
+                phone: t.phone || '',
+              });
+            }
+          }
+        }
+      } catch (err: any) {
+        this.logger.warn(`Failed to fetch ward teachers from DB: ${err.message}`);
+      }
+    } else {
+      const cls = this.prisma.memoryStore.classes?.get(student.classId);
+      if (cls?.classTeacherId) {
+        const ct = this.prisma.memoryStore.teachers?.get(cls.classTeacherId);
+        if (ct) {
+          teacherMap.set(ct.id, {
+            id: ct.id,
+            userId: ct.userId || `usr_${ct.id}`,
+            name: `${ct.firstName} ${ct.lastName}`.trim(),
+            role: 'Class Teacher',
+            isClassTeacher: true,
+            subject: 'Class Teacher',
+            email: ct.email || '',
+            phone: ct.phone || '',
+          });
+        }
+      }
+
+      const allClassSubjects = Array.from(this.prisma.memoryStore.classSubjects?.values() || []);
+      for (const cs of allClassSubjects as any[]) {
+        if (cs.tenantId === tenantId && cs.classId === student.classId && cs.teacherId) {
+          const t = this.prisma.memoryStore.teachers?.get(cs.teacherId);
+          const subj = this.prisma.memoryStore.subjects?.get(cs.subjectId);
+          if (t) {
+            const existing = teacherMap.get(t.id);
+            const subjectName = subj?.name || 'Subject';
+            if (existing) {
+              existing.subject = `${existing.subject}, ${subjectName}`;
+            } else {
+              teacherMap.set(t.id, {
+                id: t.id,
+                userId: t.userId || `usr_${t.id}`,
+                name: `${t.firstName} ${t.lastName}`.trim(),
+                role: 'Subject Teacher',
+                isClassTeacher: false,
+                subject: subjectName,
+                email: t.email || '',
+                phone: t.phone || '',
+              });
+            }
+          }
+        }
+      }
+    }
+
+    return {
+      student: {
+        id: student.id,
+        fullName: `${student.firstName} ${student.lastName}`.trim(),
+        className: student.class?.name || student.assignedClass || '',
+      },
+      teachers: Array.from(teacherMap.values()),
+    };
+  }
+
+  async getParentThreads(tenantId: string, userId: string) {
+    if (this.prisma.isDbConnected) {
+      try {
+        const threads = await this.prisma.communicationThread.findMany({
+          where: {
+            tenantId,
+            OR: [
+              { createdById: userId },
+              { participantIds: { array_contains: userId } },
+            ],
+          },
+          include: {
+            messages: {
+              orderBy: { createdAt: 'asc' },
+            },
+          },
+          orderBy: { lastMessageAt: 'desc' },
+        });
+
+        if (threads.length > 0) {
+          return threads.map((th) => ({
+            id: th.id,
+            subject: th.subject,
+            createdById: th.createdById,
+            participantIds: th.participantIds,
+            lastMessageAt: th.lastMessageAt,
+            createdAt: th.createdAt,
+            messages: th.messages.map((m) => ({
+              id: m.id,
+              senderId: m.senderId,
+              senderType: m.senderType,
+              content: m.content,
+              attachments: m.attachments,
+              readBy: m.readBy,
+              createdAt: m.createdAt,
+              isOwn: m.senderId === userId,
+            })),
+          }));
+        }
+      } catch (err: any) {
+        this.logger.warn(`Failed to query threads from DB: ${err.message}`);
+      }
+    }
+
+    const allThreads = Array.from(this.prisma.memoryStore.communicationThreads?.values() || []);
+    const matching = allThreads.filter(
+      (th: any) =>
+        th.tenantId === tenantId &&
+        (th.createdById === userId ||
+          (Array.isArray(th.participantIds) && th.participantIds.includes(userId))),
+    );
+
+    matching.sort(
+      (a: any, b: any) =>
+        new Date(b.lastMessageAt || b.createdAt).getTime() -
+        new Date(a.lastMessageAt || a.createdAt).getTime(),
+    );
+
+    const allMessages = Array.from(this.prisma.memoryStore.communicationMessages?.values() || []);
+
+    return matching.map((th: any) => {
+      const msgs = allMessages
+        .filter((m: any) => m.threadId === th.id)
+        .sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+      return {
+        id: th.id,
+        subject: th.subject,
+        createdById: th.createdById,
+        participantIds: th.participantIds,
+        lastMessageAt: th.lastMessageAt,
+        createdAt: th.createdAt,
+        messages: msgs.map((m: any) => ({
+          id: m.id,
+          senderId: m.senderId,
+          senderType: m.senderType,
+          content: m.content,
+          attachments: m.attachments || [],
+          readBy: m.readBy || [],
+          createdAt: m.createdAt,
+          isOwn: m.senderId === userId,
+        })),
+      };
+    });
+  }
+
+  async createParentThread(
+    tenantId: string,
+    userId: string,
+    dto: {
+      recipientType?: 'CLASS_TEACHER' | 'ADMIN' | 'BOTH' | 'TEACHER';
+      recipientUserId?: string;
+      teacherId?: string;
+      studentId?: string;
+      subject: string;
+      message: string;
+    },
+  ) {
+    if (!dto.subject || !dto.message) {
+      throw new ForbiddenException('Subject and message content are required.');
+    }
+
+    const recipientMode = dto.recipientType || (dto.teacherId ? 'TEACHER' : 'CLASS_TEACHER');
+    const targetUserIds = new Set<string>();
+
+    if (dto.recipientUserId) {
+      targetUserIds.add(dto.recipientUserId);
+    }
+
+    let studentName: string | null = null;
+    let className: string | null = null;
+
+    // 1. Resolve Class Teacher / Subject Teacher recipient if requested
+    if (recipientMode === 'CLASS_TEACHER' || recipientMode === 'BOTH' || recipientMode === 'TEACHER') {
+      if (dto.teacherId) {
+        if (this.prisma.isDbConnected) {
+          const teacher = await this.prisma.teacher.findFirst({
+            where: { tenantId, id: dto.teacherId },
+          });
+          if (teacher?.userId) targetUserIds.add(teacher.userId);
+          else if (teacher?.id) targetUserIds.add(teacher.id);
+        } else {
+          const teacher = this.prisma.memoryStore.teachers?.get(dto.teacherId);
+          if (teacher?.userId) targetUserIds.add(teacher.userId);
+          else if (teacher?.id) targetUserIds.add(teacher.id);
+        }
+      } else if (dto.studentId) {
+        // Find assigned class teacher for this student
+        if (this.prisma.isDbConnected) {
+          try {
+            const student = await this.prisma.student.findFirst({
+              where: { tenantId, id: dto.studentId },
+              include: {
+                enrollments: {
+                  where: { status: 'ACTIVE' },
+                  include: { class: { include: { classTeacher: true } } },
+                  take: 1,
+                },
+              },
+            });
+            if (student) {
+              studentName = `${student.firstName} ${student.lastName}`.trim();
+              className = student.enrollments?.[0]?.class?.name || (student as any).currentClass || null;
+            }
+            const ct =
+              student?.enrollments?.[0]?.class?.classTeacher ||
+              (student as any)?.class?.classTeacher;
+            if (ct?.userId) targetUserIds.add(ct.userId);
+            else if (ct?.id) targetUserIds.add(ct.id);
+          } catch (err: any) {
+            this.logger.warn(`Could not resolve student teacher from DB: ${err.message}`);
+          }
+        }
+
+        if (targetUserIds.size === 0) {
+          const student = this.prisma.memoryStore.students?.get(dto.studentId);
+          if (student) {
+            studentName = `${student.firstName || ''} ${student.lastName || ''}`.trim() || student.name || 'Student';
+            const cls = student.classId ? this.prisma.memoryStore.classes?.get(student.classId) : null;
+            className = cls?.name || student.currentClass || student.className || 'Class';
+          }
+          if (student?.classId) {
+            const cls = this.prisma.memoryStore.classes?.get(student.classId);
+            if (cls?.classTeacherId) {
+              const ct = this.prisma.memoryStore.teachers?.get(cls.classTeacherId);
+              if (ct?.userId) targetUserIds.add(ct.userId);
+              else if (ct?.id) targetUserIds.add(ct.id);
+            }
+          } else if ((student as any)?.class?.classTeacher) {
+            const ct = (student as any).class.classTeacher;
+            if (ct?.userId) targetUserIds.add(ct.userId);
+            else if (ct?.id) targetUserIds.add(ct.id);
+          }
+        }
+      }
+    }
+
+    if (!studentName && dto.studentId) {
+      if (this.prisma.isDbConnected) {
+        try {
+          const student = await this.prisma.student.findFirst({
+            where: { tenantId, id: dto.studentId },
+            include: {
+              enrollments: {
+                where: { status: 'ACTIVE' },
+                include: { class: true },
+                take: 1,
+              },
+            },
+          });
+          if (student) {
+            studentName = `${student.firstName} ${student.lastName}`.trim();
+            className = student.enrollments?.[0]?.class?.name || (student as any).currentClass || null;
+          }
+        } catch {}
+      }
+      if (!studentName) {
+        const memStudent = this.prisma.memoryStore.students?.get(dto.studentId);
+        if (memStudent) {
+          studentName = `${memStudent.firstName || ''} ${memStudent.lastName || ''}`.trim() || memStudent.name || 'Student';
+          const memClass = memStudent.classId ? this.prisma.memoryStore.classes?.get(memStudent.classId) : null;
+          className = memClass?.name || memStudent.currentClass || memStudent.className || null;
+        }
+      }
+    }
+
+    // 2. Resolve Admin recipient if requested
+    if (recipientMode === 'ADMIN' || recipientMode === 'BOTH') {
+      const initialSize = targetUserIds.size;
+      if (this.prisma.isDbConnected) {
+        try {
+          const admins = await this.prisma.user.findMany({
+            where: {
+              tenantId,
+              OR: [
+                {
+                  userRoles: {
+                    some: {
+                      role: {
+                        name: {
+                          in: [
+                            'Admin',
+                            'ADMIN',
+                            'School Admin',
+                            'SCHOOL_ADMIN',
+                            'School Owner',
+                            'SCHOOL_OWNER',
+                            'Administrator',
+                            'Tenant Admin',
+                            'TENANT_ADMIN',
+                            'Super Admin',
+                            'SUPER_ADMIN',
+                            'Principal',
+                            'PRINCIPAL',
+                            'Owner',
+                            'OWNER',
+                            'Proprietor',
+                            'PROPRIETOR',
+                            'Head of School',
+                            'Campus Admin',
+                            'CAMPUS_ADMIN',
+                          ],
+                        },
+                      },
+                    },
+                  },
+                },
+                { isPlatformAdmin: true },
+              ],
+            },
+            take: 20,
+          });
+          for (const a of admins) {
+            targetUserIds.add(a.id);
+          }
+
+          // Fallback: If no explicit role matches found, resolve any tenant user that is not a student or parent
+          if (targetUserIds.size === initialSize) {
+            const tenantStaff = await this.prisma.user.findMany({
+              where: {
+                tenantId,
+                NOT: {
+                  userRoles: {
+                    some: {
+                      role: {
+                        name: { in: ['STUDENT', 'PARENT', 'Student', 'Parent'] },
+                      },
+                    },
+                  },
+                },
+              },
+              take: 10,
+            });
+            for (const s of tenantStaff) {
+              targetUserIds.add(s.id);
+            }
+          }
+        } catch (err: any) {
+          this.logger.warn(`Could not resolve admin users in DB: ${err.message}`);
+        }
+      }
+
+      if (targetUserIds.size === initialSize) {
+        const adminUsers = Array.from(this.prisma.memoryStore.users?.values() || []).filter(
+          (u: any) =>
+            u.tenantId === tenantId &&
+            u.role !== 'STUDENT' &&
+            u.role !== 'PARENT' &&
+            u.role !== 'Student' &&
+            u.role !== 'Parent',
+        );
+        for (const a of adminUsers as any[]) {
+          targetUserIds.add(a.id);
+        }
+      }
+    }
+
+    const participants = [userId];
+    for (const rId of targetUserIds) {
+      if (rId && !participants.includes(rId)) {
+        participants.push(rId);
+      }
+    }
+
+    const threadId = `th_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+    const messageId = `msg_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+    const now = new Date();
+
+    let parentUser: any = null;
+    if (this.prisma.isDbConnected) {
+      try {
+        parentUser = await this.prisma.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true } });
+      } catch {}
+    }
+    if (!parentUser) {
+      parentUser = this.prisma.memoryStore.users?.get(userId);
+    }
+    const parentName = parentUser ? `${parentUser.firstName || ''} ${parentUser.lastName || ''}`.trim() : 'Parent';
+
+    const notifTitle = `New Parent Message: ${dto.subject}${studentName ? ` [Ward: ${studentName}${className ? ` • ${className}` : ''}]` : ''}`;
+
+    if (this.prisma.isDbConnected) {
+      try {
+        const thread = await this.prisma.communicationThread.create({
+          data: {
+            id: threadId,
+            tenantId,
+            subject: dto.subject,
+            createdById: userId,
+            participantIds: participants,
+            lastMessageAt: now,
+            messages: {
+              create: {
+                id: messageId,
+                senderId: userId,
+                senderType: 'PARENT',
+                content: dto.message,
+                readBy: [userId],
+                createdAt: now,
+              },
+            },
+          },
+          include: { messages: true },
+        });
+
+        for (const rId of targetUserIds) {
+          try {
+            await this.prisma.inAppInboxItem.create({
+              data: {
+                id: `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                tenantId,
+                recipientUserId: rId,
+                category: 'DIRECT_MESSAGE',
+                priority: 'HIGH',
+                title: notifTitle,
+                message: dto.message.length > 100 ? dto.message.slice(0, 97) + '...' : dto.message,
+                actionUrl: '/communications',
+                isRead: false,
+              },
+            });
+          } catch {}
+        }
+
+        return {
+          ...thread,
+          studentName,
+          className,
+        };
+      } catch (err: any) {
+        this.logger.warn(`Failed to create thread in DB: ${err.message}`);
+      }
+    }
+
+    const threadData = {
+      id: threadId,
+      tenantId,
+      subject: dto.subject,
+      createdById: userId,
+      participantIds: participants,
+      studentName,
+      className,
+      lastMessageAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const messageData = {
+      id: messageId,
+      threadId,
+      senderId: userId,
+      senderType: 'PARENT',
+      content: dto.message,
+      attachments: [],
+      readBy: [userId],
+      createdAt: now,
+    };
+
+    this.prisma.memoryStore.communicationThreads?.set(threadId, threadData);
+    this.prisma.memoryStore.communicationMessages?.set(messageId, messageData);
+
+    for (const rId of targetUserIds) {
+      const inboxId = `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+      this.prisma.memoryStore.inboxItems?.set(inboxId, {
+        id: inboxId,
+        tenantId,
+        recipientUserId: rId,
+        category: 'DIRECT_MESSAGE',
+        priority: 'HIGH',
+        title: notifTitle,
+        message: dto.message.length > 100 ? dto.message.slice(0, 97) + '...' : dto.message,
+        actionUrl: '/communications',
+        isRead: false,
+        createdAt: now,
+      });
+    }
+
+    return {
+      ...threadData,
+      studentName,
+      className,
+      messages: [messageData],
+    };
+  }
+
+  async sendThreadReply(
+    tenantId: string,
+    userId: string,
+    threadId: string,
+    dto: { content: string },
+  ) {
+    if (!dto.content?.trim()) {
+      throw new ForbiddenException('Message content cannot be empty.');
+    }
+
+    const now = new Date();
+    const messageId = `msg_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+
+    if (this.prisma.isDbConnected) {
+      try {
+        const thread = await this.prisma.communicationThread.findFirst({
+          where: { id: threadId, tenantId },
+        });
+        if (!thread) {
+          throw new NotFoundException('Conversation thread not found.');
+        }
+
+        const participants = Array.isArray(thread.participantIds)
+          ? (thread.participantIds as string[])
+          : [];
+        if (thread.createdById !== userId && !participants.includes(userId)) {
+          throw new ForbiddenException('You are not a participant in this conversation.');
+        }
+
+        const message = await this.prisma.communicationMessage.create({
+          data: {
+            id: messageId,
+            threadId,
+            senderId: userId,
+            senderType: 'PARENT',
+            content: dto.content,
+            readBy: [userId],
+            createdAt: now,
+          },
+        });
+
+        await this.prisma.communicationThread.update({
+          where: { id: threadId },
+          data: { lastMessageAt: now },
+        });
+
+        for (const pId of participants) {
+          if (pId !== userId) {
+            try {
+              await this.prisma.inAppInboxItem.create({
+                data: {
+                  id: `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                  tenantId,
+                  recipientUserId: pId,
+                  category: 'DIRECT_MESSAGE',
+                  priority: 'HIGH',
+                  title: `Reply in: ${thread.subject}`,
+                  message: dto.content.length > 100 ? dto.content.slice(0, 97) + '...' : dto.content,
+                  actionUrl: '/parent',
+                  isRead: false,
+                },
+              });
+            } catch {}
+          }
+        }
+
+        return message;
+      } catch (err: any) {
+        if (err instanceof NotFoundException || err instanceof ForbiddenException) throw err;
+        this.logger.warn(`Failed to post message reply in DB: ${err.message}`);
+      }
+    }
+
+    const thread = this.prisma.memoryStore.communicationThreads?.get(threadId);
+    if (!thread || thread.tenantId !== tenantId) {
+      throw new NotFoundException('Conversation thread not found.');
+    }
+
+    const participants = Array.isArray(thread.participantIds) ? thread.participantIds : [];
+    if (thread.createdById !== userId && !participants.includes(userId)) {
+      throw new ForbiddenException('You are not a participant in this conversation.');
+    }
+
+    const messageData = {
+      id: messageId,
+      threadId,
+      senderId: userId,
+      senderType: 'PARENT',
+      content: dto.content,
+      attachments: [],
+      readBy: [userId],
+      createdAt: now,
+    };
+
+    this.prisma.memoryStore.communicationMessages?.set(messageId, messageData);
+    thread.lastMessageAt = now;
+    this.prisma.memoryStore.communicationThreads?.set(threadId, thread);
+
+    for (const pId of participants) {
+      if (pId !== userId) {
+        const inbId = `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+        this.prisma.memoryStore.inboxItems?.set(inbId, {
+          id: inbId,
+          tenantId,
+          recipientUserId: pId,
+          category: 'DIRECT_MESSAGE',
+          priority: 'HIGH',
+          title: `Reply in: ${thread.subject}`,
+          message: dto.content.length > 100 ? dto.content.slice(0, 97) + '...' : dto.content,
+          actionUrl: '/parent',
+          isRead: false,
+          createdAt: now,
+        });
+      }
+    }
+
+    return messageData;
+  }
+
+  async getPortalAnnouncements(tenantId: string, userId: string) {
+    if (this.prisma.isDbConnected) {
+      try {
+        const notifications = await this.prisma.notification.findMany({
+          where: { tenantId },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (notifications.length > 0) {
+          return notifications.map((n) => ({
+            id: n.id,
+            tenantId: n.tenantId,
+            title: n.title,
+            message: n.message,
+            content: n.message,
+            channel: n.channel || 'Portal Noticeboard',
+            priority: 'NORMAL',
+            status: n.status === 'SENT' ? 'Delivered' : n.status,
+            createdAt: n.createdAt,
+          }));
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not load portal announcements from DB: ${err.message}`);
+      }
+    }
+
+    const items = Array.from(this.prisma.memoryStore.communications?.values() || [])
+      .filter(
+        (c: any) =>
+          c.tenantId === tenantId &&
+          (!c.audience ||
+            c.audience === 'ALL' ||
+            c.audience === 'GENERAL' ||
+            c.audience.toUpperCase().includes('PARENT') ||
+            c.recipientGroup?.toUpperCase().includes('PARENT')),
+      )
+      .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    return items.map((c: any) => ({
+      id: c.id,
+      tenantId: c.tenantId,
+      title: c.title,
+      message: c.message || c.content,
+      content: c.content || c.message,
+      channel: c.channel || 'Portal Noticeboard',
+      priority: c.priority || 'NORMAL',
+      status: c.status || 'Delivered',
+      createdAt: c.createdAt,
+    }));
+  }
 }
+
+
+

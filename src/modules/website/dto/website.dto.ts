@@ -7,7 +7,29 @@ import {
   IsIn,
   IsDateString,
   IsInt,
+  IsArray,
+  IsObject,
+  ValidateNested,
+  Matches,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class ColorPaletteItemDto {
+  @IsNotEmpty()
+  @IsString()
+  id: string;
+
+  @IsNotEmpty()
+  @IsString()
+  name: string;
+
+  @IsNotEmpty()
+  @IsString()
+  @Matches(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/, {
+    message: 'Color hex must be a valid hex code (e.g. #008000 or #FFF)',
+  })
+  hex: string;
+}
 
 export class CreatePublicInquiryDto {
   @IsNotEmpty()
@@ -153,6 +175,16 @@ export class UpdateWebsiteConfigDto {
   @IsOptional()
   @IsString()
   seoKeywords?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ColorPaletteItemDto)
+  colorPalette?: ColorPaletteItemDto[];
+
+  @IsOptional()
+  @IsObject()
+  colorAssignments?: Record<string, string>;
 
   @IsOptional()
   @IsBoolean()

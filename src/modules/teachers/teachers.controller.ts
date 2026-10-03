@@ -1,9 +1,10 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Req } from '@nestjs/common';
 import { TeachersService } from './teachers.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
+import { CreateTeacherDto, UpdateTeacherDto } from './dto/create-teacher.dto.js';
 
 @Controller('api/v1/teachers')
 export class TeachersController {
@@ -31,19 +32,21 @@ export class TeachersController {
   @Post()
   async createTeacher(
     @CurrentTenant() tenant: TenantContext,
-    @Body() body: any,
+    @Req() req: any,
+    @Body() body: CreateTeacherDto,
   ) {
-    return this.teachersService.create(tenant.tenantId, body);
+    return this.teachersService.create(tenant.tenantId, body, req.user);
   }
 
   @RequirePermissions(SystemPermissions.TEACHERS_MANAGE)
   @Patch(':id')
   async updateTeacher(
     @CurrentTenant() tenant: TenantContext,
+    @Req() req: any,
     @Param('id') id: string,
-    @Body() body: any,
+    @Body() body: UpdateTeacherDto,
   ) {
-    return this.teachersService.update(tenant.tenantId, id, body);
+    return this.teachersService.update(tenant.tenantId, id, body, req.user);
   }
 
   @RequirePermissions(SystemPermissions.TEACHERS_MANAGE)

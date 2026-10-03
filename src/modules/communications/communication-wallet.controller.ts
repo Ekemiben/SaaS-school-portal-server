@@ -31,6 +31,12 @@ export class CommunicationWalletController {
     return this.walletService.getOrCreateWallet(tenant.tenantId);
   }
 
+  @RequirePermissions(SystemPermissions.COMMUNICATIONS_VIEW)
+  @Get('analytics')
+  async getWalletAnalytics(@CurrentTenant() tenant: TenantContext) {
+    return this.walletService.getWalletAnalytics(tenant.tenantId);
+  }
+
   @RequirePermissions(SystemPermissions.COMMUNICATIONS_MANAGE)
   @Post('top-up')
   async initializeTopUp(

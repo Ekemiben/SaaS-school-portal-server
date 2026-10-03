@@ -115,6 +115,8 @@ model Tenant {
   students                      Student[]
   parents                       Parent[]
   teachers                      Teacher[]
+  staff                         Staff[]
+  teacherProfiles               TeacherProfile[]
   academicYears                 AcademicYear[]
   terms                         Term[]
   classes                       Class[]
@@ -198,11 +200,22 @@ model Tenant {
   outboxEvents                  OutboxEvent[]
   websiteConfig                 WebsiteConfig?
   publicPages                   PublicPage[]
+  departments                   Department[]
+  designations                  Designation[]
+  staffRooms                    StaffRoom[]
+  examinationHalls              ExaminationHall[]
   publicNews                    PublicNews[]
   publicEvents                  PublicEvent[]
   publicAnnouncements           PublicAnnouncement[]
   galleryMedia                  GalleryMedia[]
   publicAdmissionInquiries      PublicAdmissionInquiry[]
+  communicationWallet          CommunicationWallet?
+  communicationWalletTxs       CommunicationWalletTransaction[]
+  communicationSettings        CommunicationSettings?
+  messageTemplates             MessageTemplate[]
+  communicationCampaigns       CommunicationCampaign[]
+  communicationRecipientLogs   CommunicationRecipientLog[]
+  inAppInboxItems              InAppInboxItem[]
 
   @@index([slug])
   @@index([status])
@@ -247,6 +260,7 @@ model Campus {
   userCampuses                UserCampus[]
   students                    Student[]
   teachers                    Teacher[]
+  staff                       Staff[]
   classes                     Class[]
   attendance                  Attendance[]
   examinations                Examination[]
@@ -287,6 +301,8 @@ model Campus {
   inventoryStockMovements     InventoryStockMovement[]
   schoolAssets                SchoolAsset[]
   purchaseOrders              PurchaseOrder[]
+  staffRooms                  StaffRoom[]
+  examinationHalls            ExaminationHall[]
 
   @@unique([tenantId, code])
   @@index([tenantId])
@@ -311,9 +327,11 @@ model User {
   userRoles      UserRole[]
   userCampuses   UserCampus[]
   teacherProfile Teacher?
+  staffProfile   Staff?
   parentProfile  Parent?
   mfaSecret      MfaSecret?
   resetTokens    PasswordResetToken[]
+  inboxItems     InAppInboxItem[]
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -479,6 +497,65 @@ model StudentParent {
   @@index([parentId])
 }
 
+model Staff {
+  id               String    @id @default(uuid())
+  tenantId         String
+  campusId         String
+  userId           String?   @unique
+  employeeNumber   String
+  firstName        String
+  middleName       String?
+  lastName         String
+  email            String
+  phone            String?
+  gender           String?
+  dateOfBirth      DateTime?
+  departmentId     String?
+  designationId    String?
+  staffRoomId      String?
+  employmentStatus String    @default("ACTIVE") // ACTIVE, ON_LEAVE, SUSPENDED, TERMINATED
+  joiningDate      DateTime? @default(now())
+  isActive         Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  tenant                         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campus                         Campus          @relation(fields: [campusId], references: [id], onDelete: Cascade)
+  user                           User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  department                     Department?     @relation("StaffDepartment", fields: [departmentId], references: [id], onDelete: SetNull)
+  designation                    Designation?    @relation("StaffDesignation", fields: [designationId], references: [id], onDelete: SetNull)
+  staffRoom                      StaffRoom?      @relation("StaffRoomStaff", fields: [staffRoomId], references: [id], onDelete: SetNull)
+  headedDepartments              Department[]    @relation("StaffDepartmentHead")
+  teacherProfile                 TeacherProfile?
+  chiefInvigilationSchedules     ExamSchedule[]  @relation("StaffChiefInvigilator")
+  assistantInvigilationSchedules ExamSchedule[]  @relation("StaffAssistantInvigilator")
+
+  @@unique([tenantId, employeeNumber])
+  @@index([tenantId])
+  @@index([tenantId, campusId])
+  @@index([departmentId])
+  @@index([designationId])
+  @@index([staffRoomId])
+  @@index([userId])
+}
+
+model TeacherProfile {
+  id             String   @id @default(uuid())
+  tenantId       String
+  staffId        String   @unique
+  specialization String?
+  qualification  String?
+  trcnNumber     String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  staff            Staff            @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([staffId])
+}
+
 model Teacher {
   id             String    @id @default(uuid())
   tenantId       String
@@ -496,17 +573,88 @@ model Teacher {
   officeLocation String?
   subjectsTaught String?
   assignedClass  String?
+  departmentId   String?
+  designationId  String?
+  staffRoomId    String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  campus           Campus           @relation(fields: [campusId], references: [id], onDelete: Cascade)
-  user             User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
-  classes          Class[]
-  classSubjects    ClassSubject[]
-  timetableEntries TimetableEntry[]
+  tenant            Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campus            Campus        @relation(fields: [campusId], references: [id], onDelete: Cascade)
+  user              User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  department        Department?   @relation("DepartmentStaff", fields: [departmentId], references: [id], onDelete: SetNull)
+  designation       Designation?  @relation(fields: [designationId], references: [id], onDelete: SetNull)
+  staffRoom         StaffRoom?    @relation(fields: [staffRoomId], references: [id], onDelete: SetNull)
+  headedDepartments Department[]  @relation("DepartmentHead")
+  classes                        Class[]
+  classSubjects                  ClassSubject[]
+  timetableEntries               TimetableEntry[]
 
   @@unique([tenantId, employeeNumber])
+  @@index([tenantId])
+  @@index([tenantId, campusId])
+  @@index([departmentId])
+  @@index([designationId])
+  @@index([staffRoomId])
+}
+
+model Department {
+  id          String    @id @default(uuid())
+  tenantId    String
+  name        String
+  code        String
+  description String?
+  headStaffId String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  headStaff      Staff?    @relation("StaffDepartmentHead", fields: [headStaffId], references: [id], onDelete: SetNull)
+  staff          Staff[]   @relation("StaffDepartment")
+  legacyTeachers Teacher[] @relation("DepartmentStaff")
+  legacyHeadStaff Teacher[] @relation("DepartmentHead")
+
+  @@unique([tenantId, name])
+  @@unique([tenantId, code])
+  @@index([tenantId])
+}
+
+model Designation {
+  id          String    @id @default(uuid())
+  tenantId    String
+  name        String
+  code        String
+  description String?
+  level       Int?      @default(1)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  staff          Staff[]   @relation("StaffDesignation")
+  legacyTeachers Teacher[]
+
+  @@unique([tenantId, name])
+  @@unique([tenantId, code])
+  @@index([tenantId])
+}
+
+model StaffRoom {
+  id         String    @id @default(uuid())
+  tenantId   String
+  campusId   String?
+  name       String
+  building   String?
+  roomNumber String?
+  capacity   Int?      @default(10)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campus         Campus?   @relation(fields: [campusId], references: [id], onDelete: SetNull)
+  staff          Staff[]   @relation("StaffRoomStaff")
+  legacyTeachers Teacher[]
+
+  @@unique([tenantId, name])
   @@index([tenantId])
   @@index([tenantId, campusId])
 }
@@ -588,6 +736,7 @@ model Class {
   disciplineIncidents DisciplineIncident[]
   meritAwards         MeritAward[]
   academicSummaries   AcademicSummary[]
+  feeStructures       FeeStructure[]
 
   @@unique([tenantId, campusId, academicYearId, name])
   @@index([tenantId])
@@ -697,6 +846,9 @@ model Examination {
   termId         String
   name           String
   examType       String   @default("TERM_EXAM")
+  status         String   @default("Scheduled")
+  instructions   String?
+  regulations    String?
   startDate      DateTime
   endDate        DateTime
   isPublished    Boolean  @default(false)
@@ -713,23 +865,58 @@ model Examination {
   @@index([tenantId, campusId])
 }
 
-model ExamSchedule {
-  id            String   @id @default(uuid())
-  examinationId String
-  classId       String
-  subjectId     String
-  examDate      DateTime
-  startTime     String
-  endTime       String
-  maxMarks      Float    @default(100)
-  passMarks     Float    @default(40)
+model ExaminationHall {
+  id         String    @id @default(uuid())
+  tenantId   String
+  campusId   String?
+  name       String
+  building   String?
+  roomNumber String?
+  capacity   Int?      @default(100)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
-  examination Examination @relation(fields: [examinationId], references: [id], onDelete: Cascade)
-  class       Class       @relation(fields: [classId], references: [id], onDelete: Cascade)
-  subject     Subject     @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  tenant    Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campus    Campus?        @relation(fields: [campusId], references: [id], onDelete: SetNull)
+  schedules ExamSchedule[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([tenantId, campusId])
+}
+
+model ExamSchedule {
+  id                     String   @id @default(uuid())
+  examinationId          String
+  classId                String
+  subjectId              String
+  hallId                 String?
+  hallName               String?
+  chiefInvigilatorId     String?
+  assistantInvigilatorId String?
+  paperCode              String?
+  candidatesCount        Int?     @default(0)
+  instructions           String?
+  weightPercentage       Float?   @default(60)
+  duration               String?
+  examDate               DateTime
+  startTime              String
+  endTime                String
+  maxMarks               Float    @default(100)
+  passMarks              Float    @default(40)
+
+  examination          Examination      @relation(fields: [examinationId], references: [id], onDelete: Cascade)
+  class                Class            @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject              Subject          @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  hall                 ExaminationHall? @relation(fields: [hallId], references: [id], onDelete: SetNull)
+  chiefInvigilator     Staff?           @relation("StaffChiefInvigilator", fields: [chiefInvigilatorId], references: [id], onDelete: SetNull)
+  assistantInvigilator Staff?           @relation("StaffAssistantInvigilator", fields: [assistantInvigilatorId], references: [id], onDelete: SetNull)
 
   @@unique([examinationId, classId, subjectId])
   @@index([examinationId])
+  @@index([hallId])
+  @@index([chiefInvigilatorId])
+  @@index([assistantInvigilatorId])
 }
 
 model Result {
@@ -874,6 +1061,7 @@ model FeeStructure {
   campus       Campus       @relation(fields: [campusId], references: [id], onDelete: Cascade)
   academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
   term         Term?        @relation(fields: [termId], references: [id], onDelete: SetNull)
+  class        Class?       @relation(fields: [classId], references: [id], onDelete: SetNull)
   invoices     Invoice[]
   feeWaivers   FeeWaiver[]
 
@@ -1476,6 +1664,211 @@ model Notification {
 
   @@index([tenantId])
   @@index([tenantId, recipientUserId])
+}
+
+model CommunicationWallet {
+  id           String   @id @default(uuid())
+  tenantId     String   @unique
+  currency     String   @default("NGN")
+  balance      Decimal  @default(0.0) @db.Decimal(12, 4)
+  status       String   @default("ACTIVE") // ACTIVE, SUSPENDED, FROZEN
+  monthlyUsage Decimal  @default(0.0) @db.Decimal(12, 4)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant       Tenant                           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  transactions CommunicationWalletTransaction[]
+
+  @@index([tenantId, status])
+}
+
+model CommunicationWalletTransaction {
+  id               String   @id @default(uuid())
+  tenantId         String
+  walletId         String
+  type             String   // CREDIT, DEBIT, REFUND, ADJUSTMENT
+  amount           Decimal  @db.Decimal(12, 4)
+  balanceBefore    Decimal  @db.Decimal(12, 4)
+  balanceAfter     Decimal  @db.Decimal(12, 4)
+  reference        String   @unique // Idempotency key
+  paymentReference String?  // External payment ref or campaignId
+  channel          String?  // SMS, WHATSAPP, EMAIL
+  description      String
+  status           String   @default("SUCCESS") // PENDING, SUCCESS, FAILED, REVERSED
+  metadata         Json?
+  createdAt        DateTime @default(now())
+
+  tenant Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  wallet CommunicationWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, walletId])
+  @@index([tenantId, type])
+  @@index([tenantId, createdAt])
+  @@index([paymentReference])
+}
+
+model CommunicationSettings {
+  id                      String   @id @default(uuid())
+  tenantId                String   @unique
+  inAppEnabled            Boolean  @default(true)
+  pushEnabled             Boolean  @default(true)
+  emailEnabled            Boolean  @default(true)
+  whatsappEnabled         Boolean  @default(false)
+  smsEnabled              Boolean  @default(false)
+  walletEnabled           Boolean  @default(false)
+  monthlySpendingLimit    Decimal  @default(50000.0) @db.Decimal(12, 2)
+  lowBalanceThreshold     Decimal  @default(2000.0) @db.Decimal(12, 2)
+  autoTopUpEnabled        Boolean  @default(false)
+  autoTopUpAmount         Decimal? @db.Decimal(12, 2)
+  smsUnitCost             Decimal  @default(4.0) @db.Decimal(8, 2)
+  whatsappUnitCost        Decimal  @default(8.5) @db.Decimal(8, 2)
+  feeReminderChannels     Json?    // ["IN_APP", "PUSH", "EMAIL"]
+  attendanceAlertChannels Json?    // ["IN_APP", "PUSH"]
+  resultsChannels         Json?    // ["IN_APP", "PUSH", "EMAIL"]
+  homeworkChannels        Json?    // ["IN_APP", "PUSH"]
+  emergencyChannels       Json?    // ["IN_APP", "PUSH", "EMAIL", "WHATSAPP", "SMS"]
+  transportChannels       Json?    // ["IN_APP", "PUSH", "SMS"]
+  generalNoticeChannels   Json?    // ["IN_APP", "PUSH"]
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+model MessageTemplate {
+  id              String   @id @default(uuid())
+  tenantId        String?  // null for global templates, tenantId for custom overrides
+  name            String
+  category        String   // FEE_REMINDER, ATTENDANCE_ALERT, RESULT_PUBLICATION, HOMEWORK, EMERGENCY, GENERAL, ADMISSION
+  channels        Json     // ["IN_APP", "SMS", "EMAIL", "WHATSAPP"]
+  subjectTemplate String?
+  bodyTemplate    String   @db.Text
+  variables       Json     // Array of variable keys: ["parentName", "studentName", "amount", "dueDate"]
+  isSystemDefault Boolean  @default(false)
+  isActive        Boolean  @default(true)
+  currentVersion  Int      @default(1)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant    Tenant?                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  versions  MessageTemplateVersion[]
+  campaigns CommunicationCampaign[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, category])
+  @@index([tenantId, isActive])
+}
+
+model MessageTemplateVersion {
+  id              String   @id @default(uuid())
+  templateId      String
+  tenantId        String?
+  version         Int
+  subjectTemplate String?
+  bodyTemplate    String   @db.Text
+  variables       Json
+  changedByUserId String?
+  changeSummary   String?
+  createdAt       DateTime @default(now())
+
+  template MessageTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, version])
+  @@index([tenantId])
+  @@index([templateId])
+}
+
+model CommunicationCampaign {
+  id               String    @id @default(uuid())
+  tenantId         String
+  authorId         String
+  templateId       String?
+  title            String
+  content          String    @db.Text
+  subject          String?
+  channels         Json      // ["IN_APP", "SMS", "EMAIL"]
+  audienceType     String    // ALL_PARENTS, CLASS_PARENTS, FEE_DEBTORS, ALL_STAFF, etc.
+  audienceCriteria Json?     // { classId, termId, minBalance, etc. }
+  priority         String    @default("NORMAL") // LOW, NORMAL, HIGH, URGENT
+  status           String    @default("DRAFT")  // DRAFT, SCHEDULED, PROCESSING, COMPLETED, PARTIALLY_FAILED, FAILED, CANCELLED
+  scheduledAt      DateTime?
+  totalRecipients  Int       @default(0)
+  deliveredCount   Int       @default(0)
+  failedCount      Int       @default(0)
+  totalCost        Decimal   @default(0.0) @db.Decimal(12, 4)
+  channelBreakdown Json?     // Detailed progress per channel
+  completedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  tenant        Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template      MessageTemplate?            @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  recipientLogs CommunicationRecipientLog[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, scheduledAt])
+}
+
+model CommunicationRecipientLog {
+  id              String              @id @default(uuid())
+  tenantId        String
+  campaignId      String?
+  recipientUserId String?
+  recipientType   String              // PARENT, STUDENT, STAFF, GUARDIAN
+  recipientName   String?
+  recipientPhone  String?
+  recipientEmail  String?
+  channel         NotificationChannel
+  messageContent  String              @db.Text
+  cost            Decimal             @default(0.0) @db.Decimal(8, 4)
+  status          String              @default("QUEUED") // QUEUED, PROCESSING, SIMULATED, SENT, DELIVERED, FAILED, BOUNCED, UNDELIVERED, REJECTED, SKIPPED
+  providerId      String?             // External gateway ID or mock simulation reference
+  failureReason   String?
+  sentAt          DateTime?
+  deliveredAt     DateTime?
+  metadata        Json?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  tenant   Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaign CommunicationCampaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, campaignId])
+  @@index([tenantId, recipientUserId])
+  @@index([tenantId, channel, status])
+  @@index([providerId])
+  @@index([createdAt])
+}
+
+model InAppInboxItem {
+  id              String    @id @default(uuid())
+  tenantId        String
+  recipientUserId String
+  notificationId  String?   // Root notification / announcement reference if broadcasted
+  campaignId      String?   // Originating campaign reference
+  title           String
+  message         String    @db.Text
+  priority        String    @default("NORMAL") // LOW, NORMAL, HIGH, URGENT
+  category        String    @default("GENERAL") // ANNOUNCEMENT, FEE_REMINDER, RESULT, ATTENDANCE, HOMEWORK, EMERGENCY
+  actionUrl       String?   // Deep-link to report card, invoice, etc.
+  isRead          Boolean   @default(false)
+  readAt          DateTime?
+  archivedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [recipientUserId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, recipientUserId, isRead])
+  @@index([tenantId, recipientUserId, createdAt])
+  @@index([tenantId, isRead])
 }
 
 model FileAsset {
@@ -3036,6 +3429,8 @@ model WebsiteConfig {
   seoTitle          String?
   seoDescription    String?
   seoKeywords       String?
+  colorPalette      Json?
+  colorAssignments  Json?
   isPublished       Boolean  @default(true)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt

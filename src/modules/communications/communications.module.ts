@@ -9,9 +9,10 @@ import { CommunicationWalletService } from './services/communication-wallet.serv
 import { CommunicationPaystackService } from './services/communication-paystack.service.js';
 import { CampaignService } from './services/campaign.service.js';
 import { PaymentsModule } from '../payments/payments.module.js';
+import { NotificationsModule } from '../notifications/notifications.module.js';
 
 @Module({
-  imports: [PaymentsModule],
+  imports: [PaymentsModule, NotificationsModule],
   controllers: [CommunicationsController, CommunicationWalletController],
   providers: [
     CommunicationsService,

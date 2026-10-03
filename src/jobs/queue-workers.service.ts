@@ -26,16 +26,32 @@ export class QueueWorkersService implements OnModuleInit, OnModuleDestroy {
    * Executes a job through its registered processor directly (used in fallback/testing mode)
    */
   async executeJob(queueName: string, jobData: { id: string; name: string; data: any }): Promise<any> {
-    const { id, data } = jobData;
+    const { id, name, data } = jobData;
+    const envelope = data && data.tenantId ? data : null;
+    const actualData = envelope
+      ? {
+          ...(envelope.data || {}),
+          tenantId: envelope.tenantId,
+          reportType: envelope.data?.reportType || envelope.name || name || 'report',
+          channel:
+            envelope.data?.channel ||
+            (envelope.name === 'send-sms'
+              ? 'sms'
+              : envelope.name === 'send-whatsapp'
+              ? 'whatsapp'
+              : 'email'),
+        }
+      : data;
+
     switch (queueName) {
       case QUEUES.NOTIFICATIONS:
-        return await this.notificationProcessor.process({ id, data });
+        return await this.notificationProcessor.process({ id, data: actualData });
       case QUEUES.REPORTS:
-        return await this.reportProcessor.process({ id, data });
+        return await this.reportProcessor.process({ id, data: actualData });
       case QUEUES.IMPORT_EXPORT:
-        return await this.importExportProcessor.process({ id, data });
+        return await this.importExportProcessor.process({ id, data: actualData });
       case QUEUES.PAYMENT_RECONCILE:
-        return await this.paymentReconcileProcessor.process({ id, data });
+        return await this.paymentReconcileProcessor.process({ id, data: actualData });
       default:
         throw new Error(`Unknown queue: ${queueName}`);
     }

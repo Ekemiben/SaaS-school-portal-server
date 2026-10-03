@@ -209,9 +209,26 @@ export class ReportCardService {
 
         // Queue parent notification if requested
         if (dto.notifyParents && this.queueService) {
-          const parent = Array.from(this.prisma.memoryStore.parents.values()).find(
-            (p: any) => p.tenantId === tenantId && p.studentId === student.id,
-          );
+          let parent: any = null;
+          if (this.prisma.isDbConnected) {
+            try {
+              const sp = await this.prisma.studentParent.findFirst({
+                where: { studentId: student.id },
+                include: { parent: true },
+              });
+              parent = sp?.parent;
+            } catch {}
+          }
+          if (!parent) {
+            const memoryParent = Array.from(this.prisma.memoryStore.parents.values()).find(
+              (p: any) =>
+                p.tenantId === tenantId &&
+                ((p.linkedWards && p.linkedWards.some((w: any) => (w.id === student.id || w.studentId === student.id))) ||
+                  p.studentId === student.id),
+            );
+            parent = memoryParent;
+          }
+
           await this.queueService.dispatch(
             QUEUES.NOTIFICATIONS,
             JOB_TYPES.SEND_EMAIL,

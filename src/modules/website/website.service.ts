@@ -23,6 +23,70 @@ export class WebsiteService {
   // 1. PUBLIC READ-ONLY WEBSITE SERVICES
   // ==========================================
 
+  private resolveTheme(
+    config?: { colorPalette?: any; colorAssignments?: any } | null,
+    tenantPrimary?: string | null,
+    tenantSecondary?: string | null,
+  ) {
+    const primary = tenantPrimary || '#0f172a';
+    const secondary = tenantSecondary || '#3b82f6';
+
+    const defaultRoleColors: Record<string, string> = {
+      topBarBg: primary,
+      topBarText: '#ffffff',
+      navbarBg: '#ffffff',
+      navbarText: '#0f172a',
+      primaryCtaBg: secondary,
+      primaryCtaText: '#ffffff',
+      secondaryCtaBg: primary,
+      secondaryCtaText: '#ffffff',
+      heroBg: primary,
+      heroText: '#ffffff',
+      footerBg: primary,
+      footerText: '#ffffff',
+      landingBackground: '#f8fafc',
+      headingText: '#0f172a',
+      bodyText: '#334155',
+      cardBg: '#ffffff',
+      cardBorder: '#e2e8f0',
+    };
+
+    const rawPalette = Array.isArray(config?.colorPalette) ? config.colorPalette : [];
+    const paletteMap = new Map<string, string>();
+    for (const item of rawPalette) {
+      if (item && typeof item === 'object' && item.id && item.hex) {
+        paletteMap.set(String(item.id), String(item.hex));
+      }
+    }
+
+    const rawAssignments =
+      config?.colorAssignments && typeof config.colorAssignments === 'object'
+        ? (config.colorAssignments as Record<string, any>)
+        : {};
+
+    const resolved: Record<string, string> = {};
+    for (const [role, defaultHex] of Object.entries(defaultRoleColors)) {
+      const assignedRef = rawAssignments[role];
+      if (assignedRef) {
+        if (paletteMap.has(assignedRef)) {
+          resolved[role] = paletteMap.get(assignedRef)!;
+        } else if (typeof assignedRef === 'string' && /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(assignedRef)) {
+          resolved[role] = assignedRef;
+        } else {
+          resolved[role] = defaultHex;
+        }
+      } else {
+        resolved[role] = defaultHex;
+      }
+    }
+
+    return {
+      colorPalette: rawPalette,
+      colorAssignments: rawAssignments,
+      resolvedTheme: resolved,
+    };
+  }
+
   async getPublicConfig(tenantId: string) {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
@@ -45,6 +109,8 @@ export class WebsiteService {
     }
 
     const config = tenant.websiteConfig;
+    const theme = this.resolveTheme(config, tenant.primaryColor, tenant.secondaryColor);
+
     return {
       schoolName: tenant.name,
       slug: tenant.slug,
@@ -52,6 +118,9 @@ export class WebsiteService {
       faviconUrl: tenant.faviconUrl,
       primaryColor: tenant.primaryColor || '#0f172a',
       secondaryColor: tenant.secondaryColor || '#3b82f6',
+      colorPalette: theme.colorPalette,
+      colorAssignments: theme.colorAssignments,
+      resolvedTheme: theme.resolvedTheme,
       motto: config?.motto || '',
       tagline: config?.tagline || '',
       aboutStory: config?.aboutStory || '',
@@ -281,33 +350,77 @@ export class WebsiteService {
   // ==========================================
 
   async getAdminConfig(tenantId: string) {
-    let config = await this.prisma.websiteConfig.findUnique({
+    let config = (await this.prisma.websiteConfig.findUnique({
       where: { tenantId },
-    });
+      include: {
+        tenant: {
+          select: {
+            primaryColor: true,
+            secondaryColor: true,
+          },
+        },
+      },
+    })) as any;
 
     if (!config) {
-      config = await this.prisma.websiteConfig.create({
+      config = (await this.prisma.websiteConfig.create({
         data: {
           tenantId,
           isPublished: true,
         },
-      });
+        include: {
+          tenant: {
+            select: {
+              primaryColor: true,
+              secondaryColor: true,
+            },
+          },
+        },
+      })) as any;
     }
 
-    return config;
+    const theme = this.resolveTheme(config, config.tenant?.primaryColor, config.tenant?.secondaryColor);
+
+    return {
+      ...config,
+      resolvedTheme: theme.resolvedTheme,
+    };
   }
 
   async updateAdminConfig(tenantId: string, dto: UpdateWebsiteConfigDto) {
-    return this.prisma.websiteConfig.upsert({
+    const data: any = { ...dto };
+    if (dto.colorPalette !== undefined) {
+      data.colorPalette = dto.colorPalette as any;
+    }
+    if (dto.colorAssignments !== undefined) {
+      data.colorAssignments = dto.colorAssignments as any;
+    }
+
+    const updated = (await this.prisma.websiteConfig.upsert({
       where: { tenantId },
       create: {
         tenantId,
-        ...dto,
+        ...data,
       },
       update: {
-        ...dto,
+        ...data,
       },
-    });
+      include: {
+        tenant: {
+          select: {
+            primaryColor: true,
+            secondaryColor: true,
+          },
+        },
+      },
+    })) as any;
+
+    const theme = this.resolveTheme(updated, updated.tenant?.primaryColor, updated.tenant?.secondaryColor);
+
+    return {
+      ...updated,
+      resolvedTheme: theme.resolvedTheme,
+    };
   }
 
   async getAdminPages(tenantId: string) {
