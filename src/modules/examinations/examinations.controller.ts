@@ -66,6 +66,53 @@ export class ExaminationsController {
     return this.examinationsService.publish(tenant.tenantId, id);
   }
 
+  // --- Examination Halls ---
+  @RequirePermissions(SystemPermissions.EXAMINATIONS_MANAGE)
+  @Get('halls')
+  async listExamHalls(
+    @CurrentTenant() tenant: TenantContext,
+    @Query('campusId') campusId?: string,
+  ) {
+    return this.examinationsService.listExamHalls(tenant.tenantId, campusId);
+  }
+
+  @RequirePermissions(SystemPermissions.EXAMINATIONS_MANAGE)
+  @Get('halls/:id')
+  async getExamHall(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.examinationsService.getExamHallById(tenant.tenantId, id);
+  }
+
+  @RequirePermissions(SystemPermissions.EXAMINATIONS_MANAGE)
+  @Post('halls')
+  async createExamHall(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() body: any,
+  ) {
+    return this.examinationsService.createExamHall(tenant.tenantId, body);
+  }
+
+  @RequirePermissions(SystemPermissions.EXAMINATIONS_MANAGE)
+  @Patch('halls/:id')
+  async updateExamHall(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    return this.examinationsService.updateExamHall(tenant.tenantId, id, body);
+  }
+
+  @RequirePermissions(SystemPermissions.EXAMINATIONS_MANAGE)
+  @Delete('halls/:id')
+  async deleteExamHall(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.examinationsService.deleteExamHall(tenant.tenantId, id);
+  }
+
   // --- Exam Papers ---
   @RequirePermissions(SystemPermissions.EXAMINATIONS_MANAGE)
   @Post(':id/papers')

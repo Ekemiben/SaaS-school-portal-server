@@ -6,9 +6,11 @@ import { DebtRecoveryService } from './services/debt-recovery.service.js';
 import { PaymentPlanService } from './services/payment-plan.service.js';
 import { FilesModule } from '../files/files.module.js';
 import { QueuesModule } from '../../jobs/queues.module.js';
+import { CommunicationsModule } from '../communications/communications.module.js';
+import { NotificationsModule } from '../notifications/notifications.module.js';
 
 @Module({
-  imports: [FilesModule, QueuesModule],
+  imports: [FilesModule, QueuesModule, CommunicationsModule, NotificationsModule],
   controllers: [FeesController],
   providers: [
     FeesService,

@@ -24,7 +24,11 @@ export class ImportExportWorker implements OnModuleInit {
       QUEUES.IMPORT_EXPORT,
       async (job: { id: string; name: string; data: JobEnvelope }) => {
         return this.workerContext.runWithTenantContext(job.data, async (payload) => {
-          const actualData = payload?.data || payload;
+          const envelope = job.data;
+          const actualData = {
+            ...(payload?.data || payload || {}),
+            tenantId: payload?.tenantId || envelope?.tenantId,
+          };
           return this.processor.process({ id: job.id, data: actualData });
         });
       },

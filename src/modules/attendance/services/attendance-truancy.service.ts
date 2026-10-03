@@ -218,6 +218,67 @@ export class AttendanceTruancyService {
           },
         },
       );
+
+      // Create persistent in-app inbox item for parent user
+      let parentUserId: string | null = null;
+      if (student.parents && student.parents.length > 0) {
+        parentUserId = student.parents[0]?.parent?.userId || null;
+      }
+      if (!parentUserId && parentContact?.email) {
+        if (this.prisma.isDbConnected) {
+          try {
+            const parentRec = await this.prisma.parent.findFirst({
+              where: { tenantId, email: parentContact.email },
+              select: { userId: true },
+            });
+            parentUserId = parentRec?.userId || null;
+          } catch {}
+        }
+        if (!parentUserId) {
+          const p = Array.from(this.prisma.memoryStore.parents.values()).find(
+            (parent: any) => parent.tenantId === tenantId && parent.email === parentContact?.email,
+          ) as any;
+          parentUserId = p?.userId || null;
+        }
+      }
+
+      if (parentUserId) {
+        const notifId = `inbox_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
+        const now = new Date();
+        if (this.prisma.isDbConnected) {
+          try {
+            await this.prisma.inAppInboxItem.create({
+              data: {
+                id: notifId,
+                tenantId,
+                recipientUserId: parentUserId,
+                title: subject,
+                message: body,
+                priority: details.type === 'TRUANCY_WARNING' ? 'URGENT' : 'HIGH',
+                category: 'ATTENDANCE',
+                isRead: false,
+                createdAt: now,
+                updatedAt: now,
+              },
+            });
+          } catch {}
+        } else {
+          this.prisma.memoryStore.inboxItems.set(notifId, {
+            id: notifId,
+            tenantId,
+            recipientUserId: parentUserId,
+            title: subject,
+            message: body,
+            priority: details.type === 'TRUANCY_WARNING' ? 'URGENT' : 'HIGH',
+            category: 'ATTENDANCE',
+            isRead: false,
+            readAt: null,
+            archivedAt: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+      }
     } catch (err: any) {
       // Fault isolation: notification errors must NEVER break attendance recording
       this.logger.warn(`Non-blocking notification dispatch failure for student ${student.id}: ${err.message}`);

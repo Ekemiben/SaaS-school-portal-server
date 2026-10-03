@@ -29,12 +29,22 @@ export class FeesService {
 
         const dbStructures = await this.prisma.feeStructure.findMany({
           where: whereClause,
+          include: {
+            class: true,
+            term: true,
+            academicYear: true,
+            campus: true,
+          },
           orderBy: { createdAt: 'desc' },
         });
 
         if (dbStructures.length > 0) {
           return dbStructures.map((f) => ({
             ...f,
+            className: f.class?.name || f.applicableGradeLevel || 'All Classes',
+            termName: f.term?.name || null,
+            sessionName: f.academicYear?.name || null,
+            campusName: f.campus?.name || null,
             items: Array.isArray(f.items) ? f.items : [],
           }));
         }
@@ -723,6 +733,34 @@ export class FeesService {
             status: status as any,
           },
         });
+
+        // Dispatch In-App Parent Alert
+        try {
+          const studentParents = await this.prisma.studentParent.findMany({
+            where: { studentId, student: { tenantId } },
+            include: { parent: { include: { user: true } } },
+          });
+
+          for (const sp of studentParents) {
+            const parentUserId = sp.parent?.userId || sp.parent?.user?.id;
+            if (parentUserId) {
+              await this.prisma.inAppInboxItem.create({
+                data: {
+                  id: `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                  tenantId,
+                  recipientUserId: parentUserId,
+                  category: 'FEE_REMINDER',
+                  priority: 'HIGH',
+                  title: `New School Fee Invoice: ${invoiceNumber}`,
+                  message: `Invoice ${invoiceNumber} of ${invoiceObj.currency || 'NGN'} ${totalAmount.toLocaleString()} has been issued for ${invoiceObj.student}. Due date: ${typeof dueDate === 'string' ? dueDate : dueDate?.toISOString?.().split('T')[0]}.`,
+                  actionUrl: '/parent',
+                  isRead: false,
+                },
+              });
+            }
+          }
+        } catch {}
+
         this.prisma.memoryStore.invoices.set(id, { ...invoiceObj, ...createdInv });
         return {
           ...invoiceObj,
@@ -739,6 +777,31 @@ export class FeesService {
     }
 
     this.prisma.memoryStore.invoices.set(id, invoiceObj);
+
+    // Fallback in-memory parent alert
+    const memory = this.prisma.memoryStore as any;
+    const sps = Array.from(memory.studentParents?.values() || []).filter(
+      (sp: any) => sp.studentId === studentId,
+    );
+    for (const sp of sps as any[]) {
+      const parent = memory.parents?.get(sp.parentId);
+      const parentUserId = parent?.userId || `usr_${parent?.id}`;
+      if (parentUserId) {
+        const inbId = `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+        memory.inboxItems?.set(inbId, {
+          id: inbId,
+          tenantId,
+          userId: parentUserId,
+          category: 'FEE_INVOICE',
+          title: `New School Fee Invoice: ${invoiceNumber}`,
+          body: `Invoice ${invoiceNumber} of ${invoiceObj.currency || 'NGN'} ${totalAmount.toLocaleString()} has been issued for ${invoiceObj.student}.`,
+          metadata: { invoiceId: id, invoiceNumber, totalAmount, studentId, studentName: invoiceObj.student },
+          isRead: false,
+          createdAt: new Date(),
+        });
+      }
+    }
+
     return {
       ...invoiceObj,
       amount: totalAmount,

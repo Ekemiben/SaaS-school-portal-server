@@ -52,5 +52,12 @@ export class SendDirectMessageDto {
 
   @IsString()
   @IsOptional()
+  subject?: string;
+
+  @IsString()
+  @IsOptional()
   threadId?: string;
+
+  @IsOptional()
+  attachments?: any;
 }

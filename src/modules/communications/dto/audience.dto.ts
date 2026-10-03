@@ -12,9 +12,11 @@ export enum AudienceType {
   ALL_STUDENTS = 'ALL_STUDENTS',
   ALL_TEACHERS = 'ALL_TEACHERS',
   ALL_STAFF = 'ALL_STAFF',
+  CLASS_PARENTS = 'CLASS_PARENTS',
   SELECTED_CAMPUS = 'SELECTED_CAMPUS',
   SELECTED_CLASS = 'SELECTED_CLASS',
   SELECTED_CLASSES = 'SELECTED_CLASSES',
+  FEE_DEBTORS = 'FEE_DEBTORS',
   STUDENTS_OUTSTANDING_FEES = 'STUDENTS_OUTSTANDING_FEES',
   PARENTS_OUTSTANDING_FEES = 'PARENTS_OUTSTANDING_FEES',
   STUDENTS_ABSENT_TODAY = 'STUDENTS_ABSENT_TODAY',
@@ -46,6 +48,10 @@ export class ResolveAudienceDto {
   @IsOptional()
   routeId?: string;
 
+  @IsString()
+  @IsOptional()
+  examinationId?: string;
+
   @IsArray()
   @IsString({ each: true })
   @IsOptional()
@@ -60,4 +66,5 @@ export interface RecipientInfo {
   role: 'PARENT' | 'STUDENT' | 'TEACHER' | 'STAFF' | 'ADMIN';
   studentId?: string;
   studentName?: string;
+  balanceAmount?: number;
 }

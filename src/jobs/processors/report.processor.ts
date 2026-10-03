@@ -20,18 +20,23 @@ export class ReportProcessor {
   ) {}
 
   async process(job: { id: string; data: ReportJobData }) {
-    this.logger.log(`Processing asynchronous report ${job.data.reportType} for tenant ${job.data.tenantId}`);
+    const rawData = job.data as any;
+    const tenantId = rawData?.tenantId || rawData?.parameters?.tenantId || 'global';
+    const reportType = rawData?.reportType || rawData?.name || 'report';
+
+    this.logger.log(`Processing asynchronous report ${reportType} for tenant ${tenantId}`);
     
     let downloadUrl: string;
     let artifactKey: string;
 
-    if (this.storageService) {
+    if (this.storageService && tenantId && tenantId !== 'undefined') {
       const mockPdfBuffer = Buffer.from(
-        `%PDF-1.4 Mock Report: ${job.data.reportType} for Tenant ${job.data.tenantId}`,
+        `%PDF-1.4 Mock Report: ${reportType} for Tenant ${tenantId}`,
       );
-      const fileName = `${job.data.reportType}_${Date.now()}.pdf`;
+      const safeReportName = String(reportType).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const fileName = `${safeReportName}_${Date.now()}.pdf`;
       const uploadResult = await this.storageService.uploadBuffer(
-        job.data.tenantId,
+        tenantId,
         'reports',
         fileName,
         mockPdfBuffer,
@@ -39,12 +44,12 @@ export class ReportProcessor {
       );
       artifactKey = uploadResult.storageKey;
       downloadUrl = await this.storageService.getDownloadPresignedUrl(
-        job.data.tenantId,
+        tenantId,
         artifactKey,
         fileName,
       );
     } else {
-      artifactKey = `tenants/${job.data.tenantId}/reports/${job.data.reportType}_${Date.now()}.pdf`;
+      artifactKey = `tenants/${tenantId}/reports/${reportType}_${Date.now()}.pdf`;
       downloadUrl = `https://storage.schoolportal.io/${artifactKey}`;
     }
 

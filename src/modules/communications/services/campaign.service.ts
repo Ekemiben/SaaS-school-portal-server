@@ -1,9 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service.js';
 import { AudienceService } from './audience.service.js';
 import { MessageTemplateService } from './message-template.service.js';
 import { CommunicationPolicyService } from './communication-policy.service.js';
 import { CommunicationWalletService } from './communication-wallet.service.js';
+import { NotificationsService } from '../../notifications/notifications.service.js';
 import { NotificationProcessor } from '../../../jobs/processors/notification.processor.js';
 import {
   CreateCampaignDto,
@@ -20,7 +21,7 @@ export interface ChannelDeliverySummary {
   delivered: number;
   failed: number;
   cost: number;
-  status: 'DELIVERED' | 'FAILED' | 'SKIPPED_INSUFFICIENT_BALANCE' | 'DISABLED';
+  status: 'DELIVERED' | 'FAILED' | 'PARTIALLY_FAILED' | 'SKIPPED_INSUFFICIENT_BALANCE' | 'DISABLED';
   reason?: string;
 }
 
@@ -28,23 +29,51 @@ export interface CampaignRecord {
   id: string;
   tenantId: string;
   authorId: string;
+  templateId?: string | null;
   title: string;
   content: string;
+  subject?: string | null;
   channels: CampaignChannel[];
+  audienceType: string;
+  audienceCriteria?: any;
   priority: CampaignPriority;
   status: CampaignStatus;
+  scheduledAt?: string | null;
   totalRecipients: number;
   deliveredCount: number;
   failedCount: number;
   totalCost: number;
   channelBreakdown: ChannelDeliverySummary[];
+  completedAt?: string | null;
   createdAt: string;
+  updatedAt: string;
+}
+
+export interface RecipientLogRecord {
+  id: string;
+  tenantId: string;
+  campaignId?: string | null;
+  recipientUserId?: string | null;
+  recipientType: string;
+  recipientName?: string | null;
+  recipientPhone?: string | null;
+  recipientEmail?: string | null;
+  channel: CampaignChannel;
+  messageContent: string;
+  cost: number;
+  status: 'QUEUED' | 'PROCESSING' | 'SIMULATED' | 'SENT' | 'DELIVERED' | 'FAILED' | 'SKIPPED';
+  providerId?: string | null;
+  failureReason?: string | null;
+  sentAt?: string | null;
+  deliveredAt?: string | null;
+  metadata?: any;
+  createdAt: string;
+  updatedAt: string;
 }
 
 @Injectable()
 export class CampaignService {
   private readonly logger = new Logger(CampaignService.name);
-  private readonly fallbackCampaigns: CampaignRecord[] = [];
 
   constructor(
     private readonly prisma: PrismaService,
@@ -52,7 +81,8 @@ export class CampaignService {
     private readonly templateService: MessageTemplateService,
     private readonly policyService: CommunicationPolicyService,
     private readonly walletService: CommunicationWalletService,
-    private readonly notificationProcessor: NotificationProcessor,
+    @Optional() private readonly notificationsService?: NotificationsService,
+    @Optional() private readonly notificationProcessor?: NotificationProcessor,
   ) {}
 
   async createAndDispatchCampaign(
@@ -62,135 +92,509 @@ export class CampaignService {
   ): Promise<CampaignRecord> {
     const recipients = await this.audienceService.resolveAudience(tenantId, dto.audience);
     const settings = await this.policyService.getSettings(tenantId);
-    const targetChannels = dto.channels && dto.channels.length > 0
-      ? dto.channels
-      : await this.policyService.resolveEffectiveChannels(tenantId, undefined, 'GENERAL');
+    const targetChannels: CampaignChannel[] =
+      dto.channels && dto.channels.length > 0
+        ? dto.channels
+        : await this.policyService.resolveEffectiveChannels(tenantId, undefined, 'GENERAL');
 
-    let content = dto.content;
-    let title = dto.title;
+    let defaultContent = dto.content;
+    let defaultTitle = dto.title;
+    let template: any = null;
+
     if (dto.templateId) {
-      const tmpl = await this.templateService.getTemplateById(tenantId, dto.templateId);
-      content = this.templateService.render(tmpl.bodyTemplate, dto.templateVariables || {});
-      title = this.templateService.render(tmpl.subjectTemplate, dto.templateVariables || {});
+      template = await this.templateService.getTemplateById(tenantId, dto.templateId);
+      if (template) {
+        defaultContent = this.templateService.render(template.bodyTemplate, dto.templateVariables || {});
+        defaultTitle = this.templateService.render(template.subjectTemplate, dto.templateVariables || {});
+      }
     }
 
+    const campaignId = `cmp_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
+    const now = new Date();
+    const scheduledDate = dto.scheduledFor ? new Date(dto.scheduledFor) : null;
+    const isScheduled = dto.sendImmediately === false || (scheduledDate && scheduledDate > now);
+
+    if (isScheduled) {
+      const scheduledCampaign: CampaignRecord = {
+        id: campaignId,
+        tenantId,
+        authorId,
+        templateId: dto.templateId || null,
+        title: defaultTitle,
+        content: defaultContent,
+        subject: defaultTitle,
+        channels: targetChannels,
+        audienceType: dto.audience.audienceType,
+        audienceCriteria: dto.audience as any,
+        priority: dto.priority || CampaignPriority.NORMAL,
+        status: CampaignStatus.SCHEDULED,
+        scheduledAt: scheduledDate ? scheduledDate.toISOString() : null,
+        totalRecipients: recipients.length,
+        deliveredCount: 0,
+        failedCount: 0,
+        totalCost: 0,
+        channelBreakdown: [],
+        completedAt: null,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      };
+
+      let dbTemplateId: string | null = null;
+      if (this.prisma.isDbConnected && dto.templateId) {
+        try {
+          const tmplExists = await this.prisma.messageTemplate.findUnique({
+            where: { id: dto.templateId },
+          });
+          if (tmplExists) dbTemplateId = tmplExists.id;
+        } catch {}
+      }
+
+      if (this.prisma.isDbConnected) {
+        try {
+          await this.prisma.communicationCampaign.create({
+            data: {
+              id: scheduledCampaign.id,
+              tenantId: scheduledCampaign.tenantId,
+              authorId: scheduledCampaign.authorId,
+              templateId: dbTemplateId,
+              title: scheduledCampaign.title,
+              content: scheduledCampaign.content,
+              subject: scheduledCampaign.subject,
+              channels: scheduledCampaign.channels as any,
+              audienceType: scheduledCampaign.audienceType,
+              audienceCriteria: scheduledCampaign.audienceCriteria,
+              priority: scheduledCampaign.priority,
+              status: scheduledCampaign.status,
+              scheduledAt: scheduledDate,
+              totalRecipients: scheduledCampaign.totalRecipients,
+              deliveredCount: 0,
+              failedCount: 0,
+              totalCost: 0,
+              channelBreakdown: scheduledCampaign.channelBreakdown as any,
+              completedAt: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          });
+        } catch (err: any) {
+          this.logger.warn(`Could not save scheduled campaign in DB: ${err.message}`);
+        }
+      }
+
+      this.prisma.memoryStore.communicationCampaigns.set(campaignId, scheduledCampaign);
+      this.logger.log(`Scheduled campaign ${campaignId} for tenant ${tenantId} at ${scheduledDate?.toISOString()}`);
+      return scheduledCampaign;
+    }
+
+    // Immediate Execution Lifecycle
     const channelBreakdown: ChannelDeliverySummary[] = [];
+    const recipientLogs: RecipientLogRecord[] = [];
     let totalCost = 0;
-    let deliveredCount = 0;
-    let failedCount = 0;
+    let totalDelivered = 0;
+    let totalFailed = 0;
 
     for (const channel of targetChannels) {
       if (channel === CampaignChannel.IN_APP) {
         if (!settings.inAppEnabled) {
-          channelBreakdown.push({ channel, attempted: recipients.length, delivered: 0, failed: 0, cost: 0, status: 'DISABLED' });
+          channelBreakdown.push({
+            channel,
+            attempted: recipients.length,
+            delivered: 0,
+            failed: 0,
+            cost: 0,
+            status: 'DISABLED',
+            reason: 'In-app notifications are disabled in communication settings',
+          });
+          for (const r of recipients) {
+            recipientLogs.push({
+              id: `crl_${randomUUID().replace(/-/g, '').substring(0, 16)}`,
+              tenantId,
+              campaignId,
+              recipientUserId: r.userId || null,
+              recipientType: r.role || 'PARENT',
+              recipientName: r.name,
+              recipientPhone: r.phone || null,
+              recipientEmail: r.email || null,
+              channel: CampaignChannel.IN_APP,
+              messageContent: defaultContent,
+              cost: 0,
+              status: 'SKIPPED',
+              failureReason: 'In-app notifications are disabled in communication settings',
+              createdAt: now.toISOString(),
+              updatedAt: now.toISOString(),
+            });
+          }
           continue;
         }
+
+        const validUserRecipients = recipients.filter((r) => !!r.userId);
+        const inboxBatch = validUserRecipients.map((r) => {
+          const personalizedVars = {
+            parentName: r.name,
+            recipientName: r.name,
+            studentName: r.studentName || r.name,
+            amount: r.balanceAmount !== undefined ? r.balanceAmount : '',
+            balance: r.balanceAmount !== undefined ? r.balanceAmount : '',
+            ...dto.templateVariables,
+          };
+          const msgBody = template
+            ? this.templateService.render(template.bodyTemplate, personalizedVars)
+            : defaultContent;
+          const msgTitle = template
+            ? this.templateService.render(template.subjectTemplate, personalizedVars)
+            : defaultTitle;
+
+          return {
+            recipientUserId: r.userId!,
+            title: msgTitle,
+            message: msgBody,
+            priority: (dto.priority || 'NORMAL') as any,
+            category: 'ANNOUNCEMENT' as const,
+            campaignId,
+          };
+        });
+
+        if (inboxBatch.length > 0) {
+          if (this.notificationsService && typeof this.notificationsService.createBatchInboxItems === 'function') {
+            await this.notificationsService.createBatchInboxItems(tenantId, inboxBatch);
+          } else {
+            for (const item of inboxBatch) {
+              const id = `inb_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
+              const now = new Date();
+              const inAppRecord = {
+                id,
+                tenantId,
+                recipientUserId: item.recipientUserId,
+                title: item.title,
+                message: item.message,
+                priority: item.priority || 'NORMAL',
+                category: item.category || 'ANNOUNCEMENT',
+                actionUrl: null,
+                isRead: false,
+                readAt: null,
+                campaignId: item.campaignId || null,
+                createdAt: now.toISOString(),
+              };
+              if (this.prisma?.isDbConnected) {
+                try {
+                  await this.prisma.inAppInboxItem.create({
+                    data: {
+                      id,
+                      tenantId,
+                      recipientUserId: item.recipientUserId,
+                      title: item.title,
+                      message: item.message,
+                      priority: item.priority || 'NORMAL',
+                      category: item.category || 'ANNOUNCEMENT',
+                      actionUrl: null,
+                      isRead: false,
+                      readAt: null,
+                      campaignId: item.campaignId || null,
+                      createdAt: now,
+                    },
+                  });
+                } catch {}
+              }
+              this.prisma?.memoryStore?.inboxItems?.set(id, inAppRecord);
+            }
+          }
+        }
+
         for (const r of recipients) {
-          const notifId = `notif_${randomUUID().replace(/-/g, '').substring(0, 8)}`;
-          this.prisma.memoryStore.notifications.set(notifId, {
-            id: notifId,
+          const hasUser = !!r.userId;
+          const personalizedVars = {
+            parentName: r.name,
+            recipientName: r.name,
+            studentName: r.studentName || r.name,
+            amount: r.balanceAmount !== undefined ? r.balanceAmount : '',
+            balance: r.balanceAmount !== undefined ? r.balanceAmount : '',
+            ...dto.templateVariables,
+          };
+          const msgBody = template
+            ? this.templateService.render(template.bodyTemplate, personalizedVars)
+            : defaultContent;
+
+          recipientLogs.push({
+            id: `crl_${randomUUID().replace(/-/g, '').substring(0, 16)}`,
             tenantId,
+            campaignId,
             recipientUserId: r.userId || null,
-            title,
-            message: content,
-            channel: 'IN_APP',
-            status: 'SENT',
-            sentAt: new Date(),
-            createdAt: new Date(),
+            recipientType: r.role || 'PARENT',
+            recipientName: r.name,
+            recipientPhone: r.phone || null,
+            recipientEmail: r.email || null,
+            channel: CampaignChannel.IN_APP,
+            messageContent: msgBody,
+            cost: 0,
+            status: hasUser ? 'DELIVERED' : 'FAILED',
+            failureReason: hasUser ? null : 'No user account linked for in-app delivery',
+            deliveredAt: hasUser ? now.toISOString() : null,
+            createdAt: now.toISOString(),
+            updatedAt: now.toISOString(),
           });
         }
-        deliveredCount += recipients.length;
+
+        const delivered = validUserRecipients.length;
+        const failed = recipients.length - delivered;
+        totalDelivered += delivered;
+        totalFailed += failed;
+
         channelBreakdown.push({
           channel: CampaignChannel.IN_APP,
           attempted: recipients.length,
-          delivered: recipients.length,
-          failed: 0,
+          delivered,
+          failed,
           cost: 0,
-          status: 'DELIVERED',
+          status: failed === 0 ? 'DELIVERED' : delivered > 0 ? 'PARTIALLY_FAILED' : 'FAILED',
         });
       } else if (channel === CampaignChannel.PUSH) {
         if (!settings.pushEnabled) {
-          channelBreakdown.push({ channel, attempted: recipients.length, delivered: 0, failed: 0, cost: 0, status: 'DISABLED' });
+          channelBreakdown.push({
+            channel,
+            attempted: recipients.length,
+            delivered: 0,
+            failed: 0,
+            cost: 0,
+            status: 'DISABLED',
+            reason: 'Push notifications are disabled in communication settings',
+          });
           continue;
         }
-        deliveredCount += recipients.length;
+
+        const validRecipients = recipients.filter((r) => !!r.userId);
+        const delivered = validRecipients.length;
+        const failed = recipients.length - delivered;
+        totalDelivered += delivered;
+        totalFailed += failed;
+
+        for (const r of recipients) {
+          const hasUser = !!r.userId;
+          recipientLogs.push({
+            id: `crl_${randomUUID().replace(/-/g, '').substring(0, 16)}`,
+            tenantId,
+            campaignId,
+            recipientUserId: r.userId || null,
+            recipientType: r.role || 'PARENT',
+            recipientName: r.name,
+            recipientPhone: r.phone || null,
+            recipientEmail: r.email || null,
+            channel: CampaignChannel.PUSH,
+            messageContent: defaultContent,
+            cost: 0,
+            status: hasUser ? 'DELIVERED' : 'FAILED',
+            failureReason: hasUser ? null : 'No push token / user link registered',
+            deliveredAt: hasUser ? now.toISOString() : null,
+            createdAt: now.toISOString(),
+            updatedAt: now.toISOString(),
+          });
+        }
+
         channelBreakdown.push({
           channel: CampaignChannel.PUSH,
           attempted: recipients.length,
-          delivered: recipients.length,
-          failed: 0,
+          delivered,
+          failed,
           cost: 0,
-          status: 'DELIVERED',
+          status: failed === 0 ? 'DELIVERED' : delivered > 0 ? 'PARTIALLY_FAILED' : 'FAILED',
         });
       } else if (channel === CampaignChannel.EMAIL) {
         if (!settings.emailEnabled) {
-          channelBreakdown.push({ channel, attempted: recipients.length, delivered: 0, failed: 0, cost: 0, status: 'DISABLED' });
+          channelBreakdown.push({
+            channel,
+            attempted: recipients.length,
+            delivered: 0,
+            failed: 0,
+            cost: 0,
+            status: 'DISABLED',
+            reason: 'Email notifications are disabled in communication settings',
+          });
           continue;
         }
+
         const validEmails = recipients.filter((r) => !!r.email);
-        for (const r of validEmails) {
-          this.notificationProcessor.process({
-            id: `job_email_${randomUUID().substring(0, 6)}`,
-            data: {
-              channel: 'email',
-              tenantId,
-              recipient: r.email!,
-              subject: title,
-              body: content,
-            },
-          }).catch(() => {});
+        for (const r of recipients) {
+          const hasEmail = !!r.email;
+          const personalizedVars = {
+            parentName: r.name,
+            recipientName: r.name,
+            studentName: r.studentName || r.name,
+            amount: r.balanceAmount !== undefined ? r.balanceAmount : '',
+            balance: r.balanceAmount !== undefined ? r.balanceAmount : '',
+            ...dto.templateVariables,
+          };
+          const msgBody = template
+            ? this.templateService.render(template.bodyTemplate, personalizedVars)
+            : defaultContent;
+          const msgTitle = template
+            ? this.templateService.render(template.subjectTemplate, personalizedVars)
+            : defaultTitle;
+
+          if (hasEmail && this.notificationProcessor) {
+            this.notificationProcessor
+              .process({
+                id: `job_email_${randomUUID().substring(0, 6)}`,
+                data: {
+                  channel: 'email',
+                  tenantId,
+                  recipient: r.email!,
+                  subject: msgTitle,
+                  body: msgBody,
+                },
+              })
+              .catch(() => {});
+          }
+
+          recipientLogs.push({
+            id: `crl_${randomUUID().replace(/-/g, '').substring(0, 16)}`,
+            tenantId,
+            campaignId,
+            recipientUserId: r.userId || null,
+            recipientType: r.role || 'PARENT',
+            recipientName: r.name,
+            recipientPhone: r.phone || null,
+            recipientEmail: r.email || null,
+            channel: CampaignChannel.EMAIL,
+            messageContent: msgBody,
+            cost: 0,
+            status: hasEmail ? 'SENT' : 'FAILED',
+            providerId: hasEmail ? `sim_email_${randomUUID().substring(0, 8)}` : null,
+            failureReason: hasEmail ? null : 'No email address registered',
+            sentAt: hasEmail ? now.toISOString() : null,
+            deliveredAt: hasEmail ? now.toISOString() : null,
+            createdAt: now.toISOString(),
+            updatedAt: now.toISOString(),
+          });
         }
-        deliveredCount += validEmails.length;
+
+        const delivered = validEmails.length;
+        const failed = recipients.length - delivered;
+        totalDelivered += delivered;
+        totalFailed += failed;
+
         channelBreakdown.push({
           channel: CampaignChannel.EMAIL,
-          attempted: validEmails.length,
-          delivered: validEmails.length,
-          failed: recipients.length - validEmails.length,
+          attempted: recipients.length,
+          delivered,
+          failed,
           cost: 0,
-          status: 'DELIVERED',
+          status: failed === 0 ? 'DELIVERED' : delivered > 0 ? 'PARTIALLY_FAILED' : 'FAILED',
         });
       } else if (channel === CampaignChannel.SMS || channel === CampaignChannel.WHATSAPP) {
         const isEnabled = channel === CampaignChannel.SMS ? settings.smsEnabled : settings.whatsappEnabled;
         if (!isEnabled && !dto.channels?.includes(channel)) {
-          channelBreakdown.push({ channel, attempted: recipients.length, delivered: 0, failed: 0, cost: 0, status: 'DISABLED' });
+          channelBreakdown.push({
+            channel,
+            attempted: recipients.length,
+            delivered: 0,
+            failed: 0,
+            cost: 0,
+            status: 'DISABLED',
+            reason: `${channel} channel is disabled in communication settings`,
+          });
           continue;
         }
 
-        const unitCost = channel === CampaignChannel.SMS ? settings.smsUnitCost : settings.whatsappUnitCost;
+        const unitCost = Number(channel === CampaignChannel.SMS ? settings.smsUnitCost : settings.whatsappUnitCost);
         const validPhones = recipients.filter((r) => !!r.phone);
-        const requiredFunds = Number((Math.max(1, validPhones.length) * unitCost).toFixed(2));
+        const requiredFunds = Number((validPhones.length * unitCost).toFixed(2));
 
-        const debit = await this.walletService.debitWallet(
-          tenantId,
-          requiredFunds,
-          channel,
-          `Campaign dispatch: ${title}`,
-        );
+        let debitResult: { success: boolean; error?: string } = { success: true };
+        if (requiredFunds > 0) {
+          debitResult = await this.walletService.debitWallet(
+            tenantId,
+            requiredFunds,
+            channel,
+            `Campaign broadcast: ${defaultTitle} (${validPhones.length} recipients)`,
+          );
+        }
 
-        if (debit.success) {
+        if (debitResult.success) {
           totalCost += requiredFunds;
-          for (const r of validPhones) {
-            this.notificationProcessor.process({
-              id: `job_${channel.toLowerCase()}_${randomUUID().substring(0, 6)}`,
-              data: {
-                channel: channel.toLowerCase() as any,
-                tenantId,
-                recipient: r.phone!,
-                body: content,
-              },
-            }).catch(() => {});
+          for (const r of recipients) {
+            const hasPhone = !!r.phone;
+            const personalizedVars = {
+              parentName: r.name,
+              recipientName: r.name,
+              studentName: r.studentName || r.name,
+              amount: r.balanceAmount !== undefined ? r.balanceAmount : '',
+              balance: r.balanceAmount !== undefined ? r.balanceAmount : '',
+              ...dto.templateVariables,
+            };
+            const msgBody = template
+              ? this.templateService.render(template.bodyTemplate, personalizedVars)
+              : defaultContent;
+
+            if (hasPhone && this.notificationProcessor) {
+              this.notificationProcessor
+                .process({
+                  id: `job_${channel.toLowerCase()}_${randomUUID().substring(0, 6)}`,
+                  data: {
+                    channel: channel.toLowerCase() as any,
+                    tenantId,
+                    recipient: r.phone!,
+                    body: msgBody,
+                  },
+                })
+                .catch(() => {});
+            }
+
+            recipientLogs.push({
+              id: `crl_${randomUUID().replace(/-/g, '').substring(0, 16)}`,
+              tenantId,
+              campaignId,
+              recipientUserId: r.userId || null,
+              recipientType: r.role || 'PARENT',
+              recipientName: r.name,
+              recipientPhone: r.phone || null,
+              recipientEmail: r.email || null,
+              channel,
+              messageContent: msgBody,
+              cost: hasPhone ? unitCost : 0,
+              status: hasPhone ? 'SENT' : 'FAILED',
+              providerId: hasPhone ? `sim_${channel.toLowerCase()}_${randomUUID().substring(0, 8)}` : null,
+              failureReason: hasPhone ? null : 'No phone number registered',
+              sentAt: hasPhone ? now.toISOString() : null,
+              deliveredAt: hasPhone ? now.toISOString() : null,
+              createdAt: now.toISOString(),
+              updatedAt: now.toISOString(),
+            });
           }
-          deliveredCount += validPhones.length;
+
+          const delivered = validPhones.length;
+          const failed = recipients.length - delivered;
+          totalDelivered += delivered;
+          totalFailed += failed;
+
           channelBreakdown.push({
             channel,
-            attempted: validPhones.length,
-            delivered: validPhones.length,
-            failed: recipients.length - validPhones.length,
+            attempted: recipients.length,
+            delivered,
+            failed,
             cost: requiredFunds,
-            status: 'DELIVERED',
+            status: failed === 0 ? 'DELIVERED' : delivered > 0 ? 'PARTIALLY_FAILED' : 'FAILED',
           });
         } else {
-          failedCount += recipients.length;
+          totalFailed += recipients.length;
+          for (const r of recipients) {
+            recipientLogs.push({
+              id: `crl_${randomUUID().replace(/-/g, '').substring(0, 16)}`,
+              tenantId,
+              campaignId,
+              recipientUserId: r.userId || null,
+              recipientType: r.role || 'PARENT',
+              recipientName: r.name,
+              recipientPhone: r.phone || null,
+              recipientEmail: r.email || null,
+              channel,
+              messageContent: defaultContent,
+              cost: 0,
+              status: 'FAILED',
+              failureReason: debitResult.error || 'Insufficient communication balance',
+              createdAt: now.toISOString(),
+              updatedAt: now.toISOString(),
+            });
+          }
+
           channelBreakdown.push({
             channel,
             attempted: recipients.length,
@@ -198,43 +602,324 @@ export class CampaignService {
             failed: recipients.length,
             cost: 0,
             status: 'SKIPPED_INSUFFICIENT_BALANCE',
-            reason: debit.error || 'Insufficient communication balance',
+            reason: debitResult.error || 'Insufficient communication balance',
           });
         }
       }
     }
 
-    const campaign: CampaignRecord = {
-      id: `cmp_${randomUUID().replace(/-/g, '').substring(0, 8)}`,
+    // Determine final status
+    let finalStatus: CampaignStatus = CampaignStatus.COMPLETED;
+    if (recipients.length === 0) {
+      finalStatus = CampaignStatus.COMPLETED;
+    } else if (totalDelivered === 0 && totalFailed > 0) {
+      finalStatus = CampaignStatus.FAILED;
+    } else if (totalFailed > 0 && totalDelivered > 0) {
+      finalStatus = CampaignStatus.PARTIALLY_FAILED;
+    } else {
+      finalStatus = CampaignStatus.COMPLETED;
+    }
+
+    const campaignRecord: CampaignRecord = {
+      id: campaignId,
       tenantId,
       authorId,
-      title,
-      content,
+      templateId: dto.templateId || null,
+      title: defaultTitle,
+      content: defaultContent,
+      subject: defaultTitle,
       channels: targetChannels,
+      audienceType: dto.audience.audienceType,
+      audienceCriteria: dto.audience as any,
       priority: dto.priority || CampaignPriority.NORMAL,
-      status: failedCount > 0 && deliveredCount > 0 ? CampaignStatus.PARTIALLY_FAILED : CampaignStatus.COMPLETED,
+      status: finalStatus,
+      scheduledAt: null,
       totalRecipients: recipients.length,
-      deliveredCount,
-      failedCount,
-      totalCost,
+      deliveredCount: totalDelivered,
+      failedCount: totalFailed,
+      totalCost: Number(totalCost.toFixed(4)),
       channelBreakdown,
-      createdAt: new Date().toISOString(),
+      completedAt: now.toISOString(),
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
     };
 
-    this.fallbackCampaigns.push(campaign);
-    this.logger.log(`Created campaign ${campaign.id} for tenant ${tenantId}`);
-    return campaign;
+    // Persistence Layer
+    if (this.prisma.isDbConnected) {
+      try {
+        let dbTemplateId: string | null = null;
+        if (campaignRecord.templateId) {
+          try {
+            const tmplExists = await this.prisma.messageTemplate.findUnique({
+              where: { id: campaignRecord.templateId },
+            });
+            if (tmplExists) dbTemplateId = tmplExists.id;
+          } catch {}
+        }
+
+        await this.prisma.communicationCampaign.create({
+          data: {
+            id: campaignRecord.id,
+            tenantId: campaignRecord.tenantId,
+            authorId: campaignRecord.authorId,
+            templateId: dbTemplateId,
+            title: campaignRecord.title,
+            content: campaignRecord.content,
+            subject: campaignRecord.subject,
+            channels: campaignRecord.channels as any,
+            audienceType: campaignRecord.audienceType,
+            audienceCriteria: campaignRecord.audienceCriteria,
+            priority: campaignRecord.priority,
+            status: campaignRecord.status,
+            scheduledAt: null,
+            totalRecipients: campaignRecord.totalRecipients,
+            deliveredCount: campaignRecord.deliveredCount,
+            failedCount: campaignRecord.failedCount,
+            totalCost: campaignRecord.totalCost,
+            channelBreakdown: campaignRecord.channelBreakdown as any,
+            completedAt: now,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        if (recipientLogs.length > 0) {
+          await this.prisma.communicationRecipientLog.createMany({
+            data: recipientLogs.map((l) => ({
+              id: l.id,
+              tenantId: l.tenantId,
+              campaignId: l.campaignId,
+              recipientUserId: l.recipientUserId,
+              recipientType: l.recipientType,
+              recipientName: l.recipientName,
+              recipientPhone: l.recipientPhone,
+              recipientEmail: l.recipientEmail,
+              channel: l.channel as any,
+              messageContent: l.messageContent,
+              cost: l.cost,
+              status: l.status,
+              providerId: l.providerId,
+              failureReason: l.failureReason,
+              sentAt: l.sentAt ? new Date(l.sentAt) : null,
+              deliveredAt: l.deliveredAt ? new Date(l.deliveredAt) : null,
+              createdAt: now,
+              updatedAt: now,
+            })),
+          });
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not persist campaign & recipient logs in DB: ${err.message}`);
+      }
+    }
+
+    // Save in Memory Store
+    this.prisma.memoryStore.communicationCampaigns.set(campaignId, campaignRecord);
+    for (const log of recipientLogs) {
+      this.prisma.memoryStore.communicationRecipientLogs.set(log.id, log);
+    }
+
+    this.logger.log(
+      `Dispatched campaign ${campaignId} for tenant ${tenantId} (Status: ${finalStatus}, Delivered: ${totalDelivered}, Failed: ${totalFailed}, Cost: ₦${totalCost})`,
+    );
+    return campaignRecord;
   }
 
   async listCampaigns(tenantId: string, filter?: CampaignFilterDto): Promise<CampaignRecord[]> {
-    let results = this.fallbackCampaigns.filter((c) => c.tenantId === tenantId);
+    if (this.prisma.isDbConnected) {
+      try {
+        const where: any = { tenantId };
+        if (filter?.status) {
+          where.status = filter.status;
+        }
+
+        const rows = await this.prisma.communicationCampaign.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+        });
+
+        return rows.map((r) => ({
+          id: r.id,
+          tenantId: r.tenantId,
+          authorId: r.authorId,
+          templateId: r.templateId,
+          title: r.title,
+          content: r.content,
+          subject: r.subject,
+          channels: r.channels as any,
+          audienceType: r.audienceType,
+          audienceCriteria: r.audienceCriteria,
+          priority: r.priority as any,
+          status: r.status as any,
+          scheduledAt: r.scheduledAt ? r.scheduledAt.toISOString() : null,
+          totalRecipients: r.totalRecipients,
+          deliveredCount: r.deliveredCount,
+          failedCount: r.failedCount,
+          totalCost: Number(r.totalCost),
+          channelBreakdown: r.channelBreakdown as any,
+          completedAt: r.completedAt ? r.completedAt.toISOString() : null,
+          createdAt: r.createdAt.toISOString(),
+          updatedAt: r.updatedAt.toISOString(),
+        }));
+      } catch (err: any) {
+        this.logger.warn(`Could not list campaigns from DB: ${err.message}`);
+      }
+    }
+
+    const campaigns: CampaignRecord[] = Array.from(
+      this.prisma.memoryStore.communicationCampaigns.values(),
+    ).filter((c: CampaignRecord) => c.tenantId === tenantId);
+
+    let results = campaigns;
     if (filter?.status) {
       results = results.filter((c) => c.status === filter.status);
+    }
+    if (filter?.channel) {
+      results = results.filter((c) => c.channels?.includes(filter.channel!));
     }
     return results.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 
   async getCampaignById(tenantId: string, id: string): Promise<CampaignRecord | null> {
-    return this.fallbackCampaigns.find((c) => c.tenantId === tenantId && c.id === id) || null;
+    if (this.prisma.isDbConnected) {
+      try {
+        const r = await this.prisma.communicationCampaign.findFirst({
+          where: { tenantId, id },
+        });
+        if (r) {
+          return {
+            id: r.id,
+            tenantId: r.tenantId,
+            authorId: r.authorId,
+            templateId: r.templateId,
+            title: r.title,
+            content: r.content,
+            subject: r.subject,
+            channels: r.channels as any,
+            audienceType: r.audienceType,
+            audienceCriteria: r.audienceCriteria,
+            priority: r.priority as any,
+            status: r.status as any,
+            scheduledAt: r.scheduledAt ? r.scheduledAt.toISOString() : null,
+            totalRecipients: r.totalRecipients,
+            deliveredCount: r.deliveredCount,
+            failedCount: r.failedCount,
+            totalCost: Number(r.totalCost),
+            channelBreakdown: r.channelBreakdown as any,
+            completedAt: r.completedAt ? r.completedAt.toISOString() : null,
+            createdAt: r.createdAt.toISOString(),
+            updatedAt: r.updatedAt.toISOString(),
+          };
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not fetch campaign from DB: ${err.message}`);
+      }
+    }
+
+    const campaign = this.prisma.memoryStore.communicationCampaigns.get(id);
+    if (campaign && campaign.tenantId === tenantId) {
+      return campaign;
+    }
+    return null;
+  }
+
+  async getCampaignLogs(
+    tenantId: string,
+    campaignId: string,
+    filter?: { status?: string; channel?: string; limit?: number; offset?: number },
+  ): Promise<{ data: RecipientLogRecord[]; total: number }> {
+    const limit = filter?.limit || 50;
+    const offset = filter?.offset || 0;
+
+    if (this.prisma.isDbConnected) {
+      try {
+        const where: any = { tenantId, campaignId };
+        if (filter?.status) where.status = filter.status;
+        if (filter?.channel) where.channel = filter.channel;
+
+        const [rows, total] = await Promise.all([
+          this.prisma.communicationRecipientLog.findMany({
+            where,
+            orderBy: { createdAt: 'asc' },
+            take: limit,
+            skip: offset,
+          }),
+          this.prisma.communicationRecipientLog.count({ where }),
+        ]);
+
+        const data: RecipientLogRecord[] = rows.map((l) => ({
+          id: l.id,
+          tenantId: l.tenantId,
+          campaignId: l.campaignId,
+          recipientUserId: l.recipientUserId,
+          recipientType: l.recipientType,
+          recipientName: l.recipientName,
+          recipientPhone: l.recipientPhone,
+          recipientEmail: l.recipientEmail,
+          channel: l.channel as any,
+          messageContent: l.messageContent,
+          cost: Number(l.cost),
+          status: l.status as any,
+          providerId: l.providerId,
+          failureReason: l.failureReason,
+          sentAt: l.sentAt ? l.sentAt.toISOString() : null,
+          deliveredAt: l.deliveredAt ? l.deliveredAt.toISOString() : null,
+          metadata: l.metadata,
+          createdAt: l.createdAt.toISOString(),
+          updatedAt: l.updatedAt.toISOString(),
+        }));
+
+        return { data, total };
+      } catch (err: any) {
+        this.logger.warn(`Could not get campaign logs from DB: ${err.message}`);
+      }
+    }
+
+    let logs: RecipientLogRecord[] = Array.from(
+      this.prisma.memoryStore.communicationRecipientLogs.values(),
+    ).filter((l: RecipientLogRecord) => l.tenantId === tenantId && l.campaignId === campaignId);
+
+    if (filter?.status) {
+      logs = logs.filter((l) => l.status === filter.status);
+    }
+    if (filter?.channel) {
+      logs = logs.filter((l) => l.channel === filter.channel);
+    }
+
+    const total = logs.length;
+    const paginated = logs.slice(offset, offset + limit);
+    return { data: paginated, total };
+  }
+
+  async cancelCampaign(tenantId: string, campaignId: string): Promise<CampaignRecord> {
+    const campaign = await this.getCampaignById(tenantId, campaignId);
+    if (!campaign) {
+      throw new NotFoundException(`Campaign ${campaignId} not found`);
+    }
+
+    if (campaign.status === CampaignStatus.COMPLETED || campaign.status === CampaignStatus.PROCESSING) {
+      throw new BadRequestException(`Cannot cancel a campaign with status ${campaign.status}`);
+    }
+
+    const now = new Date();
+    campaign.status = 'CANCELLED' as any;
+    campaign.updatedAt = now.toISOString();
+
+    if (this.prisma.isDbConnected) {
+      try {
+        await this.prisma.communicationCampaign.update({
+          where: { id: campaignId },
+          data: {
+            status: 'CANCELLED',
+            updatedAt: now,
+          },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Could not update cancelled campaign in DB: ${err.message}`);
+      }
+    }
+
+    this.prisma.memoryStore.communicationCampaigns.set(campaignId, campaign);
+    this.logger.log(`Campaign ${campaignId} was cancelled for tenant ${tenantId}`);
+    return campaign;
   }
 }

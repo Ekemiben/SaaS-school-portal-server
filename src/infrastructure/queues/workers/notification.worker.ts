@@ -24,8 +24,12 @@ export class NotificationWorker implements OnModuleInit {
       QUEUES.NOTIFICATIONS,
       async (job: { id: string; name: string; data: JobEnvelope }) => {
         return this.workerContext.runWithTenantContext(job.data, async (payload) => {
-          // Normalize payload if nested under data
-          const actualData = payload?.data || payload;
+          const envelope = job.data;
+          const actualData = {
+            ...(payload?.data || payload || {}),
+            tenantId: payload?.tenantId || envelope?.tenantId,
+            channel: payload?.channel || (envelope?.name === 'send-sms' ? 'sms' : envelope?.name === 'send-whatsapp' ? 'whatsapp' : 'email'),
+          };
           return this.processor.process({ id: job.id, data: actualData });
         });
       },

@@ -1,7 +1,8 @@
-import { Controller, Get, Post, Put, Delete, Body, Query, Param } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Query, Param, ForbiddenException } from '@nestjs/common';
 import { ResultsService } from './results.service.js';
 import { AcademicSummaryService } from './services/academic-summary.service.js';
 import { ReportCardService } from './services/report-card.service.js';
+import { PrismaService } from '../../database/prisma.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
@@ -28,7 +29,76 @@ export class ResultsController {
     private readonly resultsService: ResultsService,
     private readonly academicSummaryService: AcademicSummaryService,
     private readonly reportCardService: ReportCardService,
+    private readonly prisma: PrismaService,
   ) {}
+
+  private async validateParentStudentAccess(
+    tenantId: string,
+    user: any,
+    studentId?: string,
+    examinationId?: string,
+  ) {
+    if (!user) return;
+    const userRole = user?.role || (user?.roles && user?.roles[0]);
+    if (userRole === 'PARENT') {
+      if (!studentId) {
+        throw new ForbiddenException('Student ID is required for parent access.');
+      }
+      let isLinked = false;
+      if (this.prisma.isDbConnected) {
+        try {
+          const link = await this.prisma.studentParent.findFirst({
+            where: {
+              studentId,
+              parent: {
+                tenantId,
+                OR: [
+                  { userId: user.id },
+                  ...(user.email ? [{ email: user.email.toLowerCase().trim() }] : []),
+                  ...(user.phone ? [{ phone: user.phone.trim() }] : []),
+                ],
+              },
+            },
+          });
+          isLinked = !!link;
+        } catch {}
+      }
+      if (!isLinked) {
+        const memoryParent = Array.from(this.prisma.memoryStore.parents.values()).find(
+          (p: any) =>
+            p.tenantId === tenantId &&
+            (p.userId === user.id || p.email === user.id || p.email === user.email),
+        ) as any;
+        if (memoryParent) {
+          const linkedWards = memoryParent.linkedWards || [];
+          isLinked = linkedWards.some((w: any) => w.id === studentId || w.studentId === studentId);
+        }
+      }
+
+      if (!isLinked) {
+        throw new ForbiddenException('You are not authorized to view results for this student.');
+      }
+
+      if (examinationId) {
+        let isPublished = false;
+        if (this.prisma.isDbConnected) {
+          try {
+            const exam = await this.prisma.examination.findFirst({
+              where: { id: examinationId, tenantId },
+            });
+            isPublished = !!exam?.isPublished;
+          } catch {}
+        } else {
+          const exam = this.prisma.memoryStore.examinations.get(examinationId);
+          isPublished = !!(exam && exam.tenantId === tenantId && (exam.isPublished || exam.status === 'PUBLISHED'));
+        }
+
+        if (!isPublished) {
+          throw new ForbiddenException('Results for this examination have not been published yet.');
+        }
+      }
+    }
+  }
 
   // --- Assessment Structures ---
   @Get('assessment-structures')
@@ -131,11 +201,13 @@ export class ResultsController {
   @Get()
   async listResults(
     @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
     @Query('examinationId') examinationId?: string,
     @Query('studentId') studentId?: string,
     @Query('classId') classId?: string,
     @Query('subjectId') subjectId?: string,
   ) {
+    await this.validateParentStudentAccess(tenant.tenantId, user, studentId, examinationId);
     return this.resultsService.getResults(tenant.tenantId, {
       examinationId,
       studentId,
@@ -147,18 +219,22 @@ export class ResultsController {
   @Get('report-card/:studentId/:examinationId')
   async getReportCard(
     @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
     @Param('studentId') studentId: string,
     @Param('examinationId') examinationId: string,
   ) {
+    await this.validateParentStudentAccess(tenant.tenantId, user, studentId, examinationId);
     return this.resultsService.getReportCard(tenant.tenantId, studentId, examinationId);
   }
 
   @Get('report-card/:studentId/:examinationId/print')
   async getPrintableReportCard(
     @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
     @Param('studentId') studentId: string,
     @Param('examinationId') examinationId: string,
   ) {
+    await this.validateParentStudentAccess(tenant.tenantId, user, studentId, examinationId);
     return this.resultsService.getPrintableReportCard(tenant.tenantId, studentId, examinationId);
   }
 

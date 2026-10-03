@@ -253,9 +253,22 @@ export class AuthController {
     return this.authService.verify2FA(user.id, tenant.tenantId, code);
   }
 
+  @Public()
   @Post('logout')
   async logout(@Res({ passthrough: true }) res: Response) {
-    res.clearCookie('accessToken');
+    const isProduction = process.env.NODE_ENV === 'production';
+    res.clearCookie('accessToken', {
+      path: '/',
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'lax',
+    });
+    res.clearCookie('impersonationToken', {
+      path: '/',
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'lax',
+    });
     return { success: true, message: 'Logged out successfully' };
   }
 }

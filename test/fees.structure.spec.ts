@@ -163,7 +163,7 @@ describe('Flexible Fee Structure & Component Schedules (Task 16 - Phase 8)', () 
         currency: 'NGN',
         dueDate: '2026-10-15',
         earlyBirdDiscountPercentage: 5,
-        earlyBirdCutoffDate: '2026-10-01',
+        earlyBirdCutoffDate: '2026-12-31',
         lateFeePercentage: 5,
         lateFeeGraceDays: 7,
         items: [

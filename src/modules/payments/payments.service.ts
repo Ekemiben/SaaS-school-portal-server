@@ -788,6 +788,92 @@ export class PaymentsService {
       });
     }
 
+    // Cross-Module Trigger: In-App Inbox Notification for Linked Parent(s)
+    const formattedAmount = Number(payment.amount).toLocaleString('en-NG', { minimumFractionDigits: 2 });
+    const notifTitle = `Payment Received: ${payment.reference}`;
+    const notifMessage = `Payment of ${payment.currency} ${formattedAmount} for ${payment.studentName || 'student'} has been verified and credited successfully.`;
+
+    let notifiedInDb = false;
+    if (this.prisma.isDbConnected && payment.studentId) {
+      try {
+        const studentParents = await this.prisma.studentParent.findMany({
+          where: {
+            studentId: payment.studentId,
+          },
+          include: {
+            parent: {
+              select: { userId: true },
+            },
+          },
+        });
+
+        if (studentParents.length > 0) {
+          notifiedInDb = true;
+          for (const sp of studentParents) {
+            if (sp.parent?.userId) {
+              await this.prisma.inAppInboxItem.create({
+                data: {
+                  id: `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                  tenantId,
+                  recipientUserId: sp.parent.userId,
+                  category: 'FINANCE',
+                  priority: 'HIGH',
+                  title: notifTitle,
+                  message: notifMessage,
+                  actionUrl: '/parent',
+                  isRead: false,
+                },
+              }).catch(() => {});
+            }
+          }
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not persist payment in-app inbox item: ${err.message}`);
+      }
+    }
+
+    // Memory store fallback & synchronization
+    const memory = this.prisma.memoryStore as any;
+    if (memory && (!notifiedInDb || !this.prisma.isDbConnected)) {
+      const parentUserIds = new Set<string>();
+
+      const sps = Array.from(memory.studentParents?.values() || []).filter(
+        (sp: any) => sp.studentId === payment.studentId,
+      );
+      for (const sp of sps as any[]) {
+        const p = memory.parents?.get(sp.parentId);
+        const pUserId = p?.userId || p?.user?.id || `usr_${p?.id}`;
+        if (pUserId) parentUserIds.add(pUserId);
+      }
+
+      const allParents = Array.from(memory.parents?.values() || []).filter(
+        (p: any) => p.tenantId === tenantId,
+      );
+      for (const p of allParents as any[]) {
+        const sIds = Array.isArray(p.studentIds) ? p.studentIds : p.studentId ? [p.studentId] : [];
+        if (sIds.includes(payment.studentId)) {
+          const pUserId = p.userId || p.user?.id || `usr_${p.id}`;
+          if (pUserId) parentUserIds.add(pUserId);
+        }
+      }
+
+      for (const pUserId of parentUserIds) {
+        const inbId = `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+        memory.inboxItems?.set(inbId, {
+          id: inbId,
+          tenantId,
+          recipientUserId: pUserId,
+          category: 'FINANCE',
+          priority: 'HIGH',
+          title: notifTitle,
+          message: notifMessage,
+          actionUrl: '/parent',
+          isRead: false,
+          createdAt: new Date(),
+        });
+      }
+    }
+
     return { success: true, message: 'Payment verified and credited successfully!', payment };
   }
 

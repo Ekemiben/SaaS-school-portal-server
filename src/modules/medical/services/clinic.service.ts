@@ -86,8 +86,8 @@ export class ClinicService {
       status: outcome === VisitOutcome.DISCHARGED_TO_CLASS ? 'Discharged' : 'Under Observation',
       sickbayBedNumber: dto.sickbayBedNumber || null,
       attendedByStaffId: dto.attendedByStaffId || staffId || null,
-      attendedByStaffName: (dto as any).officer || dto.attendedByStaffName || 'Nurse Mary (RN)',
-      officer: (dto as any).officer || dto.attendedByStaffName || 'Nurse Mary (RN)',
+      attendedByStaffName: (dto as any).officer || (dto as any).attendedBy || dto.attendedByStaffName || 'Nurse Mary (RN)',
+      officer: (dto as any).officer || (dto as any).attendedBy || dto.attendedByStaffName || 'Nurse Mary (RN)',
       admittedAt: new Date(),
       dischargedAt: outcome === VisitOutcome.DISCHARGED_TO_CLASS ? new Date() : null,
       parentNotified: (dto as any).parentNotified ?? true,
@@ -95,6 +95,99 @@ export class ClinicService {
     };
 
     this.getVisitsMap().set(visitId, record);
+
+    // Cross-Module Trigger: Create In-App Inbox Notification for Linked Parent(s)
+    if (record.parentNotified && (dto.patientType === PatientType.STUDENT || !dto.patientType)) {
+      const studentIdentifier = record.patientId || (dto as any).studentId;
+      let notifiedInDb = false;
+      if (this.prisma.isDbConnected) {
+        try {
+          const studentParents = await this.prisma.studentParent.findMany({
+            where: {
+              OR: [
+                { studentId: studentIdentifier },
+                { student: { tenantId, admissionNumber: studentIdentifier } },
+                { student: { tenantId, id: studentIdentifier } },
+              ],
+            },
+            include: { parent: { include: { user: true } } },
+          });
+
+          if (studentParents.length > 0) {
+            notifiedInDb = true;
+            for (const sp of studentParents) {
+              const parentUserId = sp.parent?.userId || sp.parent?.user?.id;
+              if (parentUserId) {
+                await this.prisma.inAppInboxItem.create({
+                  data: {
+                    id: `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                    tenantId,
+                    recipientUserId: parentUserId,
+                    category: 'HEALTH_UPDATE',
+                    priority: 'HIGH',
+                    title: `School Clinic Visit: ${patientName}`,
+                    message: `${patientName} visited the clinic today for "${record.complaint}". Status: ${record.status}. Attended by: ${record.officer}.`,
+                    actionUrl: '/parent',
+                    isRead: false,
+                  },
+                });
+              }
+            }
+          }
+        } catch (err: any) {
+          this.logger.warn(`Could not dispatch in-app parent clinic notice: ${err.message}`);
+        }
+      }
+
+      // Memory store fallback/synchronization
+      const memory = this.prisma.memoryStore as any;
+      if (memory && (!notifiedInDb || !this.prisma.isDbConnected)) {
+        const matchingParentUserIds = new Set<string>();
+
+        const sps = Array.from(memory.studentParents?.values() || []).filter(
+          (sp: any) =>
+            sp.studentId === studentIdentifier ||
+            sp.studentId === record.patientId ||
+            sp.studentId === (dto as any).studentId,
+        );
+        for (const sp of sps as any[]) {
+          const parent = memory.parents?.get(sp.parentId);
+          const parentUserId = parent?.userId || parent?.user?.id || `usr_${parent?.id}`;
+          if (parentUserId) matchingParentUserIds.add(parentUserId);
+        }
+
+        const allParents = Array.from(memory.parents?.values() || []).filter(
+          (p: any) => p.tenantId === tenantId,
+        );
+        for (const p of allParents as any[]) {
+          const sIds = Array.isArray(p.studentIds) ? p.studentIds : p.studentId ? [p.studentId] : [];
+          if (
+            sIds.includes(studentIdentifier) ||
+            sIds.includes(record.patientId) ||
+            sIds.includes((dto as any).studentId)
+          ) {
+            const parentUserId = p.userId || p.user?.id || `usr_${p.id}`;
+            if (parentUserId) matchingParentUserIds.add(parentUserId);
+          }
+        }
+
+        for (const parentUserId of matchingParentUserIds) {
+          const inbId = `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+          memory.inboxItems?.set(inbId, {
+            id: inbId,
+            tenantId,
+            recipientUserId: parentUserId,
+            category: 'HEALTH_UPDATE',
+            priority: 'HIGH',
+            title: `School Clinic Visit: ${patientName}`,
+            message: `${patientName} visited the clinic today for "${record.complaint}". Status: ${record.status}. Attended by: ${record.officer}.`,
+            actionUrl: '/parent',
+            isRead: false,
+            createdAt: new Date(),
+          });
+        }
+      }
+    }
 
     if (dto.notifyParents && parentEmail && this.queueService) {
       await this.queueService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {

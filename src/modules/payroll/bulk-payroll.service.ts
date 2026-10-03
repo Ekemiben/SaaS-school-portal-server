@@ -225,6 +225,7 @@ export class BulkPayrollService {
             });
           }
 
+          this.prisma.memoryStore.payroll.set(record.id, record);
           createdRecords.push(record);
         } else {
           // Memory store
@@ -308,6 +309,7 @@ export class BulkPayrollService {
   }
 
   async bulkApprovePayroll(tenantId: string, dto: BulkApprovePayrollDto) {
+    let count = 0;
     if (this.prisma.isDbConnected) {
       const result = await this.prisma.payroll.updateMany({
         where: {
@@ -319,10 +321,10 @@ export class BulkPayrollService {
         },
         data: { status: 'APPROVED' },
       });
-      return { month: dto.month, year: dto.year, approvedCount: result.count };
+      count = result.count;
     }
 
-    let count = 0;
+    // Also update in memory store
     for (const record of this.prisma.memoryStore.payroll.values()) {
       if (
         record.tenantId === tenantId &&
@@ -332,9 +334,12 @@ export class BulkPayrollService {
         (!dto.campusId || record.campusId === dto.campusId)
       ) {
         record.status = 'APPROVED';
-        count++;
+        if (!this.prisma.isDbConnected) {
+          count++;
+        }
       }
     }
-    return { month: dto.month, year: dto.year, approvedCount: count };
+
+    return { month: Number(dto.month), year: Number(dto.year), approvedCount: count };
   }
 }
