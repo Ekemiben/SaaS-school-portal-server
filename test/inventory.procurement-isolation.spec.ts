@@ -18,8 +18,25 @@ describe('Procurement Workflow, Auto-Replenishment & Multi-Tenant Isolation', ()
   const campusA = 'campus_main_01';
   const userId = 'user_admin_001';
 
-  beforeEach(() => {
+  beforeEach(async () => {
     prisma = new PrismaService();
+    try {
+      await prisma.tenant.upsert({
+        where: { id: tenantA },
+        create: { id: tenantA, name: 'Greenfield School', slug: 'greenfield-test' },
+        update: {},
+      });
+      await prisma.tenant.upsert({
+        where: { id: tenantB },
+        create: { id: tenantB, name: 'Cedar Heights School', slug: 'cedar-heights-test' },
+        update: {},
+      });
+      await prisma.purchaseOrderItem.deleteMany({ where: { tenantId: { in: [tenantA, tenantB] } } });
+      await prisma.purchaseOrder.deleteMany({ where: { tenantId: { in: [tenantA, tenantB] } } });
+      await prisma.inventoryStockMovement.deleteMany({ where: { tenantId: { in: [tenantA, tenantB] } } });
+      await prisma.inventoryItem.deleteMany({ where: { tenantId: { in: [tenantA, tenantB] } } });
+      await prisma.vendor.deleteMany({ where: { tenantId: { in: [tenantA, tenantB] } } });
+    } catch {}
     vendorService = new VendorService(prisma);
     itemService = new InventoryItemService(prisma);
     poService = new PurchaseOrderService(prisma);

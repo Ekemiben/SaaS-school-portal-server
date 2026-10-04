@@ -19,30 +19,25 @@ export class DataExportService {
   ) {}
 
   async createExportJob(tenantId: string, userId: string, dto: CreateExportJobDto) {
-    const jobId = `expjob_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const format = (dto.format || 'JSON').toUpperCase();
     const entities = dto.entities || ['ALL'];
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 7 * 24 * 3600 * 1000); // 7 days link
 
-    const job = {
-      id: jobId,
-      tenantId,
-      format,
-      entities,
-      status: 'PROCESSING',
-      fileUrl: null as string | null,
-      fileSizeBytes: 0,
-      expiresAt,
-      error: null as string | null,
-      requestedByUserId: userId,
-      createdAt: now,
-      completedAt: null as Date | null,
-    };
+    const job = await this.prisma.dataExportJob.create({
+      data: {
+        tenantId,
+        format,
+        entities,
+        status: 'PROCESSING',
+        fileUrl: null,
+        fileSizeBytes: 0,
+        expiresAt,
+        error: null,
+        requestedByUserId: userId,
+      },
+    });
 
-    this.prisma.memoryStore.dataExportJobs.set(jobId, job);
-
-    // Process export synchronously/in-memory for resilience
     try {
       let exportPayload: any = null;
       if (format === 'JSON') {
@@ -54,51 +49,74 @@ export class DataExportService {
       const payloadStr = typeof exportPayload === 'string' ? exportPayload : JSON.stringify(exportPayload);
       const sizeBytes = Buffer.byteLength(payloadStr, 'utf8');
 
-      job.status = 'COMPLETED';
-      job.fileUrl = `https://storage.schoolportal.io/exports/${tenantId}/${jobId}.${format.toLowerCase()}`;
-      job.fileSizeBytes = sizeBytes;
-      job.completedAt = new Date();
-      this.prisma.memoryStore.dataExportJobs.set(jobId, job);
+      const updatedJob = await this.prisma.dataExportJob.update({
+        where: { id: job.id },
+        data: {
+          status: 'COMPLETED',
+          fileUrl: `https://storage.schoolportal.io/exports/${tenantId}/${job.id}.${format.toLowerCase()}`,
+          fileSizeBytes: sizeBytes,
+          completedAt: new Date(),
+        },
+      });
 
       await this.auditService.log({
         tenantId,
         actorUserId: userId,
         action: 'DATA_EXPORT_COMPLETED',
         resourceType: 'EXPORT_JOB',
-        resourceId: jobId,
+        resourceId: job.id,
         afterData: { format, sizeBytes, entities },
       });
-    } catch (err: any) {
-      job.status = 'FAILED';
-      job.error = err.message;
-      this.prisma.memoryStore.dataExportJobs.set(jobId, job);
-    }
 
-    return job;
+      return updatedJob;
+    } catch (err: any) {
+      return this.prisma.dataExportJob.update({
+        where: { id: job.id },
+        data: {
+          status: 'FAILED',
+          error: err.message,
+        },
+      });
+    }
   }
 
   async getFullTenantBackupSnapshot(tenantId: string, anonymize?: boolean) {
-    const tenant = this.prisma.memoryStore.tenants.get(tenantId);
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+    });
     if (!tenant) {
       throw new NotFoundException(`Tenant '${tenantId}' not found`);
     }
 
-    const filterTenant = (map: Map<string, any>) =>
-      Array.from(map.values()).filter((item: any) => item.tenantId === tenantId);
-
-    const students = filterTenant(this.prisma.memoryStore.students);
-    const parents = filterTenant(this.prisma.memoryStore.parents);
-    const teachers = filterTenant(this.prisma.memoryStore.teachers);
-    const classes = filterTenant(this.prisma.memoryStore.classes);
-    const subjects = filterTenant(this.prisma.memoryStore.subjects);
-    const attendance = filterTenant(this.prisma.memoryStore.attendance);
-    const results = filterTenant(this.prisma.memoryStore.results);
-    const invoices = filterTenant(this.prisma.memoryStore.invoices);
-    const payments = filterTenant(this.prisma.memoryStore.payments);
-    const hostels = filterTenant(this.prisma.memoryStore.hostels);
-    const books = filterTenant(this.prisma.memoryStore.books);
-    const inventoryItems = filterTenant(this.prisma.memoryStore.inventoryItems);
-    const schoolAssets = filterTenant(this.prisma.memoryStore.schoolAssets);
+    const [
+      students,
+      parents,
+      teachers,
+      classes,
+      subjects,
+      attendance,
+      results,
+      invoices,
+      payments,
+      hostels,
+      books,
+      inventoryItems,
+      schoolAssets,
+    ] = await Promise.all([
+      this.prisma.student.findMany({ where: { tenantId } }),
+      this.prisma.parent.findMany({ where: { tenantId } }),
+      this.prisma.teacher.findMany({ where: { tenantId } }),
+      this.prisma.class.findMany({ where: { tenantId } }),
+      this.prisma.subject.findMany({ where: { tenantId } }),
+      this.prisma.attendance.findMany({ where: { tenantId } }),
+      this.prisma.result.findMany({ where: { tenantId } }),
+      this.prisma.invoice.findMany({ where: { tenantId } }),
+      this.prisma.payment.findMany({ where: { tenantId } }),
+      this.prisma.hostel.findMany({ where: { tenantId } }),
+      this.prisma.book.findMany({ where: { tenantId } }),
+      this.prisma.inventoryItem.findMany({ where: { tenantId } }),
+      this.prisma.schoolAsset.findMany({ where: { tenantId } }),
+    ]);
 
     const sanitizeUser = (u: any) => {
       if (!anonymize) return u;
@@ -145,19 +163,19 @@ export class DataExportService {
     let headers: string[] = [];
 
     if (lower === 'students') {
-      data = Array.from(this.prisma.memoryStore.students.values()).filter((s: any) => s.tenantId === tenantId);
+      data = await this.prisma.student.findMany({ where: { tenantId } });
       headers = ['id', 'admissionNumber', 'firstName', 'lastName', 'gender', 'dateOfBirth', 'status'];
     } else if (lower === 'teachers' || lower === 'staff') {
-      data = Array.from(this.prisma.memoryStore.teachers.values()).filter((t: any) => t.tenantId === tenantId);
-      headers = ['id', 'employeeNumber', 'firstName', 'lastName', 'email', 'designation', 'status'];
+      data = await this.prisma.teacher.findMany({ where: { tenantId } });
+      headers = ['id', 'employeeNumber', 'firstName', 'lastName', 'email', 'specialization', 'isActive'];
     } else if (lower === 'inventory' || lower === 'inventoryitems') {
-      data = Array.from(this.prisma.memoryStore.inventoryItems.values()).filter((i: any) => i.tenantId === tenantId);
+      data = await this.prisma.inventoryItem.findMany({ where: { tenantId } });
       headers = ['id', 'sku', 'name', 'category', 'unitOfMeasure', 'unitCost', 'quantityOnHand', 'status'];
     } else if (lower === 'assets' || lower === 'schoolassets') {
-      data = Array.from(this.prisma.memoryStore.schoolAssets.values()).filter((a: any) => a.tenantId === tenantId);
+      data = await this.prisma.schoolAsset.findMany({ where: { tenantId } });
       headers = ['id', 'assetTag', 'name', 'category', 'purchaseCost', 'currentBookValue', 'condition', 'status'];
     } else {
-      data = Array.from(this.prisma.memoryStore.students.values()).filter((s: any) => s.tenantId === tenantId);
+      data = await this.prisma.student.findMany({ where: { tenantId } });
       headers = ['id', 'admissionNumber', 'firstName', 'lastName', 'status'];
     }
 
@@ -165,25 +183,28 @@ export class DataExportService {
   }
 
   async getExportJob(tenantId: string, jobId: string) {
-    const job = this.prisma.memoryStore.dataExportJobs.get(jobId);
-    if (!job || job.tenantId !== tenantId) {
+    const job = await this.prisma.dataExportJob.findFirst({
+      where: { id: jobId, tenantId },
+    });
+    if (!job) {
       throw new NotFoundException(`Export job '${jobId}' not found`);
     }
     return job;
   }
 
   async listExportJobs(tenantId: string, filter?: ExportJobFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.dataExportJobs.values()).filter(
-      (j: any) => j.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
 
     if (filter?.status) {
-      list = list.filter((j: any) => j.status === filter.status);
+      where.status = filter.status;
     }
     if (filter?.format) {
-      list = list.filter((j: any) => j.format === filter.format);
+      where.format = filter.format;
     }
 
-    return list.sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
+    return this.prisma.dataExportJob.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+    });
   }
 }

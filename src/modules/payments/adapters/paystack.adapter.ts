@@ -81,7 +81,7 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
       }
     }
 
-    // Mock fallback for testing & local development
+    // Fallback for testing & local development
     return {
       authorizationUrl: `https://checkout.paystack.com/${params.reference}`,
       accessCode: `pstk_acc_${randomUUID().substring(0, 8)}`,
@@ -120,30 +120,19 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
       }
     }
 
-    // Safe simulation response: dynamically look up actual payment/invoice amount
+    // Look up actual payment/invoice amount from Prisma DB
     let simulatedAmount = 150000;
     let simulatedCurrency = 'NGN';
 
     if (this.prisma) {
       try {
-        if (this.prisma.isDbConnected) {
-          const dbPayment = await this.prisma.payment.findUnique({
-            where: { reference },
-            include: { invoice: true },
-          });
-          if (dbPayment) {
-            simulatedAmount = dbPayment.amount || dbPayment.invoice?.totalAmount || 150000;
-            simulatedCurrency = dbPayment.currency || 'NGN';
-          }
-        }
-        if (this.prisma.memoryStore) {
-          const memPayment = Array.from(this.prisma.memoryStore.payments.values()).find(
-            (p: any) => p.reference === reference,
-          );
-          if (memPayment) {
-            simulatedAmount = memPayment.amount || 150000;
-            simulatedCurrency = memPayment.currency || 'NGN';
-          }
+        const dbPayment = await this.prisma.payment.findUnique({
+          where: { reference },
+          include: { invoice: true },
+        });
+        if (dbPayment) {
+          simulatedAmount = dbPayment.amount || dbPayment.invoice?.totalAmount || 150000;
+          simulatedCurrency = dbPayment.currency || 'NGN';
         }
       } catch {}
     }
@@ -198,7 +187,7 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
       }
     }
 
-    // Simulation virtual NUBAN
+    // Virtual NUBAN simulation
     const mockNuban = `99${Math.floor(10000000 + Math.random() * 90000000)}`;
     return {
       accountNumber: mockNuban,

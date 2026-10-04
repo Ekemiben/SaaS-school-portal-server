@@ -18,97 +18,97 @@ export class VendorService {
   constructor(private readonly prisma: PrismaService) {}
 
   async createVendor(tenantId: string, dto: CreateVendorDto) {
-    const existing = Array.from(
-      this.prisma.memoryStore.vendors.values(),
-    ).find((v: any) => v.tenantId === tenantId && v.code.toLowerCase() === dto.code.toLowerCase());
+    const existing = await this.prisma.vendor.findFirst({
+      where: {
+        tenantId,
+        code: { equals: dto.code, mode: 'insensitive' },
+      },
+    });
 
     if (existing) {
       throw new BadRequestException(`Vendor with code '${dto.code}' already exists`);
     }
 
-    const id = `vnd_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const vendor = {
-      id,
-      tenantId,
-      name: dto.name,
-      code: dto.code.toUpperCase(),
-      contactPerson: dto.contactPerson || null,
-      email: dto.email || null,
-      phone: dto.phone || null,
-      address: dto.address || null,
-      taxId: dto.taxId || null,
-      category: dto.category || 'GENERAL',
-      paymentTerms: dto.paymentTerms || 'NET_30',
-      status: 'ACTIVE',
-      rating: dto.rating !== undefined ? dto.rating : 5.0,
-      notes: dto.notes || null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+    const vendor = await this.prisma.vendor.create({
+      data: {
+        tenantId,
+        name: dto.name,
+        code: dto.code.toUpperCase(),
+        contactPerson: dto.contactPerson || null,
+        email: dto.email || null,
+        phone: dto.phone || null,
+        address: dto.address || null,
+        taxId: dto.taxId || null,
+        category: dto.category || 'GENERAL',
+        paymentTerms: dto.paymentTerms || 'NET_30',
+        status: 'ACTIVE',
+        rating: dto.rating !== undefined ? dto.rating : 5.0,
+        notes: dto.notes || null,
+      },
+    });
 
-    this.prisma.memoryStore.vendors.set(id, vendor);
     this.logger.log(`Vendor ${vendor.code} (${vendor.name}) created for tenant ${tenantId}`);
     return vendor;
   }
 
   async updateVendor(tenantId: string, vendorId: string, dto: UpdateVendorDto) {
-    const vendor = await this.getVendorById(tenantId, vendorId);
+    await this.getVendorById(tenantId, vendorId);
 
-    const updated = {
-      ...vendor,
-      ...dto,
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.vendors.set(vendorId, updated);
-    return updated;
+    return this.prisma.vendor.update({
+      where: { id: vendorId },
+      data: dto,
+    });
   }
 
   async getVendorById(tenantId: string, vendorId: string) {
-    const vendor = this.prisma.memoryStore.vendors.get(vendorId);
-    if (!vendor || vendor.tenantId !== tenantId) {
+    const vendor = await this.prisma.vendor.findFirst({
+      where: { id: vendorId, tenantId },
+    });
+    if (!vendor) {
       throw new NotFoundException(`Vendor with ID '${vendorId}' not found`);
     }
     return vendor;
   }
 
   async findAllVendors(tenantId: string, filter?: VendorFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.vendors.values()).filter(
-      (v: any) => v.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
 
     if (filter?.category) {
-      list = list.filter((v: any) => v.category === filter.category);
+      where.category = filter.category;
     }
     if (filter?.status) {
-      list = list.filter((v: any) => v.status === filter.status);
+      where.status = filter.status;
     }
     if (filter?.search) {
-      const q = filter.search.toLowerCase();
-      list = list.filter(
-        (v: any) =>
-          v.name.toLowerCase().includes(q) ||
-          v.code.toLowerCase().includes(q) ||
-          (v.contactPerson && v.contactPerson.toLowerCase().includes(q)) ||
-          (v.email && v.email.toLowerCase().includes(q)),
-      );
+      const q = filter.search;
+      where.OR = [
+        { name: { contains: q, mode: 'insensitive' } },
+        { code: { contains: q, mode: 'insensitive' } },
+        { contactPerson: { contains: q, mode: 'insensitive' } },
+        { email: { contains: q, mode: 'insensitive' } },
+      ];
     }
 
-    return list.sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
+    return this.prisma.vendor.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
   async deleteVendor(tenantId: string, vendorId: string) {
     const vendor = await this.getVendorById(tenantId, vendorId);
-    
-    // Check if vendor has purchase orders
-    const hasPOs = Array.from(this.prisma.memoryStore.purchaseOrders.values()).some(
-      (po: any) => po.tenantId === tenantId && po.vendorId === vendorId,
-    );
-    if (hasPOs) {
+
+    const hasPOs = await this.prisma.purchaseOrder.count({
+      where: { tenantId, vendorId },
+    });
+    if (hasPOs > 0) {
       throw new BadRequestException('Cannot delete vendor with linked purchase orders. Consider setting status to INACTIVE.');
     }
 
-    this.prisma.memoryStore.vendors.delete(vendorId);
+    await this.prisma.vendor.delete({
+      where: { id: vendorId },
+    });
+
     return { success: true, message: `Vendor ${vendor.code} removed successfully` };
   }
 }

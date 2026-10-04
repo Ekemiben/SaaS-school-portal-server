@@ -15,8 +15,10 @@ export class StudentProgressionService {
     actorUserId: string,
     dto: PromoteStudentDto,
   ) {
-    const student = this.prisma.memoryStore.students.get(studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+    });
+    if (!student) {
       throw new NotFoundException(`Student ${studentId} not found`);
     }
 
@@ -24,52 +26,56 @@ export class StudentProgressionService {
       throw new BadRequestException(`Cannot promote student in "${student.status}" state. Student must be ACTIVE.`);
     }
 
-    const currentEnrollment = Array.from(this.prisma.memoryStore.enrollments.values()).find(
-      (e: any) => e.tenantId === tenantId && e.studentId === studentId && e.status === 'ACTIVE',
-    );
+    const currentEnrollment = await this.prisma.enrollment.findFirst({
+      where: { tenantId, studentId, status: 'ACTIVE' },
+    });
 
     const fromClassId = currentEnrollment ? currentEnrollment.classId : null;
     const fromAcademicYearId = currentEnrollment ? currentEnrollment.academicYearId : null;
 
     if (currentEnrollment) {
-      currentEnrollment.status = dto.promotionType === 'REPEATED' ? 'REPEATED' : 'PROMOTED';
-      currentEnrollment.completedAt = new Date();
-      this.prisma.memoryStore.enrollments.set(currentEnrollment.id, currentEnrollment);
+      await this.prisma.enrollment.update({
+        where: { id: currentEnrollment.id },
+        data: {
+          status: dto.promotionType === 'REPEATED' ? 'REPEATED' : 'PROMOTED',
+        },
+      });
     }
 
     const newEnrollmentId = `enr_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const newEnrollment = {
-      id: newEnrollmentId,
-      tenantId,
-      studentId,
-      classId: dto.targetClassId,
-      academicYearId: dto.targetAcademicYearId,
-      rollNumber: dto.rollNumber || (currentEnrollment ? currentEnrollment.rollNumber : null),
-      status: 'ACTIVE',
-      enrolledAt: new Date(),
-    };
-    this.prisma.memoryStore.enrollments.set(newEnrollmentId, newEnrollment);
+    const newEnrollment = await this.prisma.enrollment.create({
+      data: {
+        id: newEnrollmentId,
+        tenantId,
+        studentId,
+        classId: dto.targetClassId,
+        academicYearId: dto.targetAcademicYearId,
+        rollNumber: dto.rollNumber || (currentEnrollment ? currentEnrollment.rollNumber : null),
+        status: 'ACTIVE',
+        enrolledAt: new Date(),
+      },
+    });
 
     const eventType = dto.promotionType === 'REPEATED' ? 'DEMOTION' : 'PROMOTION';
     const lifecycleEventId = `ev_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const lifecycleEvent = {
-      id: lifecycleEventId,
-      tenantId,
-      studentId,
-      eventType,
-      fromCampusId: student.campusId,
-      toCampusId: student.campusId,
-      fromClassId,
-      toClassId: dto.targetClassId,
-      fromAcademicYearId,
-      toAcademicYearId: dto.targetAcademicYearId,
-      reason: dto.promotionType || 'Annual Academic Promotion',
-      notes: dto.notes || `Promoted to ${dto.targetClassId} for Academic Year ${dto.targetAcademicYearId}`,
-      actorUserId,
-      effectiveDate: new Date(),
-      createdAt: new Date(),
-    };
-    this.prisma.memoryStore.studentLifecycleEvents.set(lifecycleEventId, lifecycleEvent);
+    const lifecycleEvent = await this.prisma.studentLifecycleEvent.create({
+      data: {
+        id: lifecycleEventId,
+        tenantId,
+        studentId,
+        eventType,
+        fromCampusId: student.campusId,
+        toCampusId: student.campusId,
+        fromClassId,
+        toClassId: dto.targetClassId,
+        fromAcademicYearId,
+        toAcademicYearId: dto.targetAcademicYearId,
+        reason: dto.promotionType || 'Annual Academic Promotion',
+        notes: dto.notes || `Promoted to ${dto.targetClassId} for Academic Year ${dto.targetAcademicYearId}`,
+        actorUserId,
+        effectiveDate: new Date(),
+      },
+    });
 
     this.logger.log(`Student ${student.admissionNumber} promoted from ${fromClassId} to ${dto.targetClassId}`);
     return { student, newEnrollment, lifecycleEvent };
@@ -80,13 +86,14 @@ export class StudentProgressionService {
     actorUserId: string,
     dto: BatchPromoteClassDto,
   ) {
-    const sourceEnrollments = Array.from(this.prisma.memoryStore.enrollments.values()).filter(
-      (e: any) =>
-        e.tenantId === tenantId &&
-        e.classId === dto.sourceClassId &&
-        e.academicYearId === dto.sourceAcademicYearId &&
-        e.status === 'ACTIVE',
-    );
+    const sourceEnrollments = await this.prisma.enrollment.findMany({
+      where: {
+        tenantId,
+        classId: dto.sourceClassId,
+        academicYearId: dto.sourceAcademicYearId,
+        status: 'ACTIVE',
+      },
+    });
 
     if (sourceEnrollments.length === 0) {
       throw new BadRequestException(
@@ -113,102 +120,106 @@ export class StudentProgressionService {
 
       if (decision === 'PROMOTED' || decision === 'ON_PROBATION') {
         promotedCount++;
-        currEnr.status = 'PROMOTED';
-        currEnr.completedAt = new Date();
-        this.prisma.memoryStore.enrollments.set(currEnr.id, currEnr);
+        await this.prisma.enrollment.update({
+          where: { id: currEnr.id },
+          data: { status: 'PROMOTED' },
+        });
 
         const newEnrollmentId = `enr_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-        this.prisma.memoryStore.enrollments.set(newEnrollmentId, {
-          id: newEnrollmentId,
-          tenantId,
-          studentId,
-          classId: targetClassId,
-          academicYearId: dto.targetAcademicYearId,
-          rollNumber: customDecision?.rollNumber || currEnr.rollNumber,
-          status: 'ACTIVE',
-          batchId,
-          enrolledAt: new Date(),
+        await this.prisma.enrollment.create({
+          data: {
+            id: newEnrollmentId,
+            tenantId,
+            studentId,
+            classId: targetClassId,
+            academicYearId: dto.targetAcademicYearId,
+            rollNumber: customDecision?.rollNumber || currEnr.rollNumber,
+            status: 'ACTIVE',
+            enrolledAt: new Date(),
+          },
         });
       } else if (decision === 'REPEATED') {
         repeatedCount++;
-        currEnr.status = 'REPEATED';
-        currEnr.completedAt = new Date();
-        this.prisma.memoryStore.enrollments.set(currEnr.id, currEnr);
+        await this.prisma.enrollment.update({
+          where: { id: currEnr.id },
+          data: { status: 'REPEATED' },
+        });
 
         const newEnrollmentId = `enr_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-        this.prisma.memoryStore.enrollments.set(newEnrollmentId, {
-          id: newEnrollmentId,
-          tenantId,
-          studentId,
-          classId: dto.sourceClassId,
-          academicYearId: dto.targetAcademicYearId,
-          rollNumber: customDecision?.rollNumber || currEnr.rollNumber,
-          status: 'ACTIVE',
-          batchId,
-          enrolledAt: new Date(),
+        await this.prisma.enrollment.create({
+          data: {
+            id: newEnrollmentId,
+            tenantId,
+            studentId,
+            classId: dto.sourceClassId,
+            academicYearId: dto.targetAcademicYearId,
+            rollNumber: customDecision?.rollNumber || currEnr.rollNumber,
+            status: 'ACTIVE',
+            enrolledAt: new Date(),
+          },
         });
       } else if (decision === 'WITHDRAWN') {
         withdrawnCount++;
-        currEnr.status = 'WITHDRAWN';
-        currEnr.completedAt = new Date();
-        this.prisma.memoryStore.enrollments.set(currEnr.id, currEnr);
+        await this.prisma.enrollment.update({
+          where: { id: currEnr.id },
+          data: { status: 'WITHDRAWN' },
+        });
 
-        const student = this.prisma.memoryStore.students.get(studentId);
-        if (student) {
-          student.status = 'INACTIVE';
-          this.prisma.memoryStore.students.set(studentId, student);
-        }
+        await this.prisma.student.update({
+          where: { id: studentId },
+          data: { status: 'INACTIVE' },
+        });
       }
 
       const eventId = `ev_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-      this.prisma.memoryStore.studentLifecycleEvents.set(eventId, {
-        id: eventId,
-        tenantId,
-        studentId,
-        eventType: decision === 'REPEATED' ? 'DEMOTION' : decision === 'WITHDRAWN' ? 'WITHDRAWAL' : 'PROMOTION',
-        fromCampusId: null,
-        toCampusId: null,
-        fromClassId: dto.sourceClassId,
-        toClassId: targetClassId,
-        fromAcademicYearId: dto.sourceAcademicYearId,
-        toAcademicYearId: dto.targetAcademicYearId,
-        reason: `Batch Promotion (${decision})`,
-        notes: `Processed under Batch ${batchId}`,
-        actorUserId,
-        effectiveDate: new Date(),
-        createdAt: new Date(),
+      await this.prisma.studentLifecycleEvent.create({
+        data: {
+          id: eventId,
+          tenantId,
+          studentId,
+          eventType: decision === 'REPEATED' ? 'DEMOTION' : decision === 'WITHDRAWN' ? 'WITHDRAWAL' : 'PROMOTION',
+          fromCampusId: null,
+          toCampusId: null,
+          fromClassId: dto.sourceClassId,
+          toClassId: targetClassId,
+          fromAcademicYearId: dto.sourceAcademicYearId,
+          toAcademicYearId: dto.targetAcademicYearId,
+          reason: `Batch Promotion (${decision})`,
+          notes: `Processed under Batch ${batchId}`,
+          actorUserId,
+          effectiveDate: new Date(),
+        },
       });
     }
 
-    const batch = {
-      id: batchId,
-      tenantId,
-      sourceAcademicYearId: dto.sourceAcademicYearId,
-      targetAcademicYearId: dto.targetAcademicYearId,
-      sourceClassId: dto.sourceClassId,
-      targetClassId: dto.defaultTargetClassId,
-      totalStudents: sourceEnrollments.length,
-      promotedCount,
-      repeatedCount,
-      withdrawnCount,
-      processedByUserId: actorUserId,
-      status: 'COMPLETED',
-      criteria: { minPassPercentage: dto.minPassPercentage },
-      notes: dto.notes || null,
-      revertedAt: null,
-      revertedByUserId: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    this.prisma.memoryStore.promotionBatches.set(batchId, batch);
+    const batch = await this.prisma.promotionBatch.create({
+      data: {
+        id: batchId,
+        tenantId,
+        sourceAcademicYearId: dto.sourceAcademicYearId,
+        targetAcademicYearId: dto.targetAcademicYearId,
+        sourceClassId: dto.sourceClassId,
+        targetClassId: dto.defaultTargetClassId,
+        totalStudents: sourceEnrollments.length,
+        promotedCount,
+        repeatedCount,
+        withdrawnCount,
+        processedByUserId: actorUserId,
+        status: 'COMPLETED',
+        criteria: dto.minPassPercentage ? { minPassPercentage: dto.minPassPercentage } : undefined,
+        notes: dto.notes || null,
+      },
+    });
 
     this.logger.log(`Promotion batch ${batchId} completed: ${promotedCount} promoted, ${repeatedCount} repeated, ${withdrawnCount} withdrawn.`);
     return { batch, ...batch };
   }
 
   async revertPromotionBatch(tenantId: string, actorUserId: string, dto: RevertPromotionBatchDto) {
-    const batch = this.prisma.memoryStore.promotionBatches.get(dto.batchId);
-    if (!batch || batch.tenantId !== tenantId) {
+    const batch = await this.prisma.promotionBatch.findFirst({
+      where: { id: dto.batchId, tenantId },
+    });
+    if (!batch) {
       throw new NotFoundException(`Promotion batch ${dto.batchId} not found`);
     }
 
@@ -216,46 +227,48 @@ export class StudentProgressionService {
       throw new BadRequestException(`Batch ${dto.batchId} has already been reverted.`);
     }
 
-    // Delete created target enrollments for this batch
-    const allEnrollments = Array.from(this.prisma.memoryStore.enrollments.values()).filter(
-      (e: any) => e.tenantId === tenantId,
-    );
+    // Revert source enrollments
+    const sourceEnrollments = await this.prisma.enrollment.findMany({
+      where: {
+        tenantId,
+        classId: batch.sourceClassId,
+        academicYearId: batch.sourceAcademicYearId,
+        status: { in: ['PROMOTED', 'REPEATED', 'WITHDRAWN'] },
+      },
+    });
 
-    let revertedEnrollmentsCount = 0;
-    for (const enr of allEnrollments) {
-      if (enr.batchId === dto.batchId) {
-        this.prisma.memoryStore.enrollments.delete(enr.id);
-        revertedEnrollmentsCount++;
-      }
-      if (
-        enr.classId === batch.sourceClassId &&
-        enr.academicYearId === batch.sourceAcademicYearId &&
-        (enr.status === 'PROMOTED' || enr.status === 'REPEATED' || enr.status === 'WITHDRAWN')
-      ) {
-        enr.status = 'ACTIVE';
-        enr.completedAt = null;
-        this.prisma.memoryStore.enrollments.set(enr.id, enr);
-      }
+    for (const enr of sourceEnrollments) {
+      await this.prisma.enrollment.update({
+        where: { id: enr.id },
+        data: { status: 'ACTIVE' },
+      });
     }
 
-    batch.status = 'REVERTED';
-    batch.revertedAt = new Date();
-    batch.revertedByUserId = actorUserId;
-    batch.notes = dto.reason ? `${batch.notes || ''}\nRevert reason: ${dto.reason}`.trim() : batch.notes;
-    batch.updatedAt = new Date();
+    const updatedBatch = await this.prisma.promotionBatch.update({
+      where: { id: batch.id },
+      data: {
+        status: 'REVERTED',
+        revertedAt: new Date(),
+        revertedByUserId: actorUserId,
+        notes: dto.reason ? `${batch.notes || ''}\nRevert reason: ${dto.reason}`.trim() : batch.notes,
+      },
+    });
 
-    this.prisma.memoryStore.promotionBatches.set(batch.id, batch);
     this.logger.log(`Promotion batch ${batch.id} was reverted by user ${actorUserId}`);
-    return { revertedBatch: batch, revertedEnrollmentsCount, ...batch };
+    return { revertedBatch: updatedBatch, revertedEnrollmentsCount: sourceEnrollments.length, ...updatedBatch };
   }
 
   async getPromotionBatches(tenantId: string, academicYearId?: string) {
-    let list = Array.from(this.prisma.memoryStore.promotionBatches.values()).filter(
-      (b: any) => b.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
     if (academicYearId) {
-      list = list.filter((b: any) => b.sourceAcademicYearId === academicYearId || b.targetAcademicYearId === academicYearId);
+      where.OR = [
+        { sourceAcademicYearId: academicYearId },
+        { targetAcademicYearId: academicYearId },
+      ];
     }
-    return list.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return this.prisma.promotionBatch.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+    });
   }
 }

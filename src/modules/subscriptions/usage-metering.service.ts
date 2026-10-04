@@ -37,33 +37,44 @@ export class UsageMeteringService {
     const plan = subRes.planDetails;
 
     // 1. Students count
-    const studentCount = Array.from(this.prisma.memoryStore.students.values()).filter(
-      (s: any) => s.tenantId === tenantId && s.status !== 'DELETED',
-    ).length;
+    const studentCount = await this.prisma.student.count({
+      where: {
+        tenantId,
+        status: { not: 'GRADUATED' as any },
+      },
+    });
 
     // 2. Campuses count
-    const campusCount = Array.from(this.prisma.memoryStore.campuses.values()).filter(
-      (c: any) => c.tenantId === tenantId,
-    ).length;
+    const campusCount = await this.prisma.campus.count({
+      where: { tenantId },
+    });
 
     // 3. Staff count
-    const staffCount = Array.from(this.prisma.memoryStore.teachers.values()).filter(
-      (t: any) => t.tenantId === tenantId,
-    ).length;
+    const staffCount = await this.prisma.teacher.count({
+      where: { tenantId },
+    });
 
     // 4. Storage MB calculation
-    const fileAssets = Array.from(this.prisma.memoryStore.fileAssets.values()).filter(
-      (f: any) => f.tenantId === tenantId,
-    );
-    const totalBytes = fileAssets.reduce((acc: number, f: any) => acc + (f.size || 0), 0);
+    const storageAgg = await this.prisma.fileAsset.aggregate({
+      where: { tenantId },
+      _sum: { sizeBytes: true },
+    });
+    const totalBytes = storageAgg._sum?.sizeBytes || 0;
     const storageUsedMb = Math.round((totalBytes / (1024 * 1024)) * 100) / 100;
 
     // 5. Messaging SMS sent
-    const smsCount = Array.from(this.prisma.memoryStore.notifications.values()).filter(
-      (n: any) => n.tenantId === tenantId && (n.channel === 'SMS' || n.type === 'SMS'),
-    ).length;
+    const smsCount = await this.prisma.notification.count({
+      where: {
+        tenantId,
+        channel: 'SMS',
+      },
+    });
 
-    const tenant = this.prisma.memoryStore.tenants.get(tenantId);
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { features: true },
+    });
+
     const isTrial = sub.tier === 'free_trial' || sub.status === 'TRIAL';
     let trialDaysRemaining: number | null = null;
     if (sub.trialEndsAt) {
@@ -75,7 +86,7 @@ export class UsageMeteringService {
     const maxCampuses = sub.maxCampuses || plan.maxCampuses;
     const maxStaff = sub.maxStaff || plan.maxStaff;
     const storageLimitMb = sub.storageLimitMb || plan.storageLimitMb;
-    const messagingQuota = sub.messagingQuota || plan.messagingQuota;
+    const messagingQuota = (sub as any).messagingQuota || plan.messagingQuota;
 
     return {
       tenantId,
@@ -91,7 +102,7 @@ export class UsageMeteringService {
         storageMb: this.calculateMetric(storageUsedMb, storageLimitMb),
         messagingSms: this.calculateMetric(smsCount, messagingQuota),
       },
-      features: tenant?.features || {},
+      features: (tenant?.features as any) || {},
     };
   }
 

@@ -10,44 +10,52 @@ export class ConductProfileService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getStudentConductProfile(tenantId: string, studentId: string) {
-    const student = this.prisma.memoryStore.students.get(studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+      include: {
+        campus: true,
+        enrollments: {
+          where: { status: 'ACTIVE' },
+          include: { class: true },
+          take: 1,
+        },
+      },
+    });
+    if (!student) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Student not found in this school',
       });
     }
 
-    const cls = this.prisma.memoryStore.classes.get(student.classId);
-    const campus = this.prisma.memoryStore.campuses.get(student.campusId);
+    const cls = student.enrollments[0]?.class || null;
+    const campus = student.campus;
 
-    // Incidents
-    const incidents = Array.from(this.prisma.memoryStore.disciplineIncidents.values())
-      .filter((i) => i.tenantId === tenantId && i.studentId === studentId)
-      .sort((a, b) => new Date(b.incidentDate).getTime() - new Date(a.incidentDate).getTime());
+    const [incidents, actions, rawDetentions, merits] = await Promise.all([
+      this.prisma.disciplineIncident.findMany({
+        where: { tenantId, studentId },
+        orderBy: { incidentDate: 'desc' },
+      }),
+      this.prisma.disciplinaryAction.findMany({
+        where: { tenantId, studentId },
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.detentionAssignment.findMany({
+        where: { tenantId, studentId },
+        include: { session: true },
+      }),
+      this.prisma.meritAward.findMany({
+        where: { tenantId, studentId },
+        orderBy: { awardDate: 'desc' },
+      }),
+    ]);
 
-    // Disciplinary Actions
-    const actions = Array.from(this.prisma.memoryStore.disciplinaryActions.values())
-      .filter((a) => a.tenantId === tenantId && a.studentId === studentId)
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-    // Detention Assignments
-    const detentions = Array.from(this.prisma.memoryStore.detentionAssignments.values())
-      .filter((d) => d.tenantId === tenantId && d.studentId === studentId)
-      .map((d) => {
-        const session = this.prisma.memoryStore.detentionSessions.get(d.sessionId);
-        return {
-          ...d,
-          sessionTitle: session?.title || 'Detention Session',
-          sessionDate: session?.date,
-          sessionLocation: session?.location,
-        };
-      });
-
-    // Merits
-    const merits = Array.from(this.prisma.memoryStore.meritAwards.values())
-      .filter((m) => m.tenantId === tenantId && m.studentId === studentId)
-      .sort((a, b) => new Date(b.awardDate).getTime() - new Date(a.awardDate).getTime());
+    const detentions = rawDetentions.map((d) => ({
+      ...d,
+      sessionTitle: d.session?.title || 'Detention Session',
+      sessionDate: d.session?.date,
+      sessionLocation: d.session?.location,
+    }));
 
     const totalIncidents = incidents.length;
     const totalDemeritPoints = incidents.reduce((sum, i) => sum + (i.demeritPoints || 0), 0);
@@ -106,24 +114,25 @@ export class ConductProfileService {
   }
 
   async getCampusConductSummary(tenantId: string, filter: ConductFilterDto) {
-    let incidents = Array.from(this.prisma.memoryStore.disciplineIncidents.values()).filter(
-      (i) => i.tenantId === tenantId,
-    );
-    let merits = Array.from(this.prisma.memoryStore.meritAwards.values()).filter(
-      (m) => m.tenantId === tenantId,
-    );
-    let detentions = Array.from(this.prisma.memoryStore.detentionAssignments.values()).filter(
-      (d) => d.tenantId === tenantId,
-    );
+    const incWhere: any = { tenantId };
+    const meritWhere: any = { tenantId };
+    const detWhere: any = { tenantId };
 
     if (filter.campusId) {
-      incidents = incidents.filter((i) => i.campusId === filter.campusId);
-      merits = merits.filter((m) => m.campusId === filter.campusId);
+      incWhere.campusId = filter.campusId;
+      meritWhere.campusId = filter.campusId;
+      detWhere.session = { campusId: filter.campusId };
     }
     if (filter.classId) {
-      incidents = incidents.filter((i) => i.classId === filter.classId);
-      merits = merits.filter((m) => m.classId === filter.classId);
+      incWhere.classId = filter.classId;
+      meritWhere.classId = filter.classId;
     }
+
+    const [incidents, merits, detentions] = await Promise.all([
+      this.prisma.disciplineIncident.findMany({ where: incWhere }),
+      this.prisma.meritAward.findMany({ where: meritWhere }),
+      this.prisma.detentionAssignment.findMany({ where: detWhere }),
+    ]);
 
     const totalIncidents = incidents.length;
     const resolvedIncidents = incidents.filter((i) => i.status === 'RESOLVED').length;

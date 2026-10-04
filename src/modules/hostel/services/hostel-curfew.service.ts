@@ -31,55 +31,51 @@ export class HostelCurfewService {
   ) {
     const hostel = await this.hostelService.getHostelById(tenantId, dto.hostelId);
 
-    const activeAllocations = Array.from(
-      this.prisma.memoryStore.hostelAllocations.values(),
-    ).filter((a) => a.tenantId === tenantId && a.hostelId === dto.hostelId && a.status === 'ACTIVE');
+    const activeAllocations = await this.prisma.hostelAllocation.findMany({
+      where: { tenantId, hostelId: dto.hostelId, status: 'ACTIVE' },
+      include: {
+        student: true,
+        room: true,
+        bed: true,
+      },
+    });
 
-    const activeExeats = Array.from(
-      this.prisma.memoryStore.hostelExeats.values(),
-    ).filter((e) => e.tenantId === tenantId && e.hostelId === dto.hostelId && e.status === 'DEPARTED');
+    const activeExeats = await this.prisma.hostelExeat.findMany({
+      where: { tenantId, hostelId: dto.hostelId, status: 'DEPARTED' },
+    });
 
     const departedStudentIds = new Set(activeExeats.map((e) => e.studentId));
     const totalExpected = activeAllocations.length;
     const totalOnExeat = activeAllocations.filter((a) => departedStudentIds.has(a.studentId)).length;
 
-    const id = `cur_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const session = {
-      id,
-      tenantId,
-      campusId: dto.campusId || hostel.campusId || campusId,
-      hostelId: dto.hostelId,
-      sessionDate: dto.sessionDate ? new Date(dto.sessionDate) : new Date(),
-      sessionType: dto.sessionType || 'NIGHT_CURFEW',
-      conductedByUserId,
-      status: 'IN_PROGRESS',
-      totalExpected,
-      totalPresent: 0,
-      totalAbsent: 0,
-      totalOnExeat,
-      notes: dto.notes || null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.hostelCurfewSessions.set(id, session);
+    const session = await this.prisma.hostelCurfewSession.create({
+      data: {
+        tenantId,
+        campusId: dto.campusId || hostel.campusId || campusId,
+        hostelId: dto.hostelId,
+        sessionDate: dto.sessionDate ? new Date(dto.sessionDate) : new Date(),
+        sessionType: dto.sessionType || 'NIGHT_CURFEW',
+        conductedByUserId,
+        status: 'IN_PROGRESS',
+        totalExpected,
+        totalPresent: 0,
+        totalAbsent: 0,
+        totalOnExeat,
+        notes: dto.notes || null,
+      },
+    });
 
     return {
       ...session,
       hostelName: hostel.name,
-      residents: activeAllocations.map((a) => {
-        const student = this.prisma.memoryStore.students.get(a.studentId);
-        const room = this.prisma.memoryStore.hostelRooms.get(a.roomId);
-        const bed = this.prisma.memoryStore.hostelBeds.get(a.bedId);
-        return {
-          studentId: a.studentId,
-          studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-          admissionNumber: student?.admissionNumber,
-          roomNumber: room?.roomNumber,
-          bedNumber: bed?.bedNumber,
-          isOnExeat: departedStudentIds.has(a.studentId),
-        };
-      }),
+      residents: activeAllocations.map((a) => ({
+        studentId: a.studentId,
+        studentName: a.student ? `${a.student.firstName} ${a.student.lastName}` : 'Student',
+        admissionNumber: a.student?.admissionNumber,
+        roomNumber: a.room?.roomNumber,
+        bedNumber: a.bed?.bedNumber,
+        isOnExeat: departedStudentIds.has(a.studentId),
+      })),
     };
   }
 
@@ -89,8 +85,10 @@ export class HostelCurfewService {
     conductedByUserId: string,
     dto: RecordCurfewAttendanceDto,
   ) {
-    const session = this.prisma.memoryStore.hostelCurfewSessions.get(sessionId);
-    if (!session || session.tenantId !== tenantId) {
+    const session = await this.prisma.hostelCurfewSession.findFirst({
+      where: { id: sessionId, tenantId },
+    });
+    if (!session) {
       throw new NotFoundException(`Curfew session with ID ${sessionId} not found`);
     }
 
@@ -109,89 +107,91 @@ export class HostelCurfewService {
         exeatCount++;
       }
 
-      const attendanceKey = `${sessionId}_${item.studentId}`;
-      const existingAttendance = this.prisma.memoryStore.hostelCurfewAttendances.get(attendanceKey);
-
-      const attendanceRecord = {
-        id: existingAttendance?.id || `att_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-        tenantId,
-        campusId: session.campusId,
-        sessionId,
-        hostelId: session.hostelId,
-        studentId: item.studentId,
-        roomId: item.roomId || null,
-        bedId: item.bedId || null,
-        status: item.status,
-        remarks: item.remarks || null,
-        markedByUserId: conductedByUserId,
-        createdAt: existingAttendance?.createdAt || new Date(),
-        updatedAt: new Date(),
-      };
-
-      this.prisma.memoryStore.hostelCurfewAttendances.set(attendanceKey, attendanceRecord);
+      await this.prisma.hostelCurfewAttendance.upsert({
+        where: {
+          sessionId_studentId: { sessionId, studentId: item.studentId },
+        },
+        create: {
+          tenantId,
+          campusId: session.campusId,
+          sessionId,
+          hostelId: session.hostelId,
+          studentId: item.studentId,
+          roomId: item.roomId || null,
+          bedId: item.bedId || null,
+          status: item.status,
+          remarks: item.remarks || null,
+          markedByUserId: conductedByUserId,
+        },
+        update: {
+          status: item.status,
+          remarks: item.remarks || null,
+          markedByUserId: conductedByUserId,
+        },
+      });
     }
 
-    session.totalPresent = presentCount;
-    session.totalAbsent = absentCount;
-    session.totalOnExeat = exeatCount;
-    session.status = 'COMPLETED';
-    if (dto.notes) session.notes = dto.notes;
-    session.updatedAt = new Date();
-
-    this.prisma.memoryStore.hostelCurfewSessions.set(sessionId, session);
+    const updatedSession = await this.prisma.hostelCurfewSession.update({
+      where: { id: sessionId },
+      data: {
+        totalPresent: presentCount,
+        totalAbsent: absentCount,
+        totalOnExeat: exeatCount,
+        status: 'COMPLETED',
+        ...(dto.notes ? { notes: dto.notes } : {}),
+      },
+    });
 
     if (unexcusedAbsentees.length > 0) {
-      this.dispatchTruancyAlert(tenantId, session, unexcusedAbsentees).catch((err) =>
+      this.dispatchTruancyAlert(tenantId, updatedSession, unexcusedAbsentees).catch((err) =>
         this.logger.warn(`Fault-isolated curfew truancy alert failed: ${err.message}`),
       );
     }
 
-    return session;
+    return updatedSession;
   }
 
   async listCurfewSessions(tenantId: string, filter?: CurfewFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.hostelCurfewSessions.values()).filter(
-      (s) => s.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
+    if (filter?.hostelId) where.hostelId = filter.hostelId;
+    if (filter?.campusId) where.campusId = filter.campusId;
+    if (filter?.sessionType) where.sessionType = filter.sessionType;
+    if (filter?.status) where.status = filter.status;
 
-    if (filter?.hostelId) list = list.filter((s) => s.hostelId === filter.hostelId);
-    if (filter?.campusId) list = list.filter((s) => s.campusId === filter.campusId);
-    if (filter?.sessionType) list = list.filter((s) => s.sessionType === filter.sessionType);
-    if (filter?.status) list = list.filter((s) => s.status === filter.status);
-
-    return list.map((s) => {
-      const hostel = this.prisma.memoryStore.hostels.get(s.hostelId);
-      return {
-        ...s,
-        hostelName: hostel?.name || 'Hostel',
-      };
+    const list = await this.prisma.hostelCurfewSession.findMany({
+      where,
+      include: { hostel: true },
+      orderBy: { sessionDate: 'desc' },
     });
+
+    return list.map((s) => ({
+      ...s,
+      hostelName: s.hostel?.name || 'Hostel',
+    }));
   }
 
   async getSessionById(tenantId: string, sessionId: string) {
-    const session = this.prisma.memoryStore.hostelCurfewSessions.get(sessionId);
-    if (!session || session.tenantId !== tenantId) {
+    const session = await this.prisma.hostelCurfewSession.findFirst({
+      where: { id: sessionId, tenantId },
+      include: {
+        hostel: true,
+        attendances: {
+          include: { student: true },
+        },
+      },
+    });
+    if (!session) {
       throw new NotFoundException(`Curfew session with ID ${sessionId} not found`);
     }
 
-    const hostel = this.prisma.memoryStore.hostels.get(session.hostelId);
-    const attendances = Array.from(
-      this.prisma.memoryStore.hostelCurfewAttendances.values(),
-    )
-      .filter((a) => a.tenantId === tenantId && a.sessionId === sessionId)
-      .map((a) => {
-        const student = this.prisma.memoryStore.students.get(a.studentId);
-        return {
-          ...a,
-          studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-          admissionNumber: student?.admissionNumber || '',
-        };
-      });
-
     return {
       ...session,
-      hostelName: hostel?.name || 'Hostel',
-      attendances,
+      hostelName: session.hostel?.name || 'Hostel',
+      attendances: session.attendances.map((a) => ({
+        ...a,
+        studentName: a.student ? `${a.student.firstName} ${a.student.lastName}` : 'Student',
+        admissionNumber: a.student?.admissionNumber || '',
+      })),
     };
   }
 
@@ -201,7 +201,9 @@ export class HostelCurfewService {
     absenteeIds: string[],
   ) {
     try {
-      const hostel = this.prisma.memoryStore.hostels.get(session.hostelId);
+      const hostel = await this.prisma.hostel.findFirst({
+        where: { id: session.hostelId, tenantId },
+      });
       await this.queueService.addJob(
         QUEUES.NOTIFICATIONS,
         `curfew_truancy_${session.id}`,

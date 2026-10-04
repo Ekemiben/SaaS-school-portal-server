@@ -1,17 +1,77 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { OutboxService } from './outbox.service.js';
 import { PrismaService } from '../../database/prisma.service.js';
 import { RlsHelper } from '../../database/rls.helper.js';
 
-describe('OutboxService Dual-Mode & Reliability (Constitution Section 64)', () => {
+describe('OutboxService Direct Database Operations & Reliability', () => {
   let outboxService: OutboxService;
   let prisma: PrismaService;
+  let rlsHelper: RlsHelper;
+  let outboxEventsMap: Map<string, any>;
 
   beforeEach(() => {
-    prisma = new PrismaService();
-    // Ensure in-memory mode for test
-    prisma.isDbConnected = false;
-    const rlsHelper = new RlsHelper(prisma);
+    outboxEventsMap = new Map();
+
+    const mockOutboxModel = {
+      create: vi.fn(async ({ data }: any) => {
+        const id = `outbox_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const record = {
+          id,
+          tenantId: data.tenantId,
+          eventType: data.eventType,
+          payload: data.payload || {},
+          status: data.status || 'PENDING',
+          retryCount: 0,
+          lastError: null,
+          lockedAt: null,
+          lockedBy: null,
+          publishedAt: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        outboxEventsMap.set(id, record);
+        return record;
+      }),
+      findMany: vi.fn(async ({ where, take }: any) => {
+        const list = Array.from(outboxEventsMap.values()).filter((e) => {
+          if (where?.status && e.status !== where.status) return false;
+          return true;
+        });
+        return list.slice(0, take || 50);
+      }),
+      findUnique: vi.fn(async ({ where }: any) => {
+        return outboxEventsMap.get(where.id) || null;
+      }),
+      update: vi.fn(async ({ where, data }: any) => {
+        const record = outboxEventsMap.get(where.id);
+        if (record) {
+          Object.assign(record, data, { updatedAt: new Date() });
+          outboxEventsMap.set(where.id, record);
+        }
+        return record;
+      }),
+      updateMany: vi.fn(async ({ where, data }: any) => {
+        let count = 0;
+        for (const [id, record] of outboxEventsMap.entries()) {
+          if (where.id && id !== where.id) continue;
+          if (where.status && record.status !== where.status) continue;
+          Object.assign(record, data, { updatedAt: new Date() });
+          outboxEventsMap.set(id, record);
+          count++;
+        }
+        return { count };
+      }),
+    };
+
+    prisma = {
+      outboxEvent: mockOutboxModel,
+    } as unknown as PrismaService;
+
+    rlsHelper = {
+      withTenantContext: vi.fn(async (_tenantId: string, fn: any) => fn(prisma)),
+      withBypassContext: vi.fn(async (fn: any) => fn(prisma)),
+    } as unknown as RlsHelper;
+
     outboxService = new OutboxService(prisma, rlsHelper);
   });
 
@@ -50,8 +110,8 @@ describe('OutboxService Dual-Mode & Reliability (Constitution Section 64)', () =
 
     // Marking published
     await outboxService.markPublished(ev1.id);
-    const updatedBatch = await outboxService.fetchPendingBatch(10);
-    expect(updatedBatch.some((e: any) => e.id === ev1.id)).toBe(false);
+    const publishedRecord = outboxEventsMap.get(ev1.id);
+    expect(publishedRecord.status).toBe('PUBLISHED');
   });
 
   it('should increment retry count on failure and transition to FAILED when limit exceeded', async () => {
@@ -61,14 +121,13 @@ describe('OutboxService Dual-Mode & Reliability (Constitution Section 64)', () =
     for (let i = 0; i < 4; i++) {
       await outboxService.markFailed(ev.id, 'Gateway timeout', 5);
     }
-    const memStore = (prisma.memoryStore as any).outboxEvents;
-    let stored = memStore.get(ev.id);
+    let stored = outboxEventsMap.get(ev.id);
     expect(stored.retryCount).toBe(4);
     expect(stored.status).toBe('PENDING');
 
     // 5th failure exceeds maxRetries
     await outboxService.markFailed(ev.id, 'Final fatal error', 5);
-    stored = memStore.get(ev.id);
+    stored = outboxEventsMap.get(ev.id);
     expect(stored.retryCount).toBe(5);
     expect(stored.status).toBe('FAILED');
     expect(stored.lastError).toContain('Final fatal error');

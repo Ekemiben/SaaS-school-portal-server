@@ -19,86 +19,62 @@ export class ParentLiveTrackingService {
     options?: { parentUserId?: string; query?: QueryParentLiveTrackingDto },
   ) {
     // 1. Fetch Student & Validate Tenant Isolation
-    let student: any = null;
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+      include: {
+        campus: { select: { id: true, name: true } },
+        parents: { include: { parent: true } },
+      },
+    });
+    if (!student) throw new NotFoundException(`Student "${studentId}" not found in this school organization.`);
+
+    // If parent user specified, verify parent-student link
+    if (options?.parentUserId) {
+      const isLinked = student.parents.some(
+        (sp: any) => sp.parentId === options.parentUserId || sp.parent?.id === options.parentUserId || sp.parent?.userId === options.parentUserId,
+      );
+      if (!isLinked) {
+        throw new ForbiddenException('You are not authorized to view transport details for this student.');
+      }
+    }
+
     let allocation: any = null;
     let activeTrip: any = null;
     let boardingRecord: any = null;
 
-    if (this.prisma.isDbConnected) {
-      student = await this.prisma.student.findFirst({
-        where: { id: studentId, tenantId },
-        include: {
-          campus: { select: { id: true, name: true } },
-          parents: { include: { parent: true } },
+    // Fetch active transport allocation
+    allocation = await this.prisma.studentTransportAllocation.findFirst({
+      where: {
+        tenantId,
+        studentId,
+        status: 'ACTIVE',
+        ...(options?.query?.academicYearId && { academicYearId: options.query.academicYearId }),
+      },
+      include: {
+        route: {
+          include: {
+            routeStops: { orderBy: { stopOrder: 'asc' } },
+          },
         },
-      });
-      if (!student) throw new NotFoundException(`Student "${studentId}" not found in this school organization.`);
+      },
+    });
 
-      // If parent user specified, verify parent-student link
-      if (options?.parentUserId) {
-        const isLinked = student.parents.some(
-          (p: any) => p.parentId === options.parentUserId || p.parent?.id === options.parentUserId || p.parent?.userId === options.parentUserId,
-        );
-        if (!isLinked) {
-          throw new ForbiddenException('You are not authorized to view transport details for this student.');
-        }
-      }
-
-      // Fetch active transport allocation
-      allocation = await this.prisma.studentTransportAllocation.findFirst({
+    if (allocation?.routeId) {
+      activeTrip = await this.prisma.transportTrip.findFirst({
         where: {
           tenantId,
-          studentId,
-          status: 'ACTIVE',
-          ...(options?.query?.academicYearId && { academicYearId: options.query.academicYearId }),
+          routeId: allocation.routeId,
+          status: TripStatus.IN_PROGRESS,
         },
         include: {
-          route: {
-            include: {
-              routeStops: { orderBy: { stopOrder: 'asc' } },
-            },
-          },
+          vehicle: { select: { id: true, vehicleNumber: true, model: true } },
+          boardingRecords: { where: { studentId } },
         },
+        orderBy: { startedAt: 'desc' },
       });
 
-      if (allocation?.routeId) {
-        activeTrip = await this.prisma.transportTrip.findFirst({
-          where: {
-            tenantId,
-            routeId: allocation.routeId,
-            status: TripStatus.IN_PROGRESS,
-          },
-          include: {
-            vehicle: { select: { id: true, vehicleNumber: true, model: true } },
-            boardingRecords: { where: { studentId } },
-          },
-          orderBy: { startedAt: 'desc' },
-        });
-
-        if (activeTrip && activeTrip.boardingRecords?.length > 0) {
-          boardingRecord = activeTrip.boardingRecords[0];
-        }
-      }
-    } else {
-      student = Array.from(this.prisma.memoryStore.students.values()).find(
-        (s) => s.id === studentId && s.tenantId === tenantId,
-      );
-      if (!student) throw new NotFoundException('Student not found in this school organization.');
-
-      allocation = Array.from(this.prisma.memoryStore.studentTransportAllocations.values()).find(
-        (a) => a.studentId === studentId && a.tenantId === tenantId && a.status === 'ACTIVE',
-      );
-
-      if (allocation?.routeId) {
-        activeTrip = Array.from(this.prisma.memoryStore.transportTrips.values()).find(
-          (t) => t.routeId === allocation.routeId && t.tenantId === tenantId && t.status === TripStatus.IN_PROGRESS,
-        );
-
-        if (activeTrip) {
-          boardingRecord = Array.from(this.prisma.memoryStore.tripBoardingRecords.values()).find(
-            (r) => r.tripId === activeTrip.id && r.studentId === studentId && r.tenantId === tenantId,
-          );
-        }
+      if (activeTrip && activeTrip.boardingRecords?.length > 0) {
+        boardingRecord = activeTrip.boardingRecords[0];
       }
     }
 
@@ -226,25 +202,15 @@ export class ParentLiveTrackingService {
   }
 
   async getParentStudentsLiveTransport(tenantId: string, parentUserId: string) {
-    if (this.prisma.isDbConnected) {
-      const parent = await this.prisma.parent.findFirst({
-        where: { tenantId, id: parentUserId },
-        include: { students: { include: { student: true } } },
-      });
-      if (!parent) return [];
+    const parent = await this.prisma.parent.findFirst({
+      where: { tenantId, id: parentUserId },
+      include: { students: { include: { student: true } } },
+    });
+    if (!parent) return [];
 
-      const results = [];
-      for (const sp of parent.students) {
-        const live = await this.getStudentLiveTransport(tenantId, sp.studentId);
-        results.push(live);
-      }
-      return results;
-    }
-
-    const students = Array.from(this.prisma.memoryStore.students.values()).filter((s) => s.tenantId === tenantId);
     const results = [];
-    for (const student of students) {
-      const live = await this.getStudentLiveTransport(tenantId, student.id);
+    for (const sp of parent.students) {
+      const live = await this.getStudentLiveTransport(tenantId, sp.studentId);
       results.push(live);
     }
     return results;

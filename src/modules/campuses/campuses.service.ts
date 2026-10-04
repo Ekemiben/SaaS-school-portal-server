@@ -1,55 +1,40 @@
 import { Injectable, NotFoundException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
-import { randomUUID } from 'crypto';
 
 @Injectable()
 export class CampusesService {
   constructor(private readonly prisma: PrismaService) {}
 
   async findAll(tenantId: string) {
-    if (this.prisma.isDbConnected) {
-      return this.prisma.campus.findMany({
-        where: { tenantId },
-        include: {
-          _count: {
-            select: {
-              students: true,
-              teachers: true,
-              classes: true,
-            },
+    return this.prisma.campus.findMany({
+      where: { tenantId },
+      include: {
+        _count: {
+          select: {
+            students: true,
+            teachers: true,
+            classes: true,
           },
         },
-        orderBy: [{ isMain: 'desc' }, { createdAt: 'asc' }],
-      });
-    }
-
-    return Array.from(this.prisma.memoryStore.campuses.values()).filter(
-      (c) => c.tenantId === tenantId,
-    );
+      },
+      orderBy: [{ isMain: 'desc' }, { createdAt: 'asc' }],
+    });
   }
 
   async findById(tenantId: string, campusId: string) {
-    if (this.prisma.isDbConnected) {
-      const campus = await this.prisma.campus.findFirst({
-        where: { id: campusId, tenantId },
-        include: {
-          _count: {
-            select: {
-              students: true,
-              teachers: true,
-              classes: true,
-            },
+    const campus = await this.prisma.campus.findFirst({
+      where: { id: campusId, tenantId },
+      include: {
+        _count: {
+          select: {
+            students: true,
+            teachers: true,
+            classes: true,
           },
         },
-      });
-      if (!campus) throw new NotFoundException('Campus not found in this school');
-      return campus;
-    }
-
-    const campus = this.prisma.memoryStore.campuses.get(campusId);
-    if (!campus || campus.tenantId !== tenantId) {
-      throw new NotFoundException('Campus not found in this school');
-    }
+      },
+    });
+    if (!campus) throw new NotFoundException('Campus not found in this school');
     return campus;
   }
 
@@ -64,128 +49,123 @@ export class CampusesService {
     email?: string;
     isMain?: boolean;
   }) {
-    if (this.prisma.isDbConnected) {
-      try {
-        const sub = await this.prisma.subscription.findFirst({
-          where: { tenantId },
-        });
-        const maxCampuses = sub?.maxCampuses ?? 1;
-        const currentCount = await this.prisma.campus.count({ where: { tenantId } });
-        if (currentCount >= maxCampuses) {
-          throw new ForbiddenException(
-            `Campus limit reached for your subscription tier (${currentCount}/${maxCampuses}). Please upgrade your plan to add more campuses.`
-          );
-        }
-
-        const existingDb = await this.prisma.campus.findFirst({
-          where: { tenantId, code: data.code.toUpperCase() },
-        });
-        if (existingDb) {
-          throw new ConflictException(`Campus code "${data.code}" already exists in this school.`);
-        }
-      } catch (err: any) {
-        if (err instanceof ConflictException || err instanceof ForbiddenException) throw err;
-      }
-    }
-
-    const currentMemoryCount = Array.from(this.prisma.memoryStore.campuses.values()).filter(
-      (c) => c.tenantId === tenantId,
-    ).length;
-    const memorySub = this.prisma.memoryStore.subscriptions?.get(tenantId);
-    const maxCampusesMem = memorySub?.maxCampuses ?? 1;
-    if (currentMemoryCount >= maxCampusesMem) {
+    const sub = await this.prisma.subscription.findFirst({
+      where: { tenantId },
+    });
+    const maxCampuses = sub?.maxCampuses ?? 1;
+    const currentCount = await this.prisma.campus.count({ where: { tenantId } });
+    if (currentCount >= maxCampuses) {
       throw new ForbiddenException(
-        `Campus limit reached for your subscription tier (${currentMemoryCount}/${maxCampusesMem}). Please upgrade your plan to add more campuses.`
+        `Campus limit reached for your subscription tier (${currentCount}/${maxCampuses}). Please upgrade your plan to add more campuses.`
       );
     }
 
-    const existing = Array.from(this.prisma.memoryStore.campuses.values()).find(
-      (c) => c.tenantId === tenantId && c.code.toUpperCase() === data.code.toUpperCase(),
-    );
-    if (existing) {
+    const existingDb = await this.prisma.campus.findFirst({
+      where: { tenantId, code: data.code.toUpperCase() },
+    });
+    if (existingDb) {
       throw new ConflictException(`Campus code "${data.code}" already exists in this school.`);
     }
 
-    const campusId = `campus_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-    const newCampus = {
-      id: campusId,
-      tenantId,
-      name: data.name,
-      code: data.code.toUpperCase(),
-      address: data.address || null,
-      city: data.city || null,
-      state: data.state || null,
-      country: data.country || null,
-      phone: data.phone || null,
-      email: data.email || null,
-      isMain: !!data.isMain,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    if (this.prisma.isDbConnected) {
-      try {
-        const dbCampus = await this.prisma.campus.create({
-          data: {
-            id: campusId,
-            tenantId,
-            name: data.name,
-            code: data.code.toUpperCase(),
-            address: data.address || null,
-            city: data.city || null,
-            state: data.state || null,
-            country: data.country || null,
-            phone: data.phone || null,
-            email: data.email || null,
-            isMain: !!data.isMain,
-          },
-        });
-        await this.prisma.auditLog.create({
-          data: {
-            tenantId,
-            action: 'CAMPUS_CREATED',
-            resourceType: 'Campus',
-            resourceId: campusId,
-            afterData: {
-              name: data.name,
-              code: data.code.toUpperCase(),
-              isMain: !!data.isMain,
-              phone: data.phone,
-              email: data.email,
-            } as any,
-          },
-        });
-        this.prisma.memoryStore.campuses.set(campusId, dbCampus);
-        return dbCampus;
-      } catch {}
+    if (data.isMain) {
+      await this.prisma.campus.updateMany({
+        where: { tenantId, isMain: true },
+        data: { isMain: false },
+      });
     }
 
-    this.prisma.memoryStore.campuses.set(campusId, newCampus);
-    return newCampus;
+    return this.prisma.campus.create({
+      data: {
+        tenantId,
+        name: data.name.trim(),
+        code: data.code.toUpperCase().trim(),
+        address: data.address,
+        city: data.city,
+        state: data.state,
+        country: data.country || 'Nigeria',
+        phone: data.phone,
+        email: data.email,
+        isMain: !!data.isMain,
+      },
+    });
   }
 
-  async update(tenantId: string, campusId: string, data: Partial<any>) {
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.campus.updateMany({
-          where: { id: campusId, tenantId },
-          data,
-        });
-        await this.prisma.auditLog.create({
-          data: {
-            tenantId,
-            action: 'CAMPUS_UPDATED',
-            resourceType: 'Campus',
-            resourceId: campusId,
-            afterData: data as any,
-          },
-        });
-      } catch {}
+  async update(tenantId: string, campusId: string, data: Partial<{
+    name: string;
+    code: string;
+    address: string;
+    city: string;
+    state: string;
+    country: string;
+    phone: string;
+    email: string;
+    isMain: boolean;
+    isActive: boolean;
+  }>) {
+    const existing = await this.prisma.campus.findFirst({
+      where: { id: campusId, tenantId },
+    });
+    if (!existing) throw new NotFoundException('Campus not found in this school');
+
+    if (data.code && data.code.toUpperCase() !== existing.code) {
+      const codeConflict = await this.prisma.campus.findFirst({
+        where: { tenantId, code: data.code.toUpperCase(), id: { not: campusId } },
+      });
+      if (codeConflict) {
+        throw new ConflictException(`Campus code "${data.code}" is already in use.`);
+      }
     }
 
-    const campus = await this.findById(tenantId, campusId);
-    Object.assign(campus, data, { updatedAt: new Date() });
-    this.prisma.memoryStore.campuses.set(campusId, campus);
-    return campus;
+    if (data.isMain) {
+      await this.prisma.campus.updateMany({
+        where: { tenantId, isMain: true, id: { not: campusId } },
+        data: { isMain: false },
+      });
+    }
+
+    return this.prisma.campus.update({
+      where: { id: campusId },
+      data: {
+        ...(data.name && { name: data.name.trim() }),
+        ...(data.code && { code: data.code.toUpperCase().trim() }),
+        ...(data.address !== undefined && { address: data.address }),
+        ...(data.city !== undefined && { city: data.city }),
+        ...(data.state !== undefined && { state: data.state }),
+        ...(data.country !== undefined && { country: data.country }),
+        ...(data.phone !== undefined && { phone: data.phone }),
+        ...(data.email !== undefined && { email: data.email }),
+        ...(data.isMain !== undefined && { isMain: data.isMain }),
+        ...(data.isActive !== undefined && { isActive: data.isActive }),
+      },
+    });
+  }
+
+  async delete(tenantId: string, campusId: string) {
+    const existing = await this.prisma.campus.findFirst({
+      where: { id: campusId, tenantId },
+      include: {
+        _count: {
+          select: { students: true, teachers: true, classes: true },
+        },
+      },
+    });
+    if (!existing) throw new NotFoundException('Campus not found in this school');
+
+    if (existing.isMain) {
+      throw new ForbiddenException('Cannot delete the primary/main campus.');
+    }
+
+    const { students, teachers, classes } = existing._count;
+    if (students > 0 || teachers > 0 || classes > 0) {
+      throw new ForbiddenException(
+        `Cannot delete campus with active records (${students} students, ${teachers} teachers, ${classes} classes). Reassign or archive these records first.`
+      );
+    }
+
+    await this.prisma.campus.delete({
+      where: { id: campusId },
+    });
+
+    return { success: true, message: 'Campus deleted successfully' };
   }
 }

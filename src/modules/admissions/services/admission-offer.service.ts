@@ -28,31 +28,21 @@ export class AdmissionOfferService {
     decidedByUserId: string,
     dto: CreateAdmissionDecisionDto,
   ) {
-    const app = await this.applicationService.getApplicationById(tenantId, applicationId);
+    await this.applicationService.getApplicationById(tenantId, applicationId);
     const id = `dec_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
 
-    const decision = {
-      id,
-      tenantId,
-      applicationId,
-      decision: dto.decision,
-      decisionDate: new Date(),
-      decidedByUserId,
-      decisionNotes: dto.decisionNotes || null,
-      rejectionReason: dto.rejectionReason || null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    if (this.prisma.isDbConnected && (this.prisma as any).admissionDecision) {
-      try {
-        await (this.prisma as any).admissionDecision.create({ data: decision });
-      } catch (err: any) {
-        this.logger.warn(`Prisma create admissionDecision failed: ${err.message}`);
-      }
-    }
-
-    this.prisma.memoryStore.admissionDecisions.set(id, decision);
+    const decision = await this.prisma.admissionDecision.create({
+      data: {
+        id,
+        tenantId,
+        applicationId,
+        decision: dto.decision,
+        decisionDate: new Date(),
+        decidedByUserId,
+        decisionNotes: dto.decisionNotes || null,
+        rejectionReason: dto.rejectionReason || null,
+      },
+    });
 
     if (dto.decision === 'REJECTED') {
       await this.applicationService.transitionStatus(tenantId, applicationId, {
@@ -76,7 +66,7 @@ export class AdmissionOfferService {
     }
 
     const year = new Date().getFullYear();
-    const count = this.prisma.memoryStore.admissionOffers.size + 1;
+    const count = (await this.prisma.admissionOffer.count({ where: { tenantId } })) + 1;
     const offerNumber = `OFF-${year}-${String(count).padStart(4, '0')}`;
     const id = `ofr_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
     const feeAmount = dto.acceptanceFeeAmount || 0;
@@ -84,61 +74,61 @@ export class AdmissionOfferService {
     let invoiceId: string | null = null;
     if (feeAmount > 0) {
       invoiceId = `inv_acc_${randomUUID().replace(/-/g, '').substring(0, 8)}`;
-      const invoice = {
-        id: invoiceId,
-        tenantId,
-        studentId: app.id,
-        invoiceNumber: `INV-ACC-${year}-${String(count).padStart(4, '0')}`,
-        subtotal: feeAmount,
-        discountAmount: 0,
-        waiverAmount: 0,
-        latePenaltyAmount: 0,
-        totalAmount: feeAmount,
-        paidAmount: 0,
-        balanceAmount: feeAmount,
-        currency: 'NGN',
-        lineItems: [{ name: 'Admission Acceptance Fee', amount: feeAmount }],
-        notes: `Admission Acceptance Fee for ${app.studentFirstName} ${app.studentLastName} (${offerNumber})`,
-        dueDate: new Date(dto.acceptanceDeadline),
-        status: 'PENDING',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-      this.prisma.memoryStore.invoices.set(invoiceId, invoice);
+      await this.prisma.invoice.create({
+        data: {
+          id: invoiceId,
+          tenantId,
+          studentId: app.id,
+          invoiceNumber: `INV-ACC-${year}-${String(count).padStart(4, '0')}`,
+          subtotal: feeAmount,
+          discountAmount: 0,
+          waiverAmount: 0,
+          latePenaltyAmount: 0,
+          totalAmount: feeAmount,
+          paidAmount: 0,
+          balanceAmount: feeAmount,
+          currency: 'NGN',
+          notes: `Admission Acceptance Fee for ${app.studentFirstName} ${app.studentLastName} (${offerNumber})`,
+          dueDate: new Date(dto.acceptanceDeadline),
+          status: 'PENDING',
+        },
+      });
     }
 
-    const offer: any = {
-      id,
+    const offerLetterUrl = await this.letterRenderer.renderOfferLetter(
       tenantId,
-      campusId: dto.campusId,
-      academicYearId: dto.academicYearId,
-      applicationId,
-      offeredGradeLevel: dto.offeredGradeLevel,
-      offerNumber,
-      offerDate: new Date(),
-      acceptanceDeadline: new Date(dto.acceptanceDeadline),
-      conditions: dto.conditions || null,
-      status: 'OFFERED',
-      acceptanceFeeAmount: feeAmount,
-      acceptanceFeePaid: feeAmount === 0,
-      invoiceId,
-      offerLetterUrl: null,
-      decisionId: dto.decisionId || null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+      {
+        offerNumber,
+        offeredGradeLevel: dto.offeredGradeLevel,
+        campusId: dto.campusId,
+        offerDate: new Date(),
+        acceptanceDeadline: new Date(dto.acceptanceDeadline),
+        acceptanceFeeAmount: feeAmount,
+        conditions: dto.conditions || null,
+      },
+      app,
+    );
 
-    offer.offerLetterUrl = await this.letterRenderer.renderOfferLetter(tenantId, offer, app);
-
-    if (this.prisma.isDbConnected && (this.prisma as any).admissionOffer) {
-      try {
-        await (this.prisma as any).admissionOffer.create({ data: offer });
-      } catch (err: any) {
-        this.logger.warn(`Prisma create admissionOffer failed: ${err.message}`);
-      }
-    }
-
-    this.prisma.memoryStore.admissionOffers.set(id, offer);
+    const offer = await this.prisma.admissionOffer.create({
+      data: {
+        id,
+        tenantId,
+        campusId: dto.campusId,
+        academicYearId: dto.academicYearId,
+        applicationId,
+        offeredGradeLevel: dto.offeredGradeLevel,
+        offerNumber,
+        offerDate: new Date(),
+        acceptanceDeadline: new Date(dto.acceptanceDeadline),
+        conditions: dto.conditions || null,
+        status: 'OFFERED',
+        acceptanceFeeAmount: feeAmount,
+        acceptanceFeePaid: feeAmount === 0,
+        invoiceId,
+        offerLetterUrl,
+        decisionId: dto.decisionId || null,
+      },
+    });
 
     await this.applicationService.transitionStatus(tenantId, applicationId, {
       status: 'OFFERED',
@@ -150,29 +140,19 @@ export class AdmissionOfferService {
   }
 
   async getOfferById(tenantId: string, offerId: string) {
-    if (this.prisma.isDbConnected && (this.prisma as any).admissionOffer) {
-      const offer = await (this.prisma as any).admissionOffer.findFirst({
-        where: { id: offerId, tenantId },
-      });
-      if (offer) return offer;
-    }
-    const offer = this.prisma.memoryStore.admissionOffers.get(offerId);
-    if (!offer || offer.tenantId !== tenantId) {
+    const offer = await this.prisma.admissionOffer.findFirst({
+      where: { id: offerId, tenantId },
+    });
+    if (!offer) {
       throw new NotFoundException(`Admission offer ${offerId} not found`);
     }
     return offer;
   }
 
   async getOfferByNumber(tenantId: string, offerNumber: string) {
-    if (this.prisma.isDbConnected && (this.prisma as any).admissionOffer) {
-      const offer = await (this.prisma as any).admissionOffer.findFirst({
-        where: { tenantId, offerNumber },
-      });
-      if (offer) return offer;
-    }
-    const offer = Array.from(this.prisma.memoryStore.admissionOffers.values()).find(
-      (o: any) => o.tenantId === tenantId && o.offerNumber === offerNumber,
-    );
+    const offer = await this.prisma.admissionOffer.findFirst({
+      where: { tenantId, offerNumber },
+    });
     if (!offer) {
       throw new NotFoundException(`Offer ${offerNumber} not found`);
     }
@@ -186,42 +166,40 @@ export class AdmissionOfferService {
     }
 
     if (new Date() > new Date(offer.acceptanceDeadline)) {
-      offer.status = 'EXPIRED';
-      this.prisma.memoryStore.admissionOffers.set(offerId, offer);
-      if (this.prisma.isDbConnected && (this.prisma as any).admissionOffer) {
-        await (this.prisma as any).admissionOffer.update({ where: { id: offerId }, data: { status: 'EXPIRED' } }).catch(() => {});
-      }
+      await this.prisma.admissionOffer.update({
+        where: { id: offerId },
+        data: { status: 'EXPIRED' },
+      });
       throw new BadRequestException(`Offer ${offer.offerNumber} has expired on ${offer.acceptanceDeadline.toISOString()}`);
     }
 
+    let targetOfferStatus = offer.status;
+    const feeAmount = offer.acceptanceFeeAmount ?? 0;
     if (dto.response === 'ACCEPTED') {
-      if (offer.acceptanceFeeAmount > 0 && !offer.acceptanceFeePaid) {
+      if (feeAmount > 0 && !offer.acceptanceFeePaid) {
         throw new BadRequestException(
-          `Acceptance fee of ₦${offer.acceptanceFeeAmount.toLocaleString()} must be paid to confirm acceptance.`,
+          `Acceptance fee of ₦${feeAmount.toLocaleString()} must be paid to confirm acceptance.`,
         );
       }
-      offer.status = 'ACCEPTED';
+      targetOfferStatus = 'ACCEPTED';
       await this.applicationService.transitionStatus(tenantId, offer.applicationId, {
         status: 'ACCEPTED',
         internalNotes: `Offer ${offer.offerNumber} accepted by applicant`,
       });
     } else {
-      offer.status = 'DECLINED';
+      targetOfferStatus = 'DECLINED';
       await this.applicationService.transitionStatus(tenantId, offer.applicationId, {
         status: 'WITHDRAWN',
         internalNotes: `Offer ${offer.offerNumber} declined. Reason: ${dto.declineReason || 'Not specified'}`,
       });
     }
 
-    offer.updatedAt = new Date();
-    this.prisma.memoryStore.admissionOffers.set(offerId, offer);
-    if (this.prisma.isDbConnected && (this.prisma as any).admissionOffer) {
-      await (this.prisma as any).admissionOffer.update({
-        where: { id: offerId },
-        data: { status: offer.status, updatedAt: new Date() },
-      }).catch((e: any) => this.logger.warn(`Could not update offer status: ${e.message}`));
-    }
-    return offer;
+    const updated = await this.prisma.admissionOffer.update({
+      where: { id: offerId },
+      data: { status: targetOfferStatus },
+    });
+
+    return updated;
   }
 
   async initializeAcceptancePayment(
@@ -238,9 +216,9 @@ export class AdmissionOfferService {
     return this.paymentsService.initializePayment(tenantId, {
       invoiceId: offer.invoiceId,
       studentId: app.id,
-      amount: offer.acceptanceFeeAmount,
+      amount: offer.acceptanceFeeAmount || 0,
       currency: 'NGN',
-      customerEmail: app.parentEmail,
+      customerEmail: app.parentEmail || 'admissions@school.edu',
       provider: (dto.provider as any) || undefined,
       callbackUrl: dto.callbackUrl,
     });
@@ -249,30 +227,23 @@ export class AdmissionOfferService {
   async confirmAcceptancePayment(tenantId: string, offerId: string, paymentReference: string) {
     const offer = await this.getOfferById(tenantId, offerId);
     if (offer.invoiceId) {
-      const invoice = this.prisma.memoryStore.invoices.get(offer.invoiceId);
-      if (invoice) {
-        invoice.paidAmount = invoice.totalAmount;
-        invoice.balanceAmount = 0;
-        invoice.status = 'PAID';
-        invoice.paidAt = new Date();
-      }
-    }
-
-    offer.acceptanceFeePaid = true;
-    offer.status = 'ACCEPTED';
-    offer.updatedAt = new Date();
-    this.prisma.memoryStore.admissionOffers.set(offerId, offer);
-
-    if (this.prisma.isDbConnected && (this.prisma as any).admissionOffer) {
-      await (this.prisma as any).admissionOffer.update({
-        where: { id: offerId },
+      await this.prisma.invoice.update({
+        where: { id: offer.invoiceId },
         data: {
-          acceptanceFeePaid: true,
-          status: 'ACCEPTED',
-          updatedAt: new Date(),
+          paidAmount: offer.acceptanceFeeAmount || 0,
+          balanceAmount: 0,
+          status: 'PAID',
         },
-      }).catch((e: any) => this.logger.warn(`Could not update offer: ${e.message}`));
+      }).catch(() => {});
     }
+
+    const updated = await this.prisma.admissionOffer.update({
+      where: { id: offerId },
+      data: {
+        acceptanceFeePaid: true,
+        status: 'ACCEPTED',
+      },
+    });
 
     await this.applicationService.transitionStatus(tenantId, offer.applicationId, {
       status: 'ACCEPTED',
@@ -280,6 +251,6 @@ export class AdmissionOfferService {
     });
 
     this.logger.log(`Acceptance fee paid for offer ${offer.offerNumber} (${paymentReference})`);
-    return offer;
+    return updated;
   }
 }

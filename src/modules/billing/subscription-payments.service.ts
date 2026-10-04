@@ -62,19 +62,16 @@ export class SubscriptionPaymentsService {
     // 2. Find or generate BillingInvoice with strict tenant ownership validation
     let invoice = null;
     if (dto.invoiceId) {
-      let anyInvoice = await this.prisma.billingInvoice.findUnique({
+      const existingInv = await this.prisma.billingInvoice.findUnique({
         where: { id: dto.invoiceId },
-      }).catch(() => null);
-      if (!anyInvoice) {
-        anyInvoice = this.prisma.memoryStore.billingInvoices.get(dto.invoiceId) as any;
-      }
-      if (anyInvoice && anyInvoice.tenantId !== tenantId) {
-        throw new ForbiddenException('Cross-tenant invoice violation: Specified billing invoice belongs to a different school organization.');
-      }
-      if (!anyInvoice) {
+      });
+      if (!existingInv) {
         throw new NotFoundException(`Specified billing invoice '${dto.invoiceId}' does not exist.`);
       }
-      invoice = anyInvoice;
+      if (existingInv.tenantId !== tenantId) {
+        throw new ForbiddenException('Cross-tenant invoice violation: Specified billing invoice belongs to a different school organization.');
+      }
+      invoice = existingInv;
     }
 
     const sub = await this.prisma.subscription.findFirst({
@@ -105,9 +102,6 @@ export class SubscriptionPaymentsService {
           ],
         },
       });
-
-      // Sync memoryStore
-      this.prisma.memoryStore.billingInvoices.set(invoice.id, invoice);
     }
 
     // 3. Create SubscriptionPayment record with INITIATED status
@@ -134,8 +128,6 @@ export class SubscriptionPaymentsService {
         },
       },
     });
-
-    this.prisma.memoryStore.subscriptionPayments.set(payment.id, payment);
 
     // 4. Call Paystack Adapter to initialize payment
     const callbackUrl = dto.callbackUrl || `/admin/billing/verify?ref=${reference}`;
@@ -169,10 +161,6 @@ export class SubscriptionPaymentsService {
   }
 
   /**
-   * Online Payment: Verifies Paystack transaction with strict idempotency.
-   * If already verified, returns existing record without duplicate activations.
-   */
-  /**
    * Online Payment: Verifies Paystack/Flutterwave transaction with strict idempotency,
    * amount checking, cross-tenant protection, and audit logging.
    * If already verified, returns existing record without duplicate activations.
@@ -183,16 +171,10 @@ export class SubscriptionPaymentsService {
     }
 
     // 1. Idempotency Check & Cross-Tenant Ownership Guard
-    let existingPayment = await this.prisma.subscriptionPayment.findFirst({
+    const existingPayment = await this.prisma.subscriptionPayment.findFirst({
       where: { providerReference: reference },
       include: { tenant: true, subscription: true },
-    }).catch(() => null);
-
-    if (!existingPayment) {
-      existingPayment = Array.from(this.prisma.memoryStore.subscriptionPayments.values()).find(
-        (p: any) => p.providerReference === reference,
-      ) as any;
-    }
+    });
 
     // Tenant Ownership Verification: Reject cross-tenant payment reference hijacking
     if (existingPayment && existingPayment.tenantId !== tenantId) {
@@ -206,12 +188,9 @@ export class SubscriptionPaymentsService {
 
     // Invoice Ownership Verification: Ensure invoice belongs strictly to paying tenant
     if (existingPayment?.billingInvoiceId) {
-      let invCheck = await this.prisma.billingInvoice.findUnique({
+      const invCheck = await this.prisma.billingInvoice.findUnique({
         where: { id: existingPayment.billingInvoiceId },
-      }).catch(() => null);
-      if (!invCheck) {
-        invCheck = this.prisma.memoryStore.billingInvoices.get(existingPayment.billingInvoiceId) as any;
-      }
+      });
       if (invCheck && invCheck.tenantId !== tenantId) {
         throw new ForbiddenException(
           'Cross-tenant invoice violation: Linked invoice belongs to a different school organization.',
@@ -225,41 +204,29 @@ export class SubscriptionPaymentsService {
         ? await this.prisma.billingInvoice.findUnique({ where: { id: existingPayment.billingInvoiceId } })
         : null;
 
-      if (this.prisma.isDbConnected) {
-        await this.prisma.auditLog.create({
-          data: {
-            id: `aud_idemp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-            tenantId,
-            action: 'PAYMENT_REPLAY_ATTEMPT_IGNORED',
-            resourceType: 'SubscriptionPayment',
-            resourceId: reference,
-            afterData: {
-              reference,
-              paymentId: existingPayment.id,
-              status: existingPayment.status,
-              alreadyProcessed: true,
-              timestamp: new Date().toISOString(),
-            },
+      await this.prisma.auditLog.create({
+        data: {
+          id: `aud_idemp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          tenantId,
+          action: 'PAYMENT_REPLAY_ATTEMPT_IGNORED',
+          resourceType: 'SubscriptionPayment',
+          resourceId: reference,
+          afterData: {
+            reference,
+            paymentId: existingPayment.id,
+            status: existingPayment.status,
+            alreadyProcessed: true,
+            timestamp: new Date().toISOString(),
           },
-        }).catch(() => {});
-      }
+        },
+      }).catch(() => {});
 
       let sub = existingPayment.subscription;
       if (!sub && existingPayment.subscriptionId) {
-        sub = await this.prisma.subscription
-          .findUnique({ where: { id: existingPayment.subscriptionId } })
-          .catch(() => null);
-        if (!sub) {
-          sub = this.prisma.memoryStore.subscriptions.get(existingPayment.subscriptionId);
-        }
+        sub = await this.prisma.subscription.findUnique({ where: { id: existingPayment.subscriptionId } });
       }
       if (!sub) {
-        sub = await this.prisma.subscription.findFirst({ where: { tenantId } }).catch(() => null);
-        if (!sub) {
-          sub = Array.from(this.prisma.memoryStore.subscriptions.values()).find(
-            (s: any) => s.tenantId === tenantId,
-          );
-        }
+        sub = await this.prisma.subscription.findFirst({ where: { tenantId } });
       }
 
       return {
@@ -272,7 +239,7 @@ export class SubscriptionPaymentsService {
       };
     }
 
-    // 2. Query Gateway for Source-of-Truth Verification (Fundamental Rule: Webhook/caller status never blindly trusted)
+    // 2. Query Gateway for Source-of-Truth Verification
     const adapter =
       existingPayment?.provider === 'FLUTTERWAVE' ? this.flutterwaveAdapter : this.paystackAdapter;
     const verifyRes = await adapter.verifyPayment(reference);
@@ -353,14 +320,9 @@ export class SubscriptionPaymentsService {
     }
 
     // 6. Subscription Ownership Verification
-    let sub = await this.prisma.subscription.findFirst({
+    const sub = await this.prisma.subscription.findFirst({
       where: { tenantId },
-    }).catch(() => null);
-    if (!sub) {
-      sub = Array.from(this.prisma.memoryStore.subscriptions.values()).find(
-        (s: any) => s.tenantId === tenantId,
-      ) as any;
-    }
+    });
     if (existingPayment?.subscriptionId && sub && existingPayment.subscriptionId !== sub.id) {
       throw new ForbiddenException(
         'Subscription ownership mismatch: Payment is bound to a different subscription.',
@@ -369,163 +331,108 @@ export class SubscriptionPaymentsService {
     const subId = sub?.id || `sub_${tenantId.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
     // 7. Atomically update Payment, Invoice, Subscription, Tenant, and AuditLog
-    let updatedSub: any = null;
-    let updatedPayment: any = null;
-
-    if (this.prisma.isDbConnected) {
-      const dbTenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } }).catch(() => null);
-      if (dbTenant) {
-        try {
-          const txRes = await this.prisma.$transaction([
-            this.prisma.subscription.upsert({
-              where: { id: subId },
-              create: {
-                id: subId,
-                tenantId,
-                planId: plan?.id,
-                planTier: targetTier,
-                status: 'ACTIVE',
-                billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
-                priceAtPurchase: actualPaidAmount,
-                currency: expectedCurrency,
-                trialEndsAt: null,
-                currentPeriodStart: now,
-                currentPeriodEnd: periodEnd,
-                maxStudents: plan?.maxStudents || 1500,
-                maxCampuses: plan?.maxCampuses || 3,
-                maxStaff: plan?.maxStaff || 100,
-                storageLimitMb: plan?.storageLimitMb || 25600,
-                autoRenew: true,
-              },
-              update: {
-                planId: plan?.id,
-                planTier: targetTier,
-                status: 'ACTIVE',
-                billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
-                priceAtPurchase: actualPaidAmount,
-                trialEndsAt: null,
-                currentPeriodStart: now,
-                currentPeriodEnd: periodEnd,
-                maxStudents: plan?.maxStudents,
-                maxCampuses: plan?.maxCampuses,
-                maxStaff: plan?.maxStaff,
-                storageLimitMb: plan?.storageLimitMb,
-                updatedAt: now,
-              },
-            }),
-
-            this.prisma.subscriptionPayment.upsert({
-              where: { id: existingPayment?.id || `spay_ref_${reference}` },
-              create: {
-                id: `spay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                tenantId,
-                subscriptionId: subId,
-                billingInvoiceId: existingPayment?.billingInvoiceId || null,
-                amount: actualPaidAmount,
-                currency: expectedCurrency,
-                paymentMethod: existingPayment?.provider || 'PAYSTACK',
-                provider: existingPayment?.provider || 'PAYSTACK',
-                providerReference: reference,
-                status: 'SUCCESSFUL',
-                paidAt: now,
-                verifiedAt: now,
-                verifiedBy: 'GATEWAY_VERIFIED',
-                metadata: {
-                  ...meta,
-                  channel: verifyRes.channel,
-                  gatewayResponse: verifyRes.gatewayResponse,
-                },
-              },
-              update: {
-                subscriptionId: subId,
-                amount: actualPaidAmount,
-                status: 'SUCCESSFUL',
-                paidAt: now,
-                verifiedAt: now,
-                verifiedBy: 'GATEWAY_VERIFIED',
-                metadata: {
-                  ...meta,
-                  channel: verifyRes.channel,
-                  gatewayResponse: verifyRes.gatewayResponse,
-                },
-              },
-            }),
-
-            this.prisma.tenant.update({
-              where: { id: tenantId },
-              data: {
-                status: 'ACTIVE',
-                plan: targetTier.toLowerCase(),
-                updatedAt: now,
-              },
-            }),
-
-            this.prisma.auditLog.create({
-              data: {
-                id: `aud_pay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                tenantId,
-                action: 'SUBSCRIPTION_ONLINE_PAYMENT_VERIFIED',
-                resourceType: 'SubscriptionPayment',
-                resourceId: reference,
-                afterData: {
-                  reference,
-                  amount: actualPaidAmount,
-                  planTier: targetTier,
-                  billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
-                  gateway: existingPayment?.provider || 'PAYSTACK',
-                  status: 'SUCCESSFUL',
-                },
-              },
-            }),
-          ]);
-          updatedSub = txRes[0];
-          updatedPayment = txRes[1];
-        } catch (err: any) {
-          this.logger.warn(`verifyOnlinePayment DB transaction error: ${err.message}`);
-        }
-      }
-    }
-
-    if (!updatedSub) {
-      updatedSub = {
-        id: subId,
-        tenantId,
-        planId: plan?.id || null,
-        planTier: targetTier,
-        status: 'ACTIVE',
-        billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
-        priceAtPurchase: actualPaidAmount,
-        currency: expectedCurrency,
-        trialEndsAt: null,
-        currentPeriodStart: now,
-        currentPeriodEnd: periodEnd,
-        maxStudents: plan?.maxStudents || 1500,
-        maxCampuses: plan?.maxCampuses || 3,
-        maxStaff: plan?.maxStaff || 100,
-        storageLimitMb: plan?.storageLimitMb || 25600,
-        autoRenew: true,
-      };
-      updatedPayment = {
-        id: existingPayment?.id || `spay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        tenantId,
-        subscriptionId: subId,
-        billingInvoiceId: existingPayment?.billingInvoiceId || null,
-        amount: actualPaidAmount,
-        currency: expectedCurrency,
-        paymentMethod: existingPayment?.provider || 'PAYSTACK',
-        provider: existingPayment?.provider || 'PAYSTACK',
-        providerReference: reference,
-        status: 'SUCCESSFUL',
-        paidAt: now,
-        verifiedAt: now,
-        verifiedBy: 'GATEWAY_VERIFIED',
-        metadata: {
-          ...meta,
-          channel: verifyRes.channel,
-          gatewayResponse: verifyRes.gatewayResponse,
+    const [updatedSub, updatedPayment] = await this.prisma.$transaction([
+      this.prisma.subscription.upsert({
+        where: { id: subId },
+        create: {
+          id: subId,
+          tenantId,
+          planId: plan?.id,
+          planTier: targetTier,
+          status: 'ACTIVE',
+          billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
+          priceAtPurchase: actualPaidAmount,
+          currency: expectedCurrency,
+          trialEndsAt: null,
+          currentPeriodStart: now,
+          currentPeriodEnd: periodEnd,
+          maxStudents: plan?.maxStudents || 1500,
+          maxCampuses: plan?.maxCampuses || 3,
+          maxStaff: plan?.maxStaff || 100,
+          storageLimitMb: plan?.storageLimitMb || 25600,
+          autoRenew: true,
         },
-      };
-    }
+        update: {
+          planId: plan?.id,
+          planTier: targetTier,
+          status: 'ACTIVE',
+          billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
+          priceAtPurchase: actualPaidAmount,
+          trialEndsAt: null,
+          currentPeriodStart: now,
+          currentPeriodEnd: periodEnd,
+          maxStudents: plan?.maxStudents,
+          maxCampuses: plan?.maxCampuses,
+          maxStaff: plan?.maxStaff,
+          storageLimitMb: plan?.storageLimitMb,
+          updatedAt: now,
+        },
+      }),
+
+      this.prisma.subscriptionPayment.upsert({
+        where: { id: existingPayment?.id || `spay_ref_${reference}` },
+        create: {
+          id: `spay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          tenantId,
+          subscriptionId: subId,
+          billingInvoiceId: existingPayment?.billingInvoiceId || null,
+          amount: actualPaidAmount,
+          currency: expectedCurrency,
+          paymentMethod: existingPayment?.provider || 'PAYSTACK',
+          provider: existingPayment?.provider || 'PAYSTACK',
+          providerReference: reference,
+          status: 'SUCCESSFUL',
+          paidAt: now,
+          verifiedAt: now,
+          verifiedBy: 'GATEWAY_VERIFIED',
+          metadata: {
+            ...meta,
+            channel: verifyRes.channel,
+            gatewayResponse: verifyRes.gatewayResponse,
+          },
+        },
+        update: {
+          subscriptionId: subId,
+          amount: actualPaidAmount,
+          status: 'SUCCESSFUL',
+          paidAt: now,
+          verifiedAt: now,
+          verifiedBy: 'GATEWAY_VERIFIED',
+          metadata: {
+            ...meta,
+            channel: verifyRes.channel,
+            gatewayResponse: verifyRes.gatewayResponse,
+          },
+        },
+      }),
+
+      this.prisma.tenant.update({
+        where: { id: tenantId },
+        data: {
+          status: 'ACTIVE',
+          plan: targetTier.toLowerCase(),
+          updatedAt: now,
+        },
+      }),
+
+      this.prisma.auditLog.create({
+        data: {
+          id: `aud_pay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          tenantId,
+          action: 'SUBSCRIPTION_ONLINE_PAYMENT_VERIFIED',
+          resourceType: 'SubscriptionPayment',
+          resourceId: reference,
+          afterData: {
+            reference,
+            amount: actualPaidAmount,
+            planTier: targetTier,
+            billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
+            gateway: existingPayment?.provider || 'PAYSTACK',
+            status: 'SUCCESSFUL',
+          },
+        },
+      }),
+    ]);
 
     // Update BillingInvoice if exists
     let updatedInvoice = null;
@@ -538,21 +445,6 @@ export class SubscriptionPaymentsService {
           paymentMethod: existingPayment?.provider || 'PAYSTACK',
         },
       }).catch(() => null);
-    }
-
-    // Sync Memory Store
-    this.prisma.memoryStore.subscriptionPayments.set(updatedPayment.id, updatedPayment);
-    this.prisma.memoryStore.subscriptions.set(updatedSub.id, {
-      ...updatedSub,
-      tier: targetTier.toLowerCase(),
-    });
-    const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
-    if (memTenant) {
-      memTenant.status = 'ACTIVE';
-      memTenant.plan = targetTier.toLowerCase();
-    }
-    if (updatedInvoice) {
-      this.prisma.memoryStore.billingInvoices.set(updatedInvoice.id, updatedInvoice);
     }
 
     return {
@@ -572,22 +464,20 @@ export class SubscriptionPaymentsService {
     const isValid = this.paystackAdapter.verifyWebhookSignature(signature, rawBody);
     if (!isValid) {
       this.logger.warn('Rejected invalid or unsigned Paystack webhook signature.');
-      if (this.prisma.isDbConnected) {
-        await this.prisma.auditLog.create({
-          data: {
-            id: `aud_wb_rej_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-            tenantId: payload?.data?.metadata?.tenantId || 'SYSTEM',
-            action: 'WEBHOOK_SIGNATURE_REJECTED',
-            resourceType: 'Webhook',
-            resourceId: signature ? signature.substring(0, 16) + '...' : 'UNSIGNED',
-            afterData: {
-              provider: 'PAYSTACK',
-              event: payload?.event || 'unknown',
-              rejectedAt: new Date().toISOString(),
-            },
+      await this.prisma.auditLog.create({
+        data: {
+          id: `aud_wb_rej_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          tenantId: payload?.data?.metadata?.tenantId || 'SYSTEM',
+          action: 'WEBHOOK_SIGNATURE_REJECTED',
+          resourceType: 'Webhook',
+          resourceId: signature ? signature.substring(0, 16) + '...' : 'UNSIGNED',
+          afterData: {
+            provider: 'PAYSTACK',
+            event: payload?.event || 'unknown',
+            rejectedAt: new Date().toISOString(),
           },
-        }).catch(() => {});
-      }
+        },
+      }).catch(() => {});
       throw new BadRequestException('Invalid or unsigned Paystack webhook signature');
     }
 
@@ -596,7 +486,7 @@ export class SubscriptionPaymentsService {
     const tenantId = payload?.data?.metadata?.tenantId;
     const reference = payload?.data?.reference;
 
-    if (this.prisma.isDbConnected && tenantId) {
+    if (tenantId) {
       await this.prisma.auditLog.create({
         data: {
           id: `aud_wb_rec_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -616,7 +506,6 @@ export class SubscriptionPaymentsService {
       }).catch(() => {});
     }
 
-    // Fundamental Rule: Never trust webhook payload status alone. Trigger verifyOnlinePayment to query gateway.
     if (payload?.event === 'charge.success') {
       if (reference && tenantId) {
         try {
@@ -643,22 +532,20 @@ export class SubscriptionPaymentsService {
     const isValid = this.flutterwaveAdapter.verifyWebhookSignature(signature);
     if (!isValid) {
       this.logger.warn('Rejected invalid or unsigned Flutterwave webhook signature.');
-      if (this.prisma.isDbConnected) {
-        await this.prisma.auditLog.create({
-          data: {
-            id: `aud_flw_rej_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-            tenantId: payload?.data?.meta?.tenantId || payload?.data?.customer?.tenantId || 'SYSTEM',
-            action: 'WEBHOOK_SIGNATURE_REJECTED',
-            resourceType: 'Webhook',
-            resourceId: signature ? signature.substring(0, 16) + '...' : 'UNSIGNED',
-            afterData: {
-              provider: 'FLUTTERWAVE',
-              event: payload?.['event.type'] || payload?.event || 'unknown',
-              rejectedAt: new Date().toISOString(),
-            },
+      await this.prisma.auditLog.create({
+        data: {
+          id: `aud_flw_rej_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          tenantId: payload?.data?.meta?.tenantId || payload?.data?.customer?.tenantId || 'SYSTEM',
+          action: 'WEBHOOK_SIGNATURE_REJECTED',
+          resourceType: 'Webhook',
+          resourceId: signature ? signature.substring(0, 16) + '...' : 'UNSIGNED',
+          afterData: {
+            provider: 'FLUTTERWAVE',
+            event: payload?.['event.type'] || payload?.event || 'unknown',
+            rejectedAt: new Date().toISOString(),
           },
-        }).catch(() => {});
-      }
+        },
+      }).catch(() => {});
       throw new BadRequestException('Invalid or unsigned Flutterwave webhook signature');
     }
 
@@ -667,7 +554,7 @@ export class SubscriptionPaymentsService {
     const tenantId = payload?.data?.meta?.tenantId || payload?.data?.customer?.tenantId;
     const reference = payload?.data?.tx_ref || payload?.txRef;
 
-    if (this.prisma.isDbConnected && tenantId) {
+    if (tenantId) {
       await this.prisma.auditLog.create({
         data: {
           id: `aud_flw_rec_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -703,7 +590,6 @@ export class SubscriptionPaymentsService {
   /**
    * Bank Transfer: Initiates bank transfer flow.
    * Generates pending invoice and official platform bank details.
-   * STRICT CONSTRAINT: Does NOT automatically activate subscription.
    */
   async initiateBankTransfer(
     tenantId: string,
@@ -731,71 +617,15 @@ export class SubscriptionPaymentsService {
     const invoiceNumber = `SUB-INV-${now.getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
     const bankReference = `BT-SAAS-${tenantId.substring(0, 8)}-${Date.now()}`;
 
-    let invoice: any = null;
-    let payment: any = null;
+    const sub = await this.prisma.subscription.findFirst({
+      where: { tenantId },
+    });
 
-    if (this.prisma.isDbConnected) {
-      try {
-        const dbTenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } }).catch(() => null);
-        if (dbTenant) {
-          const sub = await this.prisma.subscription.findFirst({
-            where: { tenantId },
-          });
-
-          invoice = await this.prisma.billingInvoice.create({
-            data: {
-              id: `binv_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-              tenantId,
-              subscriptionId: sub?.id || null,
-              invoiceNumber,
-              amount: price,
-              currency: plan?.currency || 'NGN',
-              status: 'PENDING',
-              dueDate: new Date(now.getTime() + 7 * 86400000),
-              paymentMethod: 'BANK_TRANSFER',
-              lineItems: [
-                {
-                  description: `${plan?.name || targetTier} Subscription (${isAnnual ? 'ANNUAL (Save 6%)' : 'TERMLY'}) - Bank Transfer`,
-                  amount: price,
-                  quantity: 1,
-                  subtotal: isAnnual ? termlyFull : price,
-                  discountApplied: discount,
-                },
-              ],
-            },
-          });
-
-          payment = await this.prisma.subscriptionPayment.create({
-            data: {
-              id: `spay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-              tenantId,
-              subscriptionId: sub?.id || null,
-              billingInvoiceId: invoice.id,
-              amount: price,
-              currency: plan?.currency || 'NGN',
-              paymentMethod: 'BANK_TRANSFER',
-              provider: 'BANK_TRANSFER',
-              providerReference: bankReference,
-              status: 'PENDING',
-              metadata: {
-                planTier: targetTier,
-                billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
-                invoiceId: invoice.id,
-                customerEmail: userEmail,
-              },
-            },
-          });
-        }
-      } catch (dbErr: any) {
-        this.logger.warn(`Failed to create DB bank transfer records: ${dbErr?.message}`);
-      }
-    }
-
-    if (!invoice || !payment) {
-      invoice = {
+    const invoice = await this.prisma.billingInvoice.create({
+      data: {
         id: `binv_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         tenantId,
-        subscriptionId: `sub_${tenantId}`,
+        subscriptionId: sub?.id || null,
         invoiceNumber,
         amount: price,
         currency: plan?.currency || 'NGN',
@@ -811,11 +641,14 @@ export class SubscriptionPaymentsService {
             discountApplied: discount,
           },
         ],
-      };
-      payment = {
+      },
+    });
+
+    const payment = await this.prisma.subscriptionPayment.create({
+      data: {
         id: `spay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         tenantId,
-        subscriptionId: `sub_${tenantId}`,
+        subscriptionId: sub?.id || null,
         billingInvoiceId: invoice.id,
         amount: price,
         currency: plan?.currency || 'NGN',
@@ -829,11 +662,8 @@ export class SubscriptionPaymentsService {
           invoiceId: invoice.id,
           customerEmail: userEmail,
         },
-      };
-    }
-
-    this.prisma.memoryStore.subscriptionPayments.set(payment.id, payment);
-    this.prisma.memoryStore.billingInvoices.set(invoice.id, invoice);
+      },
+    });
 
     return {
       success: true,
@@ -857,40 +687,22 @@ export class SubscriptionPaymentsService {
    * Bank Transfer: Tenant submits payment proof (reference, bank, date, receipt).
    */
   async submitBankTransferProof(tenantId: string, dto: SubmitBankTransferProofDto) {
-    let payment: any = null;
+    let payment = await this.prisma.subscriptionPayment.findFirst({
+      where: {
+        tenantId,
+        ...(dto.paymentId ? { id: dto.paymentId } : {}),
+        ...(dto.reference ? { providerReference: dto.reference } : {}),
+      },
+    });
 
-    if (this.prisma.isDbConnected) {
+    if (!payment) {
       payment = await this.prisma.subscriptionPayment.findFirst({
         where: {
           tenantId,
-          ...(dto.paymentId ? { id: dto.paymentId } : {}),
-          ...(dto.reference ? { providerReference: dto.reference } : {}),
+          status: 'PENDING',
         },
-      }).catch(() => null);
-
-      if (!payment) {
-        payment = await this.prisma.subscriptionPayment.findFirst({
-          where: {
-            tenantId,
-            status: 'PENDING',
-          },
-          orderBy: { createdAt: 'desc' },
-        }).catch(() => null);
-      }
-    }
-
-    if (!payment) {
-      payment = Array.from(this.prisma.memoryStore.subscriptionPayments.values()).find(
-        (p: any) =>
-          p.tenantId === tenantId &&
-          (!dto.paymentId || p.id === dto.paymentId) &&
-          (!dto.reference || p.providerReference === dto.reference),
-      );
-      if (!payment) {
-        payment = Array.from(this.prisma.memoryStore.subscriptionPayments.values()).find(
-          (p: any) => p.tenantId === tenantId && p.status === 'PENDING',
-        );
-      }
+        orderBy: { createdAt: 'desc' },
+      });
     }
 
     const updatedMetadata = {
@@ -906,36 +718,12 @@ export class SubscriptionPaymentsService {
 
     if (!payment) {
       const ref = dto.transactionReference || `BT-PROOF-${Date.now()}`;
-      const newPaymentId = `spay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-      let createdPayment: any = null;
-
-      if (this.prisma.isDbConnected) {
-        try {
-          const sub = await this.prisma.subscription.findFirst({ where: { tenantId } });
-          createdPayment = await this.prisma.subscriptionPayment.create({
-            data: {
-              id: newPaymentId,
-              tenantId,
-              subscriptionId: sub?.id || null,
-              amount: 350000,
-              currency: 'NGN',
-              paymentMethod: 'BANK_TRANSFER',
-              provider: 'BANK_TRANSFER',
-              providerReference: ref,
-              status: 'PENDING',
-              metadata: updatedMetadata,
-            },
-          });
-        } catch (dbErr: any) {
-          this.logger.warn(`Failed to create DB payment proof: ${dbErr?.message}`);
-        }
-      }
-
-      if (!createdPayment) {
-        createdPayment = {
-          id: newPaymentId,
+      const sub = await this.prisma.subscription.findFirst({ where: { tenantId } });
+      const createdPayment = await this.prisma.subscriptionPayment.create({
+        data: {
+          id: `spay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
           tenantId,
-          subscriptionId: `sub_${tenantId}`,
+          subscriptionId: sub?.id || null,
           amount: 350000,
           currency: 'NGN',
           paymentMethod: 'BANK_TRANSFER',
@@ -943,10 +731,8 @@ export class SubscriptionPaymentsService {
           providerReference: ref,
           status: 'PENDING',
           metadata: updatedMetadata,
-        };
-      }
-
-      this.prisma.memoryStore.subscriptionPayments.set(createdPayment.id, createdPayment);
+        },
+      });
 
       return {
         success: true,
@@ -957,24 +743,15 @@ export class SubscriptionPaymentsService {
       };
     }
 
-    let updatedPayment = { ...payment, metadata: updatedMetadata };
-    if (this.prisma.isDbConnected && payment.id) {
-      try {
-        updatedPayment = await this.prisma.subscriptionPayment.update({
-          where: { id: payment.id },
-          data: {
-            paymentMethod: 'BANK_TRANSFER',
-            provider: 'BANK_TRANSFER',
-            status: 'PENDING',
-            metadata: updatedMetadata,
-          },
-        });
-      } catch (dbErr: any) {
-        this.logger.warn(`Could not update payment proof in DB: ${dbErr?.message}`);
-      }
-    }
-
-    this.prisma.memoryStore.subscriptionPayments.set(updatedPayment.id, updatedPayment);
+    const updatedPayment = await this.prisma.subscriptionPayment.update({
+      where: { id: payment.id },
+      data: {
+        paymentMethod: 'BANK_TRANSFER',
+        provider: 'BANK_TRANSFER',
+        status: 'PENDING',
+        metadata: updatedMetadata,
+      },
+    });
 
     return {
       success: true,
@@ -1035,7 +812,7 @@ export class SubscriptionPaymentsService {
       }
     }
 
-    let sub = await this.prisma.subscription.findFirst({
+    const sub = await this.prisma.subscription.findFirst({
       where: { tenantId },
     });
     const subId = sub?.id || `sub_${tenantId.replace(/[^a-zA-Z0-9]/g, '_')}`;
@@ -1043,199 +820,118 @@ export class SubscriptionPaymentsService {
     const paymentDate = dto.paymentDate ? new Date(dto.paymentDate) : now;
     const paymentId = existingPayment?.id || `spay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
-    let updatedSub: any = null;
-    let payment: any = null;
-    let invoice: any = null;
-
-    if (this.prisma.isDbConnected) {
-      try {
-        const dbTenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } }).catch(() => null);
-        if (dbTenant) {
-          const [uSub, pmt] = await this.prisma.$transaction([
-            this.prisma.subscription.upsert({
-              where: { id: subId },
-              create: {
-                id: subId,
-                tenantId,
-                planId: plan?.id,
-                planTier: targetTier,
-                status: 'ACTIVE',
-                billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
-                priceAtPurchase: dto.amount,
-                currency: plan?.currency || 'NGN',
-                trialEndsAt: null,
-                currentPeriodStart: now,
-                currentPeriodEnd: periodEnd,
-                maxStudents: plan?.maxStudents || 1500,
-                maxCampuses: plan?.maxCampuses || 3,
-                maxStaff: plan?.maxStaff || 100,
-                storageLimitMb: plan?.storageLimitMb || 25600,
-                autoRenew: true,
-              },
-              update: {
-                planId: plan?.id,
-                planTier: targetTier,
-                status: 'ACTIVE',
-                billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
-                priceAtPurchase: dto.amount,
-                trialEndsAt: null,
-                currentPeriodStart: now,
-                currentPeriodEnd: periodEnd,
-                maxStudents: plan?.maxStudents,
-                maxCampuses: plan?.maxCampuses,
-                maxStaff: plan?.maxStaff,
-                storageLimitMb: plan?.storageLimitMb,
-                updatedAt: now,
-              },
-            }),
-
-            this.prisma.subscriptionPayment.upsert({
-              where: { id: paymentId },
-              create: {
-                id: paymentId,
-                tenantId,
-                subscriptionId: subId,
-                amount: dto.amount,
-                currency: plan?.currency || 'NGN',
-                paymentMethod: dto.paymentMethod || 'MANUAL_SUPERADMIN',
-                provider: 'MANUAL',
-                providerReference: dto.reference,
-                status: 'SUCCESSFUL',
-                paidAt: paymentDate,
-                verifiedAt: now,
-                verifiedBy: adminUser.email || 'Super Admin',
-                metadata: {
-                  reason: dto.reason,
-                  notes: dto.notes,
-                  recordedBy: adminUser.email,
-                  planTier: targetTier,
-                  billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
-                },
-              },
-              update: {
-                amount: dto.amount,
-                status: 'SUCCESSFUL',
-                paidAt: paymentDate,
-                verifiedAt: now,
-                verifiedBy: adminUser.email || 'Super Admin',
-                metadata: {
-                  reason: dto.reason,
-                  notes: dto.notes,
-                  recordedBy: adminUser.email,
-                  planTier: targetTier,
-                  billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
-                },
-              },
-            }),
-
-            this.prisma.tenant.update({
-              where: { id: tenantId },
-              data: {
-                status: 'ACTIVE',
-                plan: targetTier.toLowerCase(),
-                updatedAt: now,
-              },
-            }),
-
-            this.prisma.auditLog.create({
-              data: {
-                id: `aud_man_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                tenantId,
-                actorUserId: adminUser.userId || null,
-                action: 'SUBSCRIPTION_MANUAL_PAYMENT_RECORDED',
-                resourceType: 'SubscriptionPayment',
-                resourceId: paymentId,
-                afterData: {
-                  whoActivated: adminUser.email || 'Platform Super Admin',
-                  amount: dto.amount,
-                  plan: targetTier,
-                  billingPeriod: isAnnual ? 'ANNUAL' : 'TERMLY',
-                  paymentMethod: dto.paymentMethod,
-                  reference: dto.reference,
-                  date: paymentDate,
-                  reason: dto.reason,
-                  notes: dto.notes,
-                },
-              },
-            }),
-          ]);
-
-          updatedSub = uSub;
-          payment = pmt;
-
-          const invoiceNumber = `SUB-INV-${now.getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-          invoice = await this.prisma.billingInvoice.create({
-            data: {
-              id: `binv_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-              tenantId,
-              subscriptionId: updatedSub.id,
-              invoiceNumber,
-              amount: dto.amount,
-              currency: plan?.currency || 'NGN',
-              status: 'PAID',
-              dueDate: now,
-              paidAt: paymentDate,
-              paymentMethod: dto.paymentMethod,
-              lineItems: [
-                {
-                  description: `Manual Payment Assignment: ${plan?.name || targetTier} (${dto.billingCycle}) - ${dto.reason}`,
-                  amount: dto.amount,
-                  quantity: 1,
-                },
-              ],
-            },
-          });
-        }
-      } catch (dbErr: any) {
-        this.logger.warn(`Failed to execute manual payment in DB: ${dbErr?.message}`);
-      }
-    }
-
-    if (!updatedSub || !payment) {
-      updatedSub = {
-        id: subId,
-        tenantId,
-        planId: plan?.id || `plan-${targetTier.toLowerCase()}`,
-        planTier: targetTier,
-        status: 'ACTIVE',
-        billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
-        priceAtPurchase: dto.amount,
-        currency: plan?.currency || 'NGN',
-        trialEndsAt: null,
-        currentPeriodStart: now,
-        currentPeriodEnd: periodEnd,
-        maxStudents: plan?.maxStudents || 1500,
-        maxCampuses: plan?.maxCampuses || 3,
-        maxStaff: plan?.maxStaff || 100,
-        storageLimitMb: plan?.storageLimitMb || 25600,
-        autoRenew: true,
-        updatedAt: now,
-      };
-
-      payment = {
-        id: paymentId,
-        tenantId,
-        subscriptionId: subId,
-        amount: dto.amount,
-        currency: plan?.currency || 'NGN',
-        paymentMethod: dto.paymentMethod || 'MANUAL_SUPERADMIN',
-        provider: 'MANUAL',
-        providerReference: dto.reference,
-        status: 'SUCCESSFUL',
-        paidAt: paymentDate,
-        verifiedAt: now,
-        verifiedBy: adminUser.email || 'Super Admin',
-        metadata: {
-          reason: dto.reason,
-          notes: dto.notes,
-          recordedBy: adminUser.email,
+    const [updatedSub, payment] = await this.prisma.$transaction([
+      this.prisma.subscription.upsert({
+        where: { id: subId },
+        create: {
+          id: subId,
+          tenantId,
+          planId: plan?.id,
           planTier: targetTier,
+          status: 'ACTIVE',
           billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
+          priceAtPurchase: dto.amount,
+          currency: plan?.currency || 'NGN',
+          trialEndsAt: null,
+          currentPeriodStart: now,
+          currentPeriodEnd: periodEnd,
+          maxStudents: plan?.maxStudents || 1500,
+          maxCampuses: plan?.maxCampuses || 3,
+          maxStaff: plan?.maxStaff || 100,
+          storageLimitMb: plan?.storageLimitMb || 25600,
+          autoRenew: true,
         },
-      };
+        update: {
+          planId: plan?.id,
+          planTier: targetTier,
+          status: 'ACTIVE',
+          billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
+          priceAtPurchase: dto.amount,
+          trialEndsAt: null,
+          currentPeriodStart: now,
+          currentPeriodEnd: periodEnd,
+          maxStudents: plan?.maxStudents,
+          maxCampuses: plan?.maxCampuses,
+          maxStaff: plan?.maxStaff,
+          storageLimitMb: plan?.storageLimitMb,
+          updatedAt: now,
+        },
+      }),
 
-      const invoiceNumber = `SUB-INV-${now.getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-      invoice = {
+      this.prisma.subscriptionPayment.upsert({
+        where: { id: paymentId },
+        create: {
+          id: paymentId,
+          tenantId,
+          subscriptionId: subId,
+          amount: dto.amount,
+          currency: plan?.currency || 'NGN',
+          paymentMethod: dto.paymentMethod || 'MANUAL_SUPERADMIN',
+          provider: 'MANUAL',
+          providerReference: dto.reference,
+          status: 'SUCCESSFUL',
+          paidAt: paymentDate,
+          verifiedAt: now,
+          verifiedBy: adminUser.email || 'Super Admin',
+          metadata: {
+            reason: dto.reason,
+            notes: dto.notes,
+            recordedBy: adminUser.email,
+            planTier: targetTier,
+            billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
+          },
+        },
+        update: {
+          amount: dto.amount,
+          status: 'SUCCESSFUL',
+          paidAt: paymentDate,
+          verifiedAt: now,
+          verifiedBy: adminUser.email || 'Super Admin',
+          metadata: {
+            reason: dto.reason,
+            notes: dto.notes,
+            recordedBy: adminUser.email,
+            planTier: targetTier,
+            billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
+          },
+        },
+      }),
+
+      this.prisma.tenant.update({
+        where: { id: tenantId },
+        data: {
+          status: 'ACTIVE',
+          plan: targetTier.toLowerCase(),
+          updatedAt: now,
+        },
+      }),
+
+      this.prisma.auditLog.create({
+        data: {
+          id: `aud_man_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          tenantId,
+          actorUserId: adminUser.userId || null,
+          action: 'SUBSCRIPTION_MANUAL_PAYMENT_RECORDED',
+          resourceType: 'SubscriptionPayment',
+          resourceId: paymentId,
+          afterData: {
+            whoActivated: adminUser.email || 'Platform Super Admin',
+            amount: dto.amount,
+            plan: targetTier,
+            billingPeriod: isAnnual ? 'ANNUAL' : 'TERMLY',
+            paymentMethod: dto.paymentMethod,
+            reference: dto.reference,
+            date: paymentDate,
+            reason: dto.reason,
+            notes: dto.notes,
+          },
+        },
+      }),
+    ]);
+
+    const invoiceNumber = `SUB-INV-${now.getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const invoice = await this.prisma.billingInvoice.create({
+      data: {
         id: `binv_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         tenantId,
         subscriptionId: updatedSub.id,
@@ -1253,23 +949,8 @@ export class SubscriptionPaymentsService {
             quantity: 1,
           },
         ],
-      };
-    }
-
-    // Sync Memory Store
-    this.prisma.memoryStore.subscriptionPayments.set(payment.id, payment);
-    this.prisma.memoryStore.subscriptions.set(updatedSub.id, {
-      ...updatedSub,
-      tier: targetTier.toLowerCase(),
+      },
     });
-    const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
-    if (memTenant) {
-      memTenant.status = 'ACTIVE';
-      memTenant.plan = targetTier.toLowerCase();
-    }
-    if (invoice) {
-      this.prisma.memoryStore.billingInvoices.set(invoice.id, invoice);
-    }
 
     return {
       success: true,
@@ -1359,42 +1040,24 @@ export class SubscriptionPaymentsService {
    * List all subscription payments for a specific tenant.
    */
   async listTenantPayments(tenantId: string) {
-    if (this.prisma.isDbConnected) {
-      try {
-        const payments = await this.prisma.subscriptionPayment.findMany({
-          where: { tenantId },
-          orderBy: { createdAt: 'desc' },
-        });
-        return payments;
-      } catch (err: any) {
-        this.logger.warn(`listTenantPayments DB error: ${err?.message}`);
-      }
-    }
-
-    return Array.from(this.prisma.memoryStore.subscriptionPayments.values()).filter(
-      (p: any) => p.tenantId === tenantId,
-    );
+    const payments = await this.prisma.subscriptionPayment.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+    });
+    return payments;
   }
 
   /**
    * List all subscription payments across all tenants for Super Admin.
    */
   async listPlatformPayments() {
-    if (this.prisma.isDbConnected) {
-      try {
-        const payments = await this.prisma.subscriptionPayment.findMany({
-          include: {
-            tenant: { select: { id: true, name: true, slug: true } },
-            subscription: { select: { id: true, planTier: true, billingCycle: true } },
-          },
-          orderBy: { createdAt: 'desc' },
-        });
-        return payments;
-      } catch (err: any) {
-        this.logger.warn(`listPlatformPayments DB error: ${err?.message}`);
-      }
-    }
-
-    return Array.from(this.prisma.memoryStore.subscriptionPayments.values());
+    const payments = await this.prisma.subscriptionPayment.findMany({
+      include: {
+        tenant: { select: { id: true, name: true, slug: true } },
+        subscription: { select: { id: true, planTier: true, billingCycle: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return payments;
   }
 }

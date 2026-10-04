@@ -70,7 +70,7 @@ describe('Step 16: Trial Expiration, Lifecycle Enforcement & Feature Access (Det
       currentPeriodEnd: futureDate,
     });
 
-    const opCheck = lifecycleService.checkTenantOperationAllowed(tenantId);
+    const opCheck = await lifecycleService.checkTenantOperationAllowed(tenantId);
     expect(opCheck.allowed).toBe(true);
     expect(opCheck.status).toBe('TRIAL');
 
@@ -154,7 +154,7 @@ describe('Step 16: Trial Expiration, Lifecycle Enforcement & Feature Access (Det
     const tenant = prisma.memoryStore.tenants.get(tenantId);
     expect(tenant.status).toBe('ACTIVE');
 
-    const opCheck = lifecycleService.checkTenantOperationAllowed(tenantId);
+    const opCheck = await lifecycleService.checkTenantOperationAllowed(tenantId);
     expect(opCheck.allowed).toBe(true);
     expect(opCheck.status).toBe('ACTIVE');
   });
@@ -181,7 +181,7 @@ describe('Step 16: Trial Expiration, Lifecycle Enforcement & Feature Access (Det
       currentPeriodEnd: pastDate,
     });
 
-    expect(() => lifecycleService.checkTenantOperationAllowed(tenantId)).toThrow(ForbiddenException);
+    await expect(lifecycleService.checkTenantOperationAllowed(tenantId)).rejects.toThrow(ForbiddenException);
 
     const activation = await lifecycleService.activateSubscription(tenantId, {
       planTier: 'STANDARD',
@@ -200,7 +200,7 @@ describe('Step 16: Trial Expiration, Lifecycle Enforcement & Feature Access (Det
     expect(tenant.status).toBe('ACTIVE');
     expect(tenant.plan).toBe('standard');
 
-    const opCheck = lifecycleService.checkTenantOperationAllowed(tenantId);
+    const opCheck = await lifecycleService.checkTenantOperationAllowed(tenantId);
     expect(opCheck.allowed).toBe(true);
     expect(opCheck.status).toBe('ACTIVE');
 

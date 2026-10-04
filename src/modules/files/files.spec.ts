@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { FilesService } from './files.service.js';
 import { StorageService } from '../storage/storage.service.js';
 import { PrismaService } from '../../database/prisma.service.js';
@@ -10,13 +10,46 @@ describe('Files Module & Multi-Tenant Storage Integration (Task 4: S3/GCS)', () 
   let prisma: PrismaService;
   let storageService: StorageService;
   let filesService: FilesService;
+  let fileAssetsStore: Map<string, any>;
 
   const TENANT_1 = 'tenant_mercury_101';
   const TENANT_2 = 'tenant_venus_202';
   const USER_1 = 'user_admin_001';
 
   beforeEach(() => {
-    prisma = new PrismaService();
+    fileAssetsStore = new Map();
+    prisma = {
+      fileAsset: {
+        create: vi.fn(async ({ data }: any) => {
+          const record = { ...data, createdAt: new Date() };
+          fileAssetsStore.set(data.id, record);
+          return record;
+        }),
+        findFirst: vi.fn(async ({ where }: any) => {
+          for (const item of fileAssetsStore.values()) {
+            if (where.id && item.id !== where.id) continue;
+            if (where.tenantId && item.tenantId !== where.tenantId) continue;
+            return item;
+          }
+          return null;
+        }),
+        findMany: vi.fn(async ({ where }: any) => {
+          const results = [];
+          for (const item of fileAssetsStore.values()) {
+            if (where?.tenantId && item.tenantId !== where.tenantId) continue;
+            if (where?.category && item.category !== where.category) continue;
+            results.push(item);
+          }
+          return results;
+        }),
+        delete: vi.fn(async ({ where }: any) => {
+          const item = fileAssetsStore.get(where.id);
+          fileAssetsStore.delete(where.id);
+          return item;
+        }),
+      },
+    } as unknown as PrismaService;
+
     const configService = new ConfigService({
       storage: {
         provider: 'memory',
@@ -25,11 +58,11 @@ describe('Files Module & Multi-Tenant Storage Integration (Task 4: S3/GCS)', () 
       },
     });
     storageService = new StorageService(configService);
-    filesService = new FilesService(prisma, storageService);
+    filesService = new FilesService(prisma, storageService as any);
   });
 
   afterEach(() => {
-    prisma.memoryStore.fileAssets.clear();
+    fileAssetsStore.clear();
   });
 
   describe('1. File Upload Presigning & Registration', () => {

@@ -17,38 +17,21 @@ export class TransportTrackingService {
 
     // 1. Verify trip if tripId is provided
     if (telemetry.tripId) {
-      if (this.prisma.isDbConnected) {
-        const trip = await this.prisma.transportTrip.findFirst({
-          where: { id: telemetry.tripId, tenantId },
-        });
-        if (trip) {
-          trackingMode = trip.trackingMode as TrackingMode;
-        } else {
-          throw new NotFoundException(`Trip "${telemetry.tripId}" not found for this school.`);
-        }
-      } else {
-        const trip = this.prisma.memoryStore.transportTrips.get(telemetry.tripId);
-        if (!trip || trip.tenantId !== tenantId) {
-          throw new NotFoundException(`Trip "${telemetry.tripId}" not found for this school.`);
-        }
+      const trip = await this.prisma.transportTrip.findFirst({
+        where: { id: telemetry.tripId, tenantId },
+      });
+      if (trip) {
         trackingMode = trip.trackingMode as TrackingMode;
+      } else {
+        throw new NotFoundException(`Trip "${telemetry.tripId}" not found for this school.`);
       }
     } else if (telemetry.vehicleNumber) {
       // 2. Verify vehicle if vehicleNumber is provided
-      if (this.prisma.isDbConnected) {
-        const vehicle = await this.prisma.vehicle.findFirst({
-          where: { vehicleNumber: telemetry.vehicleNumber.toUpperCase(), tenantId },
-        });
-        if (vehicle && vehicle.trackingMode) {
-          trackingMode = vehicle.trackingMode as TrackingMode;
-        }
-      } else {
-        const vehicle = Array.from(this.prisma.memoryStore.vehicles.values()).find(
-          (v) => v.vehicleNumber === telemetry.vehicleNumber.toUpperCase() && v.tenantId === tenantId,
-        );
-        if (vehicle && vehicle.trackingMode) {
-          trackingMode = vehicle.trackingMode as TrackingMode;
-        }
+      const vehicle = await this.prisma.vehicle.findFirst({
+        where: { vehicleNumber: telemetry.vehicleNumber.toUpperCase(), tenantId },
+      });
+      if (vehicle && vehicle.trackingMode) {
+        trackingMode = vehicle.trackingMode as TrackingMode;
       }
     }
 
@@ -61,27 +44,15 @@ export class TransportTrackingService {
     let trackingMode: TrackingMode = TrackingMode.NONE;
 
     if (identifier.tripId) {
-      if (this.prisma.isDbConnected) {
-        const trip = await this.prisma.transportTrip.findFirst({
-          where: { id: identifier.tripId, tenantId },
-        });
-        if (trip) trackingMode = trip.trackingMode as TrackingMode;
-      } else {
-        const trip = this.prisma.memoryStore.transportTrips.get(identifier.tripId);
-        if (trip && trip.tenantId === tenantId) trackingMode = trip.trackingMode as TrackingMode;
-      }
+      const trip = await this.prisma.transportTrip.findFirst({
+        where: { id: identifier.tripId, tenantId },
+      });
+      if (trip) trackingMode = trip.trackingMode as TrackingMode;
     } else if (identifier.vehicleNumber) {
-      if (this.prisma.isDbConnected) {
-        const vehicle = await this.prisma.vehicle.findFirst({
-          where: { vehicleNumber: identifier.vehicleNumber.toUpperCase(), tenantId },
-        });
-        if (vehicle) trackingMode = vehicle.trackingMode as TrackingMode;
-      } else {
-        const vehicle = Array.from(this.prisma.memoryStore.vehicles.values()).find(
-          (v) => v.vehicleNumber === identifier.vehicleNumber?.toUpperCase() && v.tenantId === tenantId,
-        );
-        if (vehicle) trackingMode = vehicle.trackingMode as TrackingMode;
-      }
+      const vehicle = await this.prisma.vehicle.findFirst({
+        where: { vehicleNumber: identifier.vehicleNumber.toUpperCase(), tenantId },
+      });
+      if (vehicle) trackingMode = vehicle.trackingMode as TrackingMode;
     }
 
     const provider = this.trackingFactory.getProvider(trackingMode);

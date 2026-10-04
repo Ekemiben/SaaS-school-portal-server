@@ -13,13 +13,10 @@ export class CustomDomainService {
   ) {}
 
   async listDomains(tenantId: string) {
-    if (this.prisma.isDbConnected) {
-      return this.prisma.tenantDomain.findMany({
-        where: { tenantId },
-        orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
-      });
-    }
-    return Array.from(this.prisma.memoryStore.domains.values()).filter((d) => d.tenantId === tenantId);
+    return this.prisma.tenantDomain.findMany({
+      where: { tenantId },
+      orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
+    });
   }
 
   async addCustomDomain(tenantId: string, domain: string) {
@@ -29,16 +26,9 @@ export class CustomDomainService {
       throw new BadRequestException('Localhost domains cannot be configured as custom production domains.');
     }
 
-    if (this.prisma.isDbConnected) {
-      const existing = await this.prisma.tenantDomain.findUnique({ where: { domain: cleanDomain } });
-      if (existing) {
-        throw new ConflictException(`Domain "${cleanDomain}" is already registered in the platform.`);
-      }
-    } else {
-      const existing = Array.from(this.prisma.memoryStore.domains.values()).find((d) => d.domain === cleanDomain);
-      if (existing) {
-        throw new ConflictException(`Domain "${cleanDomain}" is already registered in the platform.`);
-      }
+    const existing = await this.prisma.tenantDomain.findUnique({ where: { domain: cleanDomain } });
+    if (existing) {
+      throw new ConflictException(`Domain "${cleanDomain}" is already registered in the platform.`);
     }
 
     const domainId = `domain_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
@@ -53,15 +43,9 @@ export class CustomDomainService {
       isVerified: false,
       verificationToken,
       sslStatus: 'PENDING',
-      createdAt: new Date(),
-      updatedAt: new Date(),
     };
 
-    if (this.prisma.isDbConnected) {
-      await this.prisma.tenantDomain.create({ data: domainRecord });
-    } else {
-      this.prisma.memoryStore.domains.set(domainId, domainRecord);
-    }
+    await this.prisma.tenantDomain.create({ data: domainRecord });
 
     return {
       domain: cleanDomain,
@@ -86,13 +70,7 @@ export class CustomDomainService {
 
   async verifyCustomDomain(tenantId: string, domain: string) {
     const cleanDomain = domain.toLowerCase().trim();
-    let domainRecord: any = null;
-
-    if (this.prisma.isDbConnected) {
-      domainRecord = await this.prisma.tenantDomain.findUnique({ where: { domain: cleanDomain } });
-    } else {
-      domainRecord = Array.from(this.prisma.memoryStore.domains.values()).find((d) => d.domain === cleanDomain);
-    }
+    const domainRecord = await this.prisma.tenantDomain.findUnique({ where: { domain: cleanDomain } });
 
     if (!domainRecord || domainRecord.tenantId !== tenantId) {
       throw new NotFoundException(`Custom domain "${cleanDomain}" not found for this school.`);
@@ -115,85 +93,53 @@ export class CustomDomainService {
       sslStatus: sslResult.sslStatus,
       sslIssuedAt: sslResult.issuedAt ? new Date(sslResult.issuedAt) : new Date(),
       sslExpiresAt: sslResult.expiresAt ? new Date(sslResult.expiresAt) : new Date(Date.now() + 90 * 86400000),
-      updatedAt: new Date(),
     };
 
-    if (this.prisma.isDbConnected) {
-      await this.prisma.tenantDomain.update({
-        where: { id: domainRecord.id },
-        data: updateData,
-      });
-    } else {
-      Object.assign(domainRecord, updateData);
-      this.prisma.memoryStore.domains.set(domainRecord.id, domainRecord);
-    }
+    const updated = await this.prisma.tenantDomain.update({
+      where: { id: domainRecord.id },
+      data: updateData,
+    });
 
     return {
       verified: true,
       message: `Domain "${cleanDomain}" verified successfully and SSL certificate active!`,
       ssl: sslResult,
-      domain: { ...domainRecord, ...updateData },
+      domain: updated,
     };
   }
 
   async setPrimaryDomain(tenantId: string, domain: string) {
     const cleanDomain = domain.toLowerCase().trim();
-    let target: any = null;
-
-    if (this.prisma.isDbConnected) {
-      target = await this.prisma.tenantDomain.findUnique({ where: { domain: cleanDomain } });
-      if (!target || target.tenantId !== tenantId) {
-        throw new NotFoundException('Domain not found for this school.');
-      }
-      if (!target.isVerified) {
-        throw new BadRequestException('Cannot set an unverified domain as primary.');
-      }
-
-      await this.prisma.$transaction([
-        this.prisma.tenantDomain.updateMany({
-          where: { tenantId },
-          data: { isPrimary: false },
-        }),
-        this.prisma.tenantDomain.update({
-          where: { id: target.id },
-          data: { isPrimary: true },
-        }),
-      ]);
-    } else {
-      target = Array.from(this.prisma.memoryStore.domains.values()).find(
-        (d) => d.tenantId === tenantId && d.domain === cleanDomain,
-      );
-      if (!target) throw new NotFoundException('Domain not found for this school.');
-      if (!target.isVerified) throw new BadRequestException('Cannot set an unverified domain as primary.');
-
-      for (const d of this.prisma.memoryStore.domains.values()) {
-        if (d.tenantId === tenantId) d.isPrimary = d.domain === cleanDomain;
-      }
+    const target = await this.prisma.tenantDomain.findUnique({ where: { domain: cleanDomain } });
+    if (!target || target.tenantId !== tenantId) {
+      throw new NotFoundException('Domain not found for this school.');
     }
+    if (!target.isVerified) {
+      throw new BadRequestException('Cannot set an unverified domain as primary.');
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.tenantDomain.updateMany({
+        where: { tenantId },
+        data: { isPrimary: false },
+      }),
+      this.prisma.tenantDomain.update({
+        where: { id: target.id },
+        data: { isPrimary: true },
+      }),
+    ]);
 
     return { success: true, primaryDomain: cleanDomain };
   }
 
   async removeCustomDomain(tenantId: string, domain: string) {
     const cleanDomain = domain.toLowerCase().trim();
-    let target: any = null;
+    const target = await this.prisma.tenantDomain.findUnique({ where: { domain: cleanDomain } });
+    if (!target || target.tenantId !== tenantId) throw new NotFoundException('Domain not found for this school.');
+    if (target.isPrimary) throw new BadRequestException('Cannot remove the primary domain. Set another primary first.');
 
-    if (this.prisma.isDbConnected) {
-      target = await this.prisma.tenantDomain.findUnique({ where: { domain: cleanDomain } });
-      if (!target || target.tenantId !== tenantId) throw new NotFoundException('Domain not found for this school.');
-      if (target.isPrimary) throw new BadRequestException('Cannot remove the primary domain. Set another primary first.');
-
-      await this.domainProvider.removeCustomHostname(cleanDomain);
-      await this.prisma.tenantDomain.delete({ where: { id: target.id } });
-    } else {
-      target = Array.from(this.prisma.memoryStore.domains.values()).find(
-        (d) => d.tenantId === tenantId && d.domain === cleanDomain,
-      );
-      if (!target) throw new NotFoundException('Domain not found for this school.');
-      if (target.isPrimary) throw new BadRequestException('Cannot remove the primary domain.');
-
-      this.prisma.memoryStore.domains.delete(target.id);
-    }
+    await this.domainProvider.removeCustomHostname(cleanDomain);
+    await this.prisma.tenantDomain.delete({ where: { id: target.id } });
 
     return { success: true, message: `Domain "${cleanDomain}" removed successfully.` };
   }

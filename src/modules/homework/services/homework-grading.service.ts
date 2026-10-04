@@ -20,16 +20,23 @@ export class HomeworkGradingService {
     teacherUserId: string,
     dto: GradeHomeworkDto,
   ) {
-    const submission = this.prisma.memoryStore.homeworkSubmissions.get(submissionId);
-    if (!submission || submission.tenantId !== tenantId) {
+    const submission = await this.prisma.homeworkSubmission.findFirst({
+      where: { id: submissionId, tenantId },
+      include: {
+        homework: true,
+        student: true,
+      },
+    });
+
+    if (!submission) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Homework submission not found',
       });
     }
 
-    const homework = this.prisma.memoryStore.homework.get(submission.homeworkId);
-    if (!homework || homework.tenantId !== tenantId) {
+    const homework = submission.homework;
+    if (!homework) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Associated homework assignment not found',
@@ -46,24 +53,30 @@ export class HomeworkGradingService {
 
     const calculatedGrade = dto.grade || this.deriveLetterGrade(dto.score, maxMarks);
 
-    submission.score = dto.score;
-    submission.grade = calculatedGrade;
-    submission.feedback = dto.feedback || null;
-    submission.rubricScores = dto.rubricScores || null;
-    submission.status = dto.status || 'GRADED';
-    submission.gradedAt = new Date();
-    submission.gradedByUserId = teacherUserId;
-    submission.updatedAt = new Date();
+    const updated = await this.prisma.homeworkSubmission.update({
+      where: { id: submissionId },
+      data: {
+        score: dto.score,
+        grade: calculatedGrade,
+        feedback: dto.feedback || null,
+        rubricScores: (dto.rubricScores as any) || null,
+        status: dto.status || 'GRADED',
+        gradedAt: new Date(),
+        gradedByUserId: teacherUserId,
+      },
+      include: {
+        student: true,
+        homework: true,
+      },
+    });
 
-    this.prisma.memoryStore.homeworkSubmissions.set(submissionId, submission);
-
-    this.dispatchGradingNotification(tenantId, submission, homework).catch((err) =>
+    this.dispatchGradingNotification(tenantId, updated, homework).catch((err) =>
       this.logger.warn(`Failed to dispatch grading notification: ${err.message}`),
     );
 
-    const student = this.prisma.memoryStore.students.get(submission.studentId);
+    const student = updated.student;
     return {
-      ...submission,
+      ...updated,
       studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
       admissionNumber: student?.admissionNumber || '',
       homeworkTitle: homework.title,
@@ -77,8 +90,11 @@ export class HomeworkGradingService {
     teacherUserId: string,
     dto: BulkGradeSubmissionDto,
   ) {
-    const homework = this.prisma.memoryStore.homework.get(homeworkId);
-    if (!homework || homework.tenantId !== tenantId) {
+    const homework = await this.prisma.homework.findFirst({
+      where: { id: homeworkId, tenantId },
+    });
+
+    if (!homework) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Homework assignment not found',

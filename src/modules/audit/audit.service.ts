@@ -35,18 +35,41 @@ export class AuditService {
   constructor(private readonly prisma: PrismaService) {}
 
   async log(entry: AuditLogEntry) {
-    const id = `audit_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-    const record = {
-      id,
-      ...entry,
-      isImpersonated: !!entry.impersonatedBy || !!entry.isImpersonated,
-      createdAt: new Date(),
-    };
-    this.prisma.memoryStore.auditLogs.set(id, record);
+    let record: any = null;
 
-    if (record.isImpersonated) {
+    if (entry.tenantId) {
+      try {
+        record = await this.prisma.auditLog.create({
+          data: {
+            tenantId: entry.tenantId,
+            actorUserId: entry.actorUserId || null,
+            action: entry.action,
+            resourceType: entry.resourceType,
+            resourceId: entry.resourceId || null,
+            beforeData: entry.beforeData ? entry.beforeData : undefined,
+            afterData: entry.afterData ? entry.afterData : undefined,
+            ipAddress: entry.ipAddress || null,
+            userAgent: entry.userAgent || null,
+            requestId: entry.requestId || null,
+          },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Could not save audit log to db: ${err.message}`);
+      }
+    }
+
+    if (!record) {
+      record = {
+        id: `audit_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+        ...entry,
+        isImpersonated: !!entry.impersonatedBy || !!entry.isImpersonated,
+        createdAt: new Date(),
+      };
+    }
+
+    if (entry.impersonatedBy || entry.isImpersonated) {
       this.logger.warn(
-        `[AUDIT - IMPERSONATION] Superadmin ${record.impersonatedBy} performed ${record.action} on ${record.resourceType} in tenant ${record.tenantId}`,
+        `[AUDIT - IMPERSONATION] Superadmin ${entry.impersonatedBy} performed ${entry.action} on ${entry.resourceType} in tenant ${entry.tenantId}`,
       );
     }
 
@@ -98,75 +121,63 @@ export class AuditService {
     const limit = typeof filter === 'number' ? filter : (filter?.limit || 50);
     const filterObj = typeof filter === 'object' ? filter : undefined;
 
-    let logs = Array.from(this.prisma.memoryStore.auditLogs.values()).filter(
-      (a: any) => a.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
 
     if (filterObj?.resourceType) {
-      logs = logs.filter((a: any) => a.resourceType === filterObj.resourceType);
+      where.resourceType = filterObj.resourceType;
     }
     if (filterObj?.action) {
-      logs = logs.filter((a: any) => a.action === filterObj.action);
+      where.action = filterObj.action;
     }
     if (filterObj?.actorUserId) {
-      logs = logs.filter((a: any) => a.actorUserId === filterObj.actorUserId);
-    }
-    if (filterObj?.isImpersonated !== undefined) {
-      logs = logs.filter((a: any) => a.isImpersonated === filterObj.isImpersonated);
-    }
-    if (filterObj?.impersonatedBy) {
-      logs = logs.filter((a: any) => a.impersonatedBy === filterObj.impersonatedBy);
+      where.actorUserId = filterObj.actorUserId;
     }
     if (filterObj?.search) {
-      const q = filterObj.search.toLowerCase();
-      logs = logs.filter(
-        (a: any) =>
-          a.action.toLowerCase().includes(q) ||
-          (a.resourceType && a.resourceType.toLowerCase().includes(q)) ||
-          (a.resource && a.resource.toLowerCase().includes(q)) ||
-          (a.actor && a.actor.toLowerCase().includes(q)) ||
-          (a.resourceId && a.resourceId.toLowerCase().includes(q)),
-      );
+      const q = filterObj.search;
+      where.OR = [
+        { action: { contains: q, mode: 'insensitive' } },
+        { resourceType: { contains: q, mode: 'insensitive' } },
+        { resourceId: { contains: q, mode: 'insensitive' } },
+      ];
     }
 
-    return logs
-      .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .slice(0, limit)
-      .map((a: any) => this.enrichAuditLog(a));
+    const logs = await this.prisma.auditLog.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+
+    return logs.map((a) => this.enrichAuditLog(a));
   }
 
   async listPlatformAuditLogs(filter?: AuditLogFilter & { tenantId?: string }) {
     const limit = filter?.limit || 100;
-    let logs = Array.from(this.prisma.memoryStore.auditLogs.values());
+    const where: any = {};
 
     if (filter?.tenantId) {
-      logs = logs.filter((a: any) => a.tenantId === filter.tenantId);
+      where.tenantId = filter.tenantId;
     }
     if (filter?.resourceType) {
-      logs = logs.filter((a: any) => a.resourceType === filter.resourceType);
+      where.resourceType = filter.resourceType;
     }
     if (filter?.action) {
-      logs = logs.filter((a: any) => a.action === filter.action);
-    }
-    if (filter?.isImpersonated !== undefined) {
-      logs = logs.filter((a: any) => a.isImpersonated === filter.isImpersonated);
-    }
-    if (filter?.impersonatedBy) {
-      logs = logs.filter((a: any) => a.impersonatedBy === filter.impersonatedBy);
+      where.action = filter.action;
     }
     if (filter?.search) {
-      const q = filter.search.toLowerCase();
-      logs = logs.filter(
-        (a: any) =>
-          a.action.toLowerCase().includes(q) ||
-          a.resourceType.toLowerCase().includes(q) ||
-          (a.tenantId && a.tenantId.toLowerCase().includes(q)) ||
-          (a.impersonatedBy && a.impersonatedBy.toLowerCase().includes(q)),
-      );
+      const q = filter.search;
+      where.OR = [
+        { action: { contains: q, mode: 'insensitive' } },
+        { resourceType: { contains: q, mode: 'insensitive' } },
+        { tenantId: { contains: q, mode: 'insensitive' } },
+      ];
     }
 
-    return logs
-      .sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(0, limit);
+    const logs = await this.prisma.auditLog.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+
+    return logs.map((a) => this.enrichAuditLog(a));
   }
 }

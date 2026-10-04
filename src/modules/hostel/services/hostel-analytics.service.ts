@@ -7,17 +7,23 @@ export class HostelAnalyticsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getHostelSummary(tenantId: string, filter?: HostelSummaryFilterDto) {
-    let hostels = Array.from(this.prisma.memoryStore.hostels.values()).filter(
-      (h) => h.tenantId === tenantId,
-    );
-    if (filter?.campusId) hostels = hostels.filter((h) => h.campusId === filter.campusId);
+    const campusWhere = filter?.campusId ? { campusId: filter.campusId } : {};
 
-    const rooms = Array.from(this.prisma.memoryStore.hostelRooms.values()).filter(
-      (r) => r.tenantId === tenantId && (!filter?.campusId || r.campusId === filter.campusId),
-    );
-    const beds = Array.from(this.prisma.memoryStore.hostelBeds.values()).filter(
-      (b) => b.tenantId === tenantId && (!filter?.campusId || b.campusId === filter.campusId),
-    );
+    const [hostels, rooms, beds, exeats] = await Promise.all([
+      this.prisma.hostel.findMany({
+        where: { tenantId, ...campusWhere },
+        include: { rooms: true, beds: true },
+      }),
+      this.prisma.hostelRoom.findMany({
+        where: { tenantId, ...campusWhere },
+      }),
+      this.prisma.hostelBed.findMany({
+        where: { tenantId, ...campusWhere },
+      }),
+      this.prisma.hostelExeat.findMany({
+        where: { tenantId, ...campusWhere },
+      }),
+    ]);
 
     const totalHostels = hostels.length;
     const totalRooms = rooms.length;
@@ -32,9 +38,6 @@ export class HostelAnalyticsService {
       mixed: hostels.filter((h) => h.gender === 'MIXED').length,
     };
 
-    const exeats = Array.from(this.prisma.memoryStore.hostelExeats.values()).filter(
-      (e) => e.tenantId === tenantId && (!filter?.campusId || e.campusId === filter.campusId),
-    );
     const activeDepartedExeats = exeats.filter((e) => e.status === 'DEPARTED').length;
     const overdueExeats = exeats.filter((e) => e.status === 'OVERDUE').length;
     const pendingExeats = exeats.filter(
@@ -85,23 +88,36 @@ export class HostelAnalyticsService {
     campusId?: string,
     hostelId?: string,
   ) {
-    let allocations = Array.from(this.prisma.memoryStore.hostelAllocations.values()).filter(
-      (a) => a.tenantId === tenantId && a.status === 'ACTIVE',
-    );
-    if (campusId) allocations = allocations.filter((a) => a.campusId === campusId);
-    if (hostelId) allocations = allocations.filter((a) => a.hostelId === hostelId);
+    const where: any = { tenantId, status: 'ACTIVE' };
+    if (campusId) where.campusId = campusId;
+    if (hostelId) where.hostelId = hostelId;
 
-    const activeExeats = Array.from(this.prisma.memoryStore.hostelExeats.values()).filter(
-      (e) => e.tenantId === tenantId && (e.status === 'DEPARTED' || e.status === 'OVERDUE'),
-    );
+    const [allocations, activeExeats] = await Promise.all([
+      this.prisma.hostelAllocation.findMany({
+        where,
+        include: {
+          student: true,
+          hostel: true,
+          room: true,
+          bed: true,
+        },
+      }),
+      this.prisma.hostelExeat.findMany({
+        where: {
+          tenantId,
+          status: { in: ['DEPARTED', 'OVERDUE'] },
+        },
+      }),
+    ]);
+
     const exeatMap = new Map(activeExeats.map((e) => [e.studentId, e]));
 
     return allocations.map((a) => {
       const exeat = exeatMap.get(a.studentId);
-      const student = this.prisma.memoryStore.students.get(a.studentId);
-      const hostel = this.prisma.memoryStore.hostels.get(a.hostelId);
-      const room = this.prisma.memoryStore.hostelRooms.get(a.roomId);
-      const bed = this.prisma.memoryStore.hostelBeds.get(a.bedId);
+      const student = a.student;
+      const hostel = a.hostel;
+      const room = a.room;
+      const bed = a.bed;
 
       return {
         allocationId: a.id,

@@ -28,24 +28,16 @@ export class TransportAttendanceService {
     let student: any = null;
     let parents: any[] = [];
 
-    if (this.prisma.isDbConnected) {
-      student = await this.prisma.student.findFirst({
-        where: { id: dto.studentId, tenantId },
-        include: {
-          parents: {
-            include: { parent: true },
-          },
+    student = await this.prisma.student.findFirst({
+      where: { id: dto.studentId, tenantId },
+      include: {
+        parents: {
+          include: { parent: true },
         },
-      });
-      if (student) {
-        parents = student.parents.map((sp: any) => sp.parent).filter(Boolean);
-      }
-    } else {
-      student = Array.from(this.prisma.memoryStore.students.values()).find(
-        (s) => s.id === dto.studentId && s.tenantId === tenantId,
-      );
-      // In memory fallback, check parents map
-      parents = Array.from(this.prisma.memoryStore.parents.values()).filter((p) => p.tenantId === tenantId);
+      },
+    });
+    if (student) {
+      parents = student.parents.map((sp: any) => sp.parent).filter(Boolean);
     }
 
     // 3. Dispatch Parent Notifications asynchronously via BullMQ if status is BOARDED or DROPPED_OFF
@@ -129,42 +121,29 @@ export class TransportAttendanceService {
   }
 
   async getStudentAttendanceHistory(tenantId: string, studentId: string, query?: QueryTransportAttendanceDto) {
-    if (this.prisma.isDbConnected) {
-      const student = await this.prisma.student.findFirst({
-        where: { id: studentId, tenantId },
-      });
-      if (!student) throw new NotFoundException(`Student "${studentId}" not found in this school organization.`);
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+    });
+    if (!student) throw new NotFoundException(`Student "${studentId}" not found in this school organization.`);
 
-      return this.prisma.tripBoardingRecord.findMany({
-        where: {
-          tenantId,
-          studentId,
-          ...(query?.startDate && { createdAt: { gte: new Date(query.startDate) } }),
-          ...(query?.endDate && { createdAt: { lte: new Date(query.endDate) } }),
-        },
-        include: {
-          trip: {
-            include: {
-              route: { select: { id: true, routeName: true, fee: true } },
-              vehicle: { select: { id: true, vehicleNumber: true, model: true } },
-            },
+    return this.prisma.tripBoardingRecord.findMany({
+      where: {
+        tenantId,
+        studentId,
+        ...(query?.startDate && { createdAt: { gte: new Date(query.startDate) } }),
+        ...(query?.endDate && { createdAt: { lte: new Date(query.endDate) } }),
+      },
+      include: {
+        trip: {
+          include: {
+            route: { select: { id: true, routeName: true, fee: true } },
+            vehicle: { select: { id: true, vehicleNumber: true, model: true } },
           },
         },
-        orderBy: { createdAt: 'desc' },
-        take: query?.limit || 50,
-      });
-    }
-
-    const student = Array.from(this.prisma.memoryStore.students.values()).find(
-      (s) => s.id === studentId && s.tenantId === tenantId,
-    );
-    if (!student) throw new NotFoundException('Student not found in this school organization.');
-
-    const records = Array.from(this.prisma.memoryStore.tripBoardingRecords.values()).filter(
-      (r) => r.studentId === studentId && r.tenantId === tenantId,
-    );
-
-    return records.slice(0, query?.limit || 50);
+      },
+      orderBy: { createdAt: 'desc' },
+      take: query?.limit || 50,
+    });
   }
 
   async getTripAttendanceRoster(tenantId: string, tripId: string) {

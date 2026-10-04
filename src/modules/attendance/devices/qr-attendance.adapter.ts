@@ -10,7 +10,9 @@ export class QrAttendanceAdapter implements DeviceAdapterInterface {
   constructor(private readonly prisma: PrismaService) {}
 
   async isAvailable(tenantId: string): Promise<boolean> {
-    const config = this.prisma.memoryStore.attendanceConfigs.get(tenantId);
+    const config = await this.prisma.attendanceConfig.findUnique({
+      where: { tenantId },
+    });
     return config ? !!config.qrEnabled : false;
   }
 
@@ -36,8 +38,10 @@ export class QrAttendanceAdapter implements DeviceAdapterInterface {
       throw new BadRequestException('studentId is required for QR attendance check-in.');
     }
 
-    const session = this.prisma.memoryStore.attendanceSessions.get(payload.sessionId);
-    if (!session || session.tenantId !== tenantId) {
+    const session = await this.prisma.attendanceSession.findFirst({
+      where: { id: payload.sessionId, tenantId },
+    });
+    if (!session) {
       throw new NotFoundException(`Attendance session ${payload.sessionId} not found.`);
     }
 
@@ -53,8 +57,10 @@ export class QrAttendanceAdapter implements DeviceAdapterInterface {
       throw new BadRequestException('QR token has expired. Please refresh the teacher display.');
     }
 
-    const student = this.prisma.memoryStore.students.get(payload.studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: payload.studentId, tenantId },
+    });
+    if (!student) {
       throw new NotFoundException(`Student ${payload.studentId} not found in this school.`);
     }
 
@@ -64,7 +70,7 @@ export class QrAttendanceAdapter implements DeviceAdapterInterface {
       studentId: student.id,
       studentName: `${student.firstName} ${student.lastName}`,
       classId: session.classId,
-      subjectId: session.subjectId,
+      subjectId: session.subjectId || undefined,
       sessionId: session.id,
       status: payload.status || 'PRESENT',
       timestamp: new Date(),

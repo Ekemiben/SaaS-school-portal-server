@@ -55,8 +55,6 @@ export class PlatformUserService {
   }
 
   async persistUserPermissions(userId: string, roleName: string, permissionsList: string[]) {
-    if (!this.prisma.isDbConnected) return;
-
     try {
       // 1. Find or create Role for platform user
       const roleIdentifier = `PLATFORM_ROLE_${userId}`;
@@ -121,12 +119,10 @@ export class PlatformUserService {
   async createPlatformUser(actorUser: any, dto: CreatePlatformUserDto) {
     const actorRole = actorUser?.role || (actorUser?.roles && actorUser.roles[0]);
 
-    // Prohibit creating a SUPER_ADMIN via this endpoint
     if ((dto.role as string) === PlatformRoles.SUPER_ADMIN) {
       throw new ForbiddenException('Cannot create Super Administrator accounts through standard platform user creation.');
     }
 
-    // Platform-Admin cannot create another Platform-Admin; only Super-Admin can create Platform-Admin
     if (actorRole === PlatformRoles.PLATFORM_ADMIN) {
       if ((dto.role as string) !== PlatformRoles.PLATFORM_SUPPORT) {
         throw new ForbiddenException('Platform Administrators may only provision Platform Support staff.');
@@ -135,7 +131,6 @@ export class PlatformUserService {
       throw new ForbiddenException('Only Super Administrators or authorized Platform Administrators can provision platform staff.');
     }
 
-    // Privilege Escalation Protection: Platform Admin cannot grant permissions they do not possess
     if (actorRole === PlatformRoles.PLATFORM_ADMIN && dto.permissions && dto.permissions.length > 0) {
       const actorPerms: string[] = actorUser?.permissionIds || actorUser?.permissions || [];
       const unauthorizedPerms = dto.permissions.filter((p) => !actorPerms.includes(p));
@@ -146,23 +141,9 @@ export class PlatformUserService {
 
     const normalizedEmail = dto.email.toLowerCase().trim();
 
-    // Check email uniqueness among platform users (where tenantId is NULL)
-    let existingUser: any = null;
-    if (this.prisma.isDbConnected) {
-      try {
-        existingUser = await this.prisma.user.findFirst({
-          where: { email: normalizedEmail, tenantId: null },
-        });
-      } catch {
-        existingUser = null;
-      }
-    }
-
-    if (!existingUser) {
-      existingUser = Array.from(this.prisma.memoryStore.users.values()).find(
-        (u) => (u.tenantId === null || u.tenantId === undefined) && u.email === normalizedEmail,
-      );
-    }
+    const existingUser = await this.prisma.user.findFirst({
+      where: { email: normalizedEmail, tenantId: null },
+    });
 
     if (existingUser) {
       throw new ConflictException('A platform user with this email address already exists.');
@@ -174,51 +155,22 @@ export class PlatformUserService {
       ? dto.permissions
       : this.getDefaultPermissions(dto.role);
 
-    const newUser = {
-      id: userId,
-      tenantId: null,
-      email: normalizedEmail,
-      passwordHash,
-      firstName: dto.firstName,
-      lastName: dto.lastName,
-      phone: null,
-      avatarUrl: null,
-      isActive: true,
-      isPlatformAdmin: true,
-      platformRole: dto.role,
-      role: dto.role,
-      roles: [dto.role],
-      permissionIds: permissions,
-      permissions,
-      campusIds: [],
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+    const createdUser = await this.prisma.user.create({
+      data: {
+        id: userId,
+        tenantId: null,
+        email: normalizedEmail,
+        passwordHash,
+        firstName: dto.firstName,
+        lastName: dto.lastName,
+        isActive: true,
+        isPlatformAdmin: true,
+        platformRole: dto.role,
+      },
+    });
 
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.user.create({
-          data: {
-            id: userId,
-            tenantId: null,
-            email: normalizedEmail,
-            passwordHash,
-            firstName: dto.firstName,
-            lastName: dto.lastName,
-            isActive: true,
-            isPlatformAdmin: true,
-            platformRole: dto.role,
-          },
-        });
-        await this.persistUserPermissions(userId, dto.role, permissions);
-      } catch (err: any) {
-        this.logger.warn(`Could not persist platform user to DB directly, using memory fallback: ${err.message}`);
-      }
-    }
+    await this.persistUserPermissions(userId, dto.role, permissions);
 
-    this.prisma.memoryStore.users.set(userId, newUser);
-
-    // Audit log
     await this.auditService.log({
       tenantId: null,
       actorUserId: actorUser?.id || 'superadmin_system',
@@ -228,45 +180,54 @@ export class PlatformUserService {
       afterData: { email: normalizedEmail, role: dto.role, permissions },
     });
 
-    const { passwordHash: _, ...safeUser } = newUser;
-    return safeUser;
+    return {
+      id: createdUser.id,
+      tenantId: null,
+      email: createdUser.email,
+      firstName: createdUser.firstName,
+      lastName: createdUser.lastName,
+      phone: null,
+      avatarUrl: null,
+      isActive: createdUser.isActive,
+      isPlatformAdmin: true,
+      platformRole: dto.role,
+      role: dto.role,
+      roles: [dto.role],
+      permissions,
+      permissionIds: permissions,
+      campusIds: [],
+      createdAt: createdUser.createdAt,
+      updatedAt: createdUser.updatedAt,
+    };
   }
 
   async listPlatformUsers(filter: PlatformUserFilterDto) {
-    let users: any[] = [];
-    if (this.prisma.isDbConnected) {
-      try {
-        users = await this.prisma.user.findMany({
-          where: { tenantId: null },
+    const users = await this.prisma.user.findMany({
+      where: {
+        OR: [
+          { tenantId: null },
+          { isPlatformAdmin: true },
+        ],
+      },
+      include: {
+        userRoles: {
           include: {
-            userRoles: {
+            role: {
               include: {
-                role: {
-                  include: {
-                    permissions: {
-                      include: { permission: true },
-                    },
-                  },
+                permissions: {
+                  include: { permission: true },
                 },
               },
             },
           },
-        });
-      } catch {
-        users = [];
-      }
-    }
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
 
-    if (users.length === 0) {
-      users = Array.from(this.prisma.memoryStore.users.values()).filter(
-        (u) => u.tenantId === null || u.tenantId === undefined || u.isPlatformAdmin,
-      );
-    }
-
-    // Enrich and auto-seed platform users with their permissions
     const enrichedUsers = await Promise.all(
       users.map(async (u) => {
-        const uRole = u.platformRole || u.role || 'PLATFORM_ADMIN';
+        const uRole = u.platformRole || (u.isPlatformAdmin ? 'PLATFORM_ADMIN' : 'PLATFORM_SUPPORT');
         let perms: string[] = [];
 
         if (uRole === PlatformRoles.SUPER_ADMIN) {
@@ -276,15 +237,14 @@ export class PlatformUserService {
             (ur.role?.permissions || []).map((rp: any) => rp.permission?.name).filter(Boolean),
           );
 
-          // If no permissions are assigned yet in DB, auto-seed defaults
-          if (perms.length === 0 && this.prisma.isDbConnected && u.id) {
+          if (perms.length === 0 && u.id) {
             const defaultPerms = this.getDefaultPermissions(uRole);
             await this.persistUserPermissions(u.id, uRole, defaultPerms);
             perms = defaultPerms;
           }
         }
 
-        const { passwordHash, userRoles, ...safeUser } = u;
+        const { passwordHash: _, userRoles: __, ...safeUser } = u;
         return {
           ...safeUser,
           permissions: perms,
@@ -319,39 +279,28 @@ export class PlatformUserService {
   }
 
   async getPlatformUser(userId: string) {
-    let user: any = null;
-    if (this.prisma.isDbConnected) {
-      try {
-        user = await this.prisma.user.findUnique({
-          where: { id: userId },
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        userRoles: {
           include: {
-            userRoles: {
+            role: {
               include: {
-                role: {
-                  include: {
-                    permissions: {
-                      include: { permission: true },
-                    },
-                  },
+                permissions: {
+                  include: { permission: true },
                 },
               },
             },
           },
-        });
-      } catch {
-        user = null;
-      }
-    }
+        },
+      },
+    });
 
-    if (!user) {
-      user = this.prisma.memoryStore.users.get(userId);
-    }
-
-    if (!user || (user.tenantId !== null && user.tenantId !== undefined && !user.isPlatformAdmin)) {
+    if (!user || (user.tenantId !== null && !user.isPlatformAdmin)) {
       throw new NotFoundException(`Platform user with ID '${userId}' not found.`);
     }
 
-    const uRole = user.platformRole || user.role || 'PLATFORM_ADMIN';
+    const uRole = user.platformRole || (user.isPlatformAdmin ? 'PLATFORM_ADMIN' : 'PLATFORM_SUPPORT');
     let perms: string[] = [];
 
     if (uRole === PlatformRoles.SUPER_ADMIN) {
@@ -361,7 +310,7 @@ export class PlatformUserService {
         (ur.role?.permissions || []).map((rp: any) => rp.permission?.name).filter(Boolean),
       );
 
-      if (perms.length === 0 && this.prisma.isDbConnected && user.id) {
+      if (perms.length === 0 && user.id) {
         const defaultPerms = this.getDefaultPermissions(uRole);
         await this.persistUserPermissions(user.id, uRole, defaultPerms);
         perms = defaultPerms;
@@ -383,12 +332,10 @@ export class PlatformUserService {
     const user = await this.getPlatformUser(userId);
     const userRole = user.platformRole || user.role;
 
-    // Prevent deactivating root SUPER_ADMIN
     if (userRole === PlatformRoles.SUPER_ADMIN && !dto.isActive) {
       throw new BadRequestException('Super Administrator accounts cannot be deactivated.');
     }
 
-    // Platform-Admin cannot activate/deactivate self or another Platform-Admin
     if (actorRole === PlatformRoles.PLATFORM_ADMIN) {
       if (actorUser?.id === userId) {
         throw new ForbiddenException('Platform Administrators cannot activate or deactivate their own account.');
@@ -403,24 +350,10 @@ export class PlatformUserService {
       throw new ForbiddenException('Insufficient privileges to modify platform staff status.');
     }
 
-    const updated = {
-      ...user,
-      isActive: dto.isActive,
-      updatedAt: new Date(),
-    };
-
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.user.update({
-          where: { id: userId },
-          data: { isActive: dto.isActive },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not update platform user in DB: ${err.message}`);
-      }
-    }
-
-    this.prisma.memoryStore.users.set(userId, updated);
+    const updatedUser = await this.prisma.user.update({
+      where: { id: userId },
+      data: { isActive: dto.isActive },
+    });
 
     await this.auditService.log({
       tenantId: null,
@@ -432,13 +365,16 @@ export class PlatformUserService {
       afterData: { isActive: dto.isActive, reason: dto.reason },
     });
 
-    return updated;
+    return {
+      ...user,
+      isActive: updatedUser.isActive,
+      updatedAt: updatedUser.updatedAt,
+    };
   }
 
   async updatePermissions(actorUser: any, userId: string, dto: UpdatePlatformUserPermissionsDto) {
     const actorRole = actorUser?.role || (actorUser?.roles && actorUser.roles[0]);
 
-    // Self modification protection: Platform support / platform admin cannot modify their own permissions
     if (actorUser?.id === userId && actorRole !== PlatformRoles.SUPER_ADMIN) {
       throw new ForbiddenException('Platform administrators cannot modify their own assigned permissions.');
     }
@@ -446,12 +382,10 @@ export class PlatformUserService {
     const user = await this.getPlatformUser(userId);
     const userRole = user.platformRole || user.role;
 
-    // SUPER_ADMIN permissions are immutable and complete
     if (userRole === PlatformRoles.SUPER_ADMIN) {
       throw new BadRequestException('Super Administrator permissions are immutable.');
     }
 
-    // Platform-Admin cannot modify another Platform-Admin
     if (actorRole === PlatformRoles.PLATFORM_ADMIN) {
       if (userRole === PlatformRoles.PLATFORM_ADMIN) {
         throw new ForbiddenException('Platform Administrators cannot modify the permissions of another Platform Administrator.');
@@ -459,7 +393,6 @@ export class PlatformUserService {
       if (userRole !== PlatformRoles.PLATFORM_SUPPORT) {
         throw new ForbiddenException('Platform Administrators may only modify permissions for Platform Support staff.');
       }
-      // Privilege Escalation Protection: Platform Admin cannot grant permissions they do not possess
       const actorPerms: string[] = actorUser?.permissionIds || actorUser?.permissions || [];
       const unauthorizedPerms = dto.permissions.filter((p) => !actorPerms.includes(p));
       if (unauthorizedPerms.length > 0) {
@@ -469,18 +402,7 @@ export class PlatformUserService {
       throw new ForbiddenException('Insufficient privileges to modify platform staff permissions.');
     }
 
-    const updated = {
-      ...user,
-      permissionIds: dto.permissions,
-      permissions: dto.permissions,
-      updatedAt: new Date(),
-    };
-
-    if (this.prisma.isDbConnected) {
-      await this.persistUserPermissions(userId, userRole, dto.permissions);
-    }
-
-    this.prisma.memoryStore.users.set(userId, updated);
+    await this.persistUserPermissions(userId, userRole, dto.permissions);
 
     await this.auditService.log({
       tenantId: null,
@@ -492,7 +414,12 @@ export class PlatformUserService {
       afterData: { permissions: dto.permissions },
     });
 
-    return updated;
+    return {
+      ...user,
+      permissionIds: dto.permissions,
+      permissions: dto.permissions,
+      updatedAt: new Date(),
+    };
   }
 
   async updateRole(actorUser: any, userId: string, dto: UpdatePlatformUserRoleDto) {
@@ -513,26 +440,10 @@ export class PlatformUserService {
       throw new BadRequestException('Super Administrator role cannot be modified.');
     }
 
-    const updated = {
-      ...user,
-      platformRole: dto.role,
-      role: dto.role,
-      roles: [dto.role],
-      updatedAt: new Date(),
-    };
-
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.user.update({
-          where: { id: userId },
-          data: { platformRole: dto.role },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not update platform role in DB: ${err.message}`);
-      }
-    }
-
-    this.prisma.memoryStore.users.set(userId, updated);
+    const updatedUser = await this.prisma.user.update({
+      where: { id: userId },
+      data: { platformRole: dto.role },
+    });
 
     await this.auditService.log({
       tenantId: null,
@@ -544,7 +455,13 @@ export class PlatformUserService {
       afterData: { role: dto.role },
     });
 
-    return updated;
+    return {
+      ...user,
+      platformRole: dto.role,
+      role: dto.role,
+      roles: [dto.role],
+      updatedAt: updatedUser.updatedAt,
+    };
   }
 
   async resetPassword(actorUser: any, userId: string, dto: ResetPlatformUserPasswordDto) {
@@ -562,24 +479,10 @@ export class PlatformUserService {
     }
 
     const passwordHash = await bcrypt.hash(dto.newPassword, 12);
-    const updated = {
-      ...user,
-      passwordHash,
-      updatedAt: new Date(),
-    };
-
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.user.update({
-          where: { id: userId },
-          data: { passwordHash },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not update platform user password in DB: ${err.message}`);
-      }
-    }
-
-    this.prisma.memoryStore.users.set(userId, updated);
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+    });
 
     await this.auditService.log({
       tenantId: null,

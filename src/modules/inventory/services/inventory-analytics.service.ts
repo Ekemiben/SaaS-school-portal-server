@@ -8,27 +8,25 @@ export class InventoryAnalyticsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getInventorySummary(tenantId: string, campusId?: string) {
-    let items = Array.from(this.prisma.memoryStore.inventoryItems.values()).filter(
-      (it: any) => it.tenantId === tenantId,
-    );
-    let assets = Array.from(this.prisma.memoryStore.schoolAssets.values()).filter(
-      (a: any) => a.tenantId === tenantId,
-    );
-    let pos = Array.from(this.prisma.memoryStore.purchaseOrders.values()).filter(
-      (po: any) => po.tenantId === tenantId,
-    );
-    let maintenance = Array.from(
-      this.prisma.memoryStore.assetMaintenanceLogs.values(),
-    ).filter((m: any) => m.tenantId === tenantId);
-    let vendors = Array.from(this.prisma.memoryStore.vendors.values()).filter(
-      (v: any) => v.tenantId === tenantId,
-    );
+    const itemWhere: any = { tenantId };
+    const assetWhere: any = { tenantId };
+    const poWhere: any = { tenantId };
+    const maintWhere: any = { tenantId };
+    const vendorWhere: any = { tenantId };
 
     if (campusId) {
-      items = items.filter((it: any) => it.campusId === campusId || it.campusId === null);
-      assets = assets.filter((a: any) => a.campusId === campusId || a.campusId === null);
-      pos = pos.filter((po: any) => po.campusId === campusId || po.campusId === null);
+      itemWhere.OR = [{ campusId }, { campusId: null }];
+      assetWhere.OR = [{ campusId }, { campusId: null }];
+      poWhere.OR = [{ campusId }, { campusId: null }];
     }
+
+    const [items, assets, pos, maintenance, vendorCount] = await Promise.all([
+      this.prisma.inventoryItem.findMany({ where: itemWhere }),
+      this.prisma.schoolAsset.findMany({ where: assetWhere }),
+      this.prisma.purchaseOrder.findMany({ where: poWhere }),
+      this.prisma.assetMaintenanceLog.findMany({ where: maintWhere }),
+      this.prisma.vendor.count({ where: vendorWhere }),
+    ]);
 
     // Inventory items metrics
     const totalItemTypes = items.length;
@@ -83,12 +81,12 @@ export class InventoryAnalyticsService {
     }
 
     // Maintenance metrics
-    const totalMaintenanceSpend = maintenance.reduce((sum: number, m: any) => sum + (m.cost || 0), 0);
+    const totalMaintenanceSpend = maintenance.reduce((sum, m) => sum + (m.cost || 0), 0);
 
     // Procurement metrics
     const totalProcurementSpend = pos
-      .filter((p: any) => ['APPROVED', 'ORDERED', 'PARTIALLY_DELIVERED', 'RECEIVED'].includes(p.status))
-      .reduce((sum: number, p: any) => sum + (p.totalAmount || 0), 0);
+      .filter((p) => ['APPROVED', 'ORDERED', 'PARTIALLY_DELIVERED', 'RECEIVED'].includes(p.status))
+      .reduce((sum, p) => sum + (p.totalAmount || 0), 0);
 
     return {
       inventory: {
@@ -111,7 +109,7 @@ export class InventoryAnalyticsService {
         totalSpend: Math.round(totalMaintenanceSpend * 100) / 100,
       },
       procurement: {
-        totalVendors: vendors.length,
+        totalVendors: vendorCount,
         totalPurchaseOrders: pos.length,
         totalSpend: Math.round(totalProcurementSpend * 100) / 100,
       },

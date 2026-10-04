@@ -14,8 +14,17 @@ export class MeritAwardService {
     awarderUserId: string,
     dto: CreateMeritAwardDto,
   ) {
-    const student = this.prisma.memoryStore.students.get(dto.studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: dto.studentId, tenantId },
+      include: {
+        enrollments: {
+          where: { status: 'ACTIVE' },
+          include: { class: true },
+          take: 1,
+        },
+      },
+    });
+    if (!student) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Student not found in this school',
@@ -23,31 +32,29 @@ export class MeritAwardService {
     }
 
     const campusId = dto.campusId || student.campusId;
-    const classId = dto.classId || student.classId;
-    const classRecord = this.prisma.memoryStore.classes.get(classId);
+    const classId = dto.classId || (student.enrollments[0]?.classId ?? student.campusId);
+    const classRecord = await this.prisma.class.findFirst({
+      where: { id: classId, tenantId },
+    });
 
-    const id = `mrt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const merit = {
-      id,
-      tenantId,
-      campusId,
-      classId,
-      studentId: dto.studentId,
-      academicYearId: dto.academicYearId || classRecord?.academicYearId || null,
-      termId: dto.termId || null,
-      awardedByUserId: awarderUserId,
-      category: dto.category,
-      title: dto.title,
-      description: dto.description || null,
-      meritPoints: dto.meritPoints ?? 1,
-      badgeTier: dto.badgeTier || null,
-      awardDate: dto.awardDate ? new Date(dto.awardDate) : new Date(),
-      citationNotes: dto.citationNotes || null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.meritAwards.set(id, merit);
+    const merit = await this.prisma.meritAward.create({
+      data: {
+        tenantId,
+        campusId,
+        classId,
+        studentId: dto.studentId,
+        academicYearId: dto.academicYearId || classRecord?.academicYearId || null,
+        termId: dto.termId || null,
+        awardedByUserId: awarderUserId,
+        category: dto.category,
+        title: dto.title,
+        description: dto.description || null,
+        meritPoints: dto.meritPoints ?? 1,
+        badgeTier: dto.badgeTier || null,
+        awardDate: dto.awardDate ? new Date(dto.awardDate) : new Date(),
+        citationNotes: dto.citationNotes || null,
+      },
+    });
 
     return {
       ...merit,
@@ -58,47 +65,51 @@ export class MeritAwardService {
   }
 
   async getMerits(tenantId: string, filter: MeritFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.meritAwards.values()).filter(
-      (m) => m.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
 
-    if (filter.studentId) list = list.filter((m) => m.studentId === filter.studentId);
-    if (filter.classId) list = list.filter((m) => m.classId === filter.classId);
-    if (filter.campusId) list = list.filter((m) => m.campusId === filter.campusId);
-    if (filter.category) list = list.filter((m) => m.category === filter.category);
-    if (filter.badgeTier) list = list.filter((m) => m.badgeTier === filter.badgeTier);
+    if (filter.studentId) where.studentId = filter.studentId;
+    if (filter.classId) where.classId = filter.classId;
+    if (filter.campusId) where.campusId = filter.campusId;
+    if (filter.category) where.category = filter.category;
+    if (filter.badgeTier) where.badgeTier = filter.badgeTier;
 
-    return list
-      .map((m) => {
-        const student = this.prisma.memoryStore.students.get(m.studentId);
-        const cls = this.prisma.memoryStore.classes.get(m.classId);
-        return {
-          ...m,
-          studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-          admissionNumber: student?.admissionNumber || '',
-          className: cls?.name || 'Class',
-        };
-      })
-      .sort((a, b) => new Date(b.awardDate).getTime() - new Date(a.awardDate).getTime());
+    const merits = await this.prisma.meritAward.findMany({
+      where,
+      include: {
+        student: true,
+        class: true,
+      },
+      orderBy: { awardDate: 'desc' },
+    });
+
+    return merits.map((m) => ({
+      ...m,
+      studentName: m.student ? `${m.student.firstName} ${m.student.lastName}` : 'Student',
+      admissionNumber: m.student?.admissionNumber || '',
+      className: m.class?.name || 'Class',
+    }));
   }
 
   async getMeritById(tenantId: string, id: string) {
-    const merit = this.prisma.memoryStore.meritAwards.get(id);
-    if (!merit || merit.tenantId !== tenantId) {
+    const merit = await this.prisma.meritAward.findFirst({
+      where: { id, tenantId },
+      include: {
+        student: true,
+        class: true,
+      },
+    });
+    if (!merit) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Merit award record not found',
       });
     }
 
-    const student = this.prisma.memoryStore.students.get(merit.studentId);
-    const cls = this.prisma.memoryStore.classes.get(merit.classId);
-
     return {
       ...merit,
-      studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-      admissionNumber: student?.admissionNumber || '',
-      className: cls?.name || 'Class',
+      studentName: merit.student ? `${merit.student.firstName} ${merit.student.lastName}` : 'Student',
+      admissionNumber: merit.student?.admissionNumber || '',
+      className: merit.class?.name || 'Class',
     };
   }
 }

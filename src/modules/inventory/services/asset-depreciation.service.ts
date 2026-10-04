@@ -21,8 +21,10 @@ export class AssetDepreciationService {
     userId: string,
     notes?: string,
   ) {
-    const asset = this.prisma.memoryStore.schoolAssets.get(assetId);
-    if (!asset || asset.tenantId !== tenantId) {
+    const asset = await this.prisma.schoolAsset.findFirst({
+      where: { id: assetId, tenantId },
+    });
+    if (!asset) {
       throw new NotFoundException(`School asset with ID '${assetId}' not found`);
     }
 
@@ -46,14 +48,12 @@ export class AssetDepreciationService {
       const depreciableAmount = Math.max(0, asset.purchaseCost - asset.salvageValue);
       const annualDepreciation = depreciableAmount / usefulYears;
 
-      // If period indicates quarterly, divide by 4; else annual
       if (period.toLowerCase().includes('q') || period.toLowerCase().includes('quarter')) {
         depreciationAmount = annualDepreciation / 4;
       } else {
         depreciationAmount = annualDepreciation;
       }
     } else if (asset.depreciationMethod === 'REDUCING_BALANCE') {
-      // Double declining balance rate
       const rate = Math.min(0.5, 2.0 / Math.max(1, asset.usefulLifeYears));
       let periodRate = rate;
       if (period.toLowerCase().includes('q') || period.toLowerCase().includes('quarter')) {
@@ -62,7 +62,6 @@ export class AssetDepreciationService {
       depreciationAmount = beginningBookValue * periodRate;
     }
 
-    // Clamp so book value does not drop below salvage value
     const maxAllowableDepreciation = Math.max(0, beginningBookValue - asset.salvageValue);
     depreciationAmount = Math.min(depreciationAmount, maxAllowableDepreciation);
     depreciationAmount = Math.round(depreciationAmount * 100) / 100;
@@ -70,31 +69,29 @@ export class AssetDepreciationService {
     const endingBookValue = Math.round((beginningBookValue - depreciationAmount) * 100) / 100;
 
     // Update asset
-    asset.currentBookValue = endingBookValue;
-    asset.accumulatedDepreciation =
-      Math.round((asset.accumulatedDepreciation + depreciationAmount) * 100) / 100;
-    asset.lastDepreciationDate = new Date();
-    asset.updatedAt = new Date();
-    this.prisma.memoryStore.schoolAssets.set(assetId, asset);
+    await this.prisma.schoolAsset.update({
+      where: { id: assetId },
+      data: {
+        currentBookValue: endingBookValue,
+        accumulatedDepreciation: Math.round((asset.accumulatedDepreciation + depreciationAmount) * 100) / 100,
+        lastDepreciationDate: new Date(),
+      },
+    });
 
     // Record schedule
-    const scheduleId = `dep_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const schedule = {
-      id: scheduleId,
-      tenantId,
-      assetId,
-      financialYear,
-      period,
-      depreciationAmount,
-      beginningBookValue,
-      endingBookValue,
-      calculatedAt: new Date(),
-      calculatedBy: userId,
-      notes: notes || `Depreciation processed via ${asset.depreciationMethod} method`,
-    };
-
-    this.prisma.memoryStore.assetDepreciationSchedules.set(scheduleId, schedule);
-    return schedule;
+    return this.prisma.assetDepreciationSchedule.create({
+      data: {
+        tenantId,
+        assetId,
+        financialYear,
+        period,
+        depreciationAmount,
+        beginningBookValue,
+        endingBookValue,
+        calculatedBy: userId,
+        notes: notes || `Depreciation processed via ${asset.depreciationMethod} method`,
+      },
+    });
   }
 
   async processBulkDepreciation(
@@ -103,24 +100,25 @@ export class AssetDepreciationService {
     userId: string,
     dto: CalculateDepreciationDto,
   ) {
-    let assets = Array.from(this.prisma.memoryStore.schoolAssets.values()).filter(
-      (a: any) =>
-        a.tenantId === tenantId &&
-        a.depreciationMethod !== 'NONE' &&
-        a.status === 'IN_SERVICE' &&
-        a.currentBookValue > a.salvageValue,
-    );
+    const where: any = {
+      tenantId,
+      depreciationMethod: { not: 'NONE' },
+      status: 'IN_SERVICE',
+    };
 
     if (dto.campusId || campusId) {
       const targetCampus = dto.campusId || campusId;
-      assets = assets.filter((a: any) => a.campusId === targetCampus || a.campusId === null);
+      where.OR = [{ campusId: targetCampus }, { campusId: null }];
     }
     if (dto.category) {
-      assets = assets.filter((a: any) => a.category === dto.category);
+      where.category = dto.category;
     }
 
+    const assets = await this.prisma.schoolAsset.findMany({ where });
+    const eligibleAssets = assets.filter((a) => a.currentBookValue > a.salvageValue);
+
     const results = [];
-    for (const asset of assets) {
+    for (const asset of eligibleAssets) {
       try {
         const schedule = await this.calculateAssetDepreciation(
           tenantId,
@@ -146,17 +144,18 @@ export class AssetDepreciationService {
   }
 
   async getDepreciationSchedules(tenantId: string, assetId?: string, financialYear?: string) {
-    let list = Array.from(this.prisma.memoryStore.assetDepreciationSchedules.values()).filter(
-      (s: any) => s.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
 
     if (assetId) {
-      list = list.filter((s: any) => s.assetId === assetId);
+      where.assetId = assetId;
     }
     if (financialYear) {
-      list = list.filter((s: any) => s.financialYear === financialYear);
+      where.financialYear = financialYear;
     }
 
-    return list.sort((a: any, b: any) => b.calculatedAt.getTime() - a.calculatedAt.getTime());
+    return this.prisma.assetDepreciationSchedule.findMany({
+      where,
+      orderBy: { calculatedAt: 'desc' },
+    });
   }
 }

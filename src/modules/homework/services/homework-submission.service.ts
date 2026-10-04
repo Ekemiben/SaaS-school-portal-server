@@ -3,6 +3,7 @@ import { PrismaService } from '../../../database/prisma.service.js';
 import { SubmitHomeworkDto, ResubmitHomeworkDto } from '../dto/submit-homework.dto.js';
 import { ErrorCodes } from '../../../common/constants/error-codes.js';
 import { HomeworkCoreService } from './homework-core.service.js';
+import { randomUUID } from 'crypto';
 
 @Injectable()
 export class HomeworkSubmissionService {
@@ -23,8 +24,10 @@ export class HomeworkSubmissionService {
       });
     }
 
-    const student = this.prisma.memoryStore.students.get(dto.studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: dto.studentId, tenantId },
+    });
+    if (!student) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Student not found in this school',
@@ -41,42 +44,43 @@ export class HomeworkSubmissionService {
       });
     }
 
-    // Check if an existing submission already exists
-    const existingSubmission = Array.from(this.prisma.memoryStore.homeworkSubmissions.values()).find(
-      (s) => s.tenantId === tenantId && s.homeworkId === homeworkId && s.studentId === dto.studentId,
-    );
-
     let attachments = dto.attachmentUrls || [];
     if (dto.attachmentKey && attachments.length === 0) {
       attachments = [{ url: dto.attachmentKey, name: 'Submission File', sizeBytes: 0, mimeType: 'application/octet-stream' }];
     }
 
-    const id = existingSubmission ? existingSubmission.id : `hws_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const submissionKey = `${homeworkId}_${dto.studentId}`;
+    const id = `hws_${Date.now()}_${randomUUID().substring(0, 5)}`;
 
-    const submission = {
-      id,
-      submissionKey,
-      tenantId,
-      homeworkId,
-      studentId: dto.studentId,
-      submissionText: dto.submissionText || null,
-      attachmentUrls: attachments,
-      attachmentKey: dto.attachmentKey || (attachments[0]?.url || null),
-      submittedAt: now,
-      isLate,
-      status: 'SUBMITTED',
-      score: existingSubmission?.score ?? null,
-      grade: existingSubmission?.grade ?? null,
-      feedback: existingSubmission?.feedback ?? null,
-      rubricScores: existingSubmission?.rubricScores ?? null,
-      gradedAt: existingSubmission?.gradedAt ?? null,
-      gradedByUserId: existingSubmission?.gradedByUserId ?? null,
-      createdAt: existingSubmission?.createdAt || now,
-      updatedAt: now,
-    };
-
-    this.prisma.memoryStore.homeworkSubmissions.set(id, submission);
+    const submission = await this.prisma.homeworkSubmission.upsert({
+      where: {
+        homeworkId_studentId: {
+          homeworkId,
+          studentId: dto.studentId,
+        },
+      },
+      update: {
+        submissionText: dto.submissionText || null,
+        attachmentUrls: attachments as any,
+        submittedAt: now,
+        isLate,
+        status: 'SUBMITTED',
+      },
+      create: {
+        id,
+        tenantId,
+        homeworkId,
+        studentId: dto.studentId,
+        submissionText: dto.submissionText || null,
+        attachmentUrls: attachments as any,
+        submittedAt: now,
+        isLate,
+        status: 'SUBMITTED',
+      },
+      include: {
+        student: true,
+        homework: true,
+      },
+    });
 
     return {
       ...submission,
@@ -88,15 +92,19 @@ export class HomeworkSubmissionService {
   }
 
   async resubmitHomework(tenantId: string, submissionId: string, dto: ResubmitHomeworkDto) {
-    const submission = this.prisma.memoryStore.homeworkSubmissions.get(submissionId);
-    if (!submission || submission.tenantId !== tenantId) {
+    const submission = await this.prisma.homeworkSubmission.findFirst({
+      where: { id: submissionId, tenantId },
+      include: { homework: true },
+    });
+
+    if (!submission) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Homework submission not found',
       });
     }
 
-    const homework = await this.homeworkCoreService.getHomeworkById(tenantId, submission.homeworkId);
+    const homework = submission.homework;
     const now = new Date();
     const isLate = now > new Date(homework.dueDate);
 
@@ -107,79 +115,85 @@ export class HomeworkSubmissionService {
       });
     }
 
-    if (dto.submissionText !== undefined) submission.submissionText = dto.submissionText;
-    if (dto.attachmentUrls !== undefined) {
-      submission.attachmentUrls = dto.attachmentUrls;
-      submission.attachmentKey = dto.attachmentUrls[0]?.url || null;
-    }
+    const updated = await this.prisma.homeworkSubmission.update({
+      where: { id: submissionId },
+      data: {
+        ...(dto.submissionText !== undefined ? { submissionText: dto.submissionText } : {}),
+        ...(dto.attachmentUrls !== undefined ? { attachmentUrls: dto.attachmentUrls as any } : {}),
+        submittedAt: now,
+        isLate,
+        status: 'SUBMITTED',
+      },
+    });
 
-    submission.submittedAt = now;
-    submission.isLate = isLate;
-    submission.status = 'SUBMITTED';
-    submission.updatedAt = now;
-
-    this.prisma.memoryStore.homeworkSubmissions.set(submissionId, submission);
-    return submission;
+    return updated;
   }
 
   async getSubmissions(tenantId: string, homeworkId: string) {
     await this.homeworkCoreService.getHomeworkById(tenantId, homeworkId);
 
-    const submissions = Array.from(this.prisma.memoryStore.homeworkSubmissions.values())
-      .filter((s) => s.tenantId === tenantId && s.homeworkId === homeworkId)
-      .map((s) => {
-        const student = this.prisma.memoryStore.students.get(s.studentId);
-        return {
-          ...s,
-          studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-          admissionNumber: student?.admissionNumber || '',
-        };
-      })
-      .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+    const submissions = await this.prisma.homeworkSubmission.findMany({
+      where: { tenantId, homeworkId },
+      include: { student: true },
+      orderBy: { submittedAt: 'desc' },
+    });
 
-    return submissions;
+    return submissions.map((s) => ({
+      ...s,
+      studentName: s.student ? `${s.student.firstName} ${s.student.lastName}` : 'Student',
+      admissionNumber: s.student?.admissionNumber || '',
+    }));
   }
 
   async getMySubmission(tenantId: string, homeworkId: string, studentId: string) {
     await this.homeworkCoreService.getHomeworkById(tenantId, homeworkId);
 
-    const submission = Array.from(this.prisma.memoryStore.homeworkSubmissions.values()).find(
-      (s) => s.tenantId === tenantId && s.homeworkId === homeworkId && s.studentId === studentId,
-    );
+    const submission = await this.prisma.homeworkSubmission.findFirst({
+      where: { tenantId, homeworkId, studentId },
+      include: { student: true },
+    });
 
     if (!submission) {
       return null;
     }
 
-    const student = this.prisma.memoryStore.students.get(studentId);
     return {
       ...submission,
-      studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-      admissionNumber: student?.admissionNumber || '',
+      studentName: submission.student ? `${submission.student.firstName} ${submission.student.lastName}` : 'Student',
+      admissionNumber: submission.student?.admissionNumber || '',
     };
   }
 
   async getStudentSubmissions(tenantId: string, studentId: string) {
-    const student = this.prisma.memoryStore.students.get(studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+    });
+
+    if (!student) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Student not found in this school',
       });
     }
 
-    return Array.from(this.prisma.memoryStore.homeworkSubmissions.values())
-      .filter((s) => s.tenantId === tenantId && s.studentId === studentId)
-      .map((s) => {
-        const hw = this.prisma.memoryStore.homework.get(s.homeworkId);
-        const sub = hw ? this.prisma.memoryStore.subjects.get(hw.subjectId) : null;
-        return {
-          ...s,
-          homeworkTitle: hw?.title || 'Assignment',
-          dueDate: hw?.dueDate,
-          maxMarks: hw?.maxMarks || 100,
-          subjectName: sub?.name || 'Subject',
-        };
-      });
+    const submissions = await this.prisma.homeworkSubmission.findMany({
+      where: { tenantId, studentId },
+      include: {
+        homework: {
+          include: {
+            subject: true,
+          },
+        },
+      },
+      orderBy: { submittedAt: 'desc' },
+    });
+
+    return submissions.map((s) => ({
+      ...s,
+      homeworkTitle: s.homework?.title || 'Assignment',
+      dueDate: s.homework?.dueDate,
+      maxMarks: s.homework?.maxMarks || 100,
+      subjectName: s.homework?.subject?.name || 'Subject',
+    }));
   }
 }

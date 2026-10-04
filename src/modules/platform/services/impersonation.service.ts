@@ -39,103 +39,37 @@ export class ImpersonationService {
       throw new BadRequestException('Target tenant ID is required to start impersonation.');
     }
 
-    let tenant: any = null;
-    if (this.prisma.isDbConnected) {
-      try {
-        tenant = await this.prisma.tenant.findUnique({
-          where: { id: targetTenantId },
-        });
-      } catch {
-        tenant = null;
-      }
-    }
-
-    if (!tenant) {
-      tenant = this.prisma.memoryStore.tenants.get(targetTenantId);
-    }
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: targetTenantId },
+    });
 
     if (!tenant) {
       throw new NotFoundException(`Target tenant with ID '${targetTenantId}' not found`);
     }
 
-    // Resolve target user
     let targetUser: any = null;
     if (dto.targetUserId) {
-      if (this.prisma.isDbConnected) {
-        try {
-          targetUser = await this.prisma.user.findUnique({
-            where: { id: dto.targetUserId },
-          });
-        } catch {
-          targetUser = null;
-        }
-      }
+      targetUser = await this.prisma.user.findFirst({
+        where: { id: dto.targetUserId, tenantId: targetTenantId },
+      });
       if (!targetUser) {
-        targetUser = this.prisma.memoryStore.users.get(dto.targetUserId);
-      }
-      if (!targetUser || targetUser.tenantId !== targetTenantId) {
         throw new NotFoundException(
           `Target user '${dto.targetUserId}' not found in tenant '${targetTenantId}'`,
         );
       }
     } else {
-      // Find an active admin or owner in the tenant
-      if (this.prisma.isDbConnected) {
-        try {
-          targetUser = await this.prisma.user.findFirst({
-            where: { tenantId: targetTenantId, isActive: true },
-          });
-        } catch {
-          targetUser = null;
-        }
-      }
+      targetUser = await this.prisma.user.findFirst({
+        where: { tenantId: targetTenantId, isActive: true },
+      });
       if (!targetUser) {
-        targetUser = Array.from(this.prisma.memoryStore.users.values()).find(
-          (u: any) => u.tenantId === targetTenantId && u.isActive,
-        );
+        throw new NotFoundException(`No active user found in tenant '${targetTenantId}' to impersonate.`);
       }
-      if (!targetUser) {
-        targetUser = {
-          id: `usr_owner_${targetTenantId.replace(/-/g, '').substring(0, 16)}`,
-          tenantId: targetTenantId,
-          email: `admin@${tenant.slug || 'school'}.portal.io`,
-          firstName: tenant.name,
-          lastName: 'Administrator',
-          isActive: true,
-          role: 'School Owner',
-          roles: ['School Owner', 'Admin'],
-        };
-        this.prisma.memoryStore.users.set(targetUser.id, targetUser);
-      }
-    }
-
-    // Load full tenant-level permissions
-    let tenantPermissions: string[] = [];
-    if (this.prisma.isDbConnected) {
-      try {
-        const perms = await this.prisma.permission.findMany({
-          where: {
-            NOT: { module: 'PLATFORM' },
-          },
-        });
-        tenantPermissions = perms.map((p) => p.name);
-      } catch {
-        tenantPermissions = [];
-      }
-    }
-    if (tenantPermissions.length === 0) {
-      tenantPermissions = Object.values(SystemPermissions).filter(
-        (p) => !p.startsWith('platform.'),
-      );
     }
 
     const durationMinutes = Math.min(120, Math.max(5, dto.durationMinutes || 30));
     const now = new Date();
     const expiresAt = new Date(now.getTime() + durationMinutes * 60 * 1000);
 
-    const sessionId = `imp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-
-    // Generate time-bound impersonation JWT token with full school owner authority
     const tokenPayload = {
       sub: targetUser.id,
       id: targetUser.id,
@@ -148,7 +82,6 @@ export class ImpersonationService {
       isImpersonating: true,
       impersonatorUserId: superAdminUser?.id || 'superadmin_system',
       impersonatorEmail: superAdminUser?.email || 'admin@platform.io',
-      impersonationSessionId: sessionId,
       firstName: targetUser.firstName || 'School',
       lastName: targetUser.lastName || 'Administrator',
     };
@@ -157,35 +90,30 @@ export class ImpersonationService {
       expiresIn: `${durationMinutes}m`,
     });
 
-    const session = {
-      id: sessionId,
-      tenantId: targetTenantId,
-      superAdminUserId: superAdminUser?.id || 'superadmin_system',
-      targetUserId: targetUser.id,
-      reason: dto.reason,
-      token,
-      startedAt: now,
-      expiresAt,
-      revokedAt: null,
-      revocationReason: null,
-      isActive: true,
-      ipAddress: metadata?.ipAddress || null,
-      userAgent: metadata?.userAgent || null,
-      createdAt: now,
-    };
+    const session = await this.prisma.impersonationSession.create({
+      data: {
+        tenantId: targetTenantId,
+        superAdminUserId: superAdminUser?.id || 'superadmin_system',
+        targetUserId: targetUser.id,
+        reason: dto.reason,
+        token,
+        startedAt: now,
+        expiresAt,
+        isActive: true,
+        ipAddress: metadata?.ipAddress || null,
+        userAgent: metadata?.userAgent || null,
+      },
+    });
 
-    this.prisma.memoryStore.impersonationSessions.set(sessionId, session);
-
-    // Write audit log for starting impersonation
     await this.auditService.log({
       tenantId: targetTenantId,
       actorUserId: targetUser.id,
       impersonatedBy: superAdminUser?.id || 'superadmin_system',
-      impersonationSessionId: sessionId,
+      impersonationSessionId: session.id,
       isImpersonated: true,
       action: 'IMPERSONATION_STARTED',
       resourceType: 'IMPERSONATION_SESSION',
-      resourceId: sessionId,
+      resourceId: session.id,
       afterData: {
         targetUserId: targetUser.id,
         targetUserEmail: targetUser.email,
@@ -202,7 +130,7 @@ export class ImpersonationService {
     );
 
     return {
-      sessionId,
+      sessionId: session.id,
       token,
       expiresAt,
       durationMinutes,
@@ -227,16 +155,20 @@ export class ImpersonationService {
   }
 
   async validateSession(sessionId: string) {
-    const session = this.prisma.memoryStore.impersonationSessions.get(sessionId);
+    const session = await this.prisma.impersonationSession.findUnique({
+      where: { id: sessionId },
+    });
     if (!session) return { valid: false, reason: 'Session not found' };
 
     const now = new Date();
     if (!session.isActive || session.revokedAt) {
       return { valid: false, reason: 'Session has been terminated or revoked' };
     }
-    if (new Date(session.expiresAt) <= now) {
-      session.isActive = false;
-      this.prisma.memoryStore.impersonationSessions.set(sessionId, session);
+    if (session.expiresAt <= now) {
+      await this.prisma.impersonationSession.update({
+        where: { id: sessionId },
+        data: { isActive: false },
+      });
       return { valid: false, reason: 'Session has expired' };
     }
 
@@ -248,7 +180,9 @@ export class ImpersonationService {
     superAdminId: string,
     dto?: TerminateImpersonationDto,
   ) {
-    const session = this.prisma.memoryStore.impersonationSessions.get(sessionId);
+    const session = await this.prisma.impersonationSession.findUnique({
+      where: { id: sessionId },
+    });
     if (!session) {
       throw new NotFoundException(`Impersonation session '${sessionId}' not found`);
     }
@@ -257,12 +191,18 @@ export class ImpersonationService {
       return { sessionId, message: 'Session is already terminated', session };
     }
 
-    session.isActive = false;
-    session.revokedAt = new Date();
-    session.revocationReason = dto?.reason || 'Terminated by superadmin';
-    this.prisma.memoryStore.impersonationSessions.set(sessionId, session);
+    const revokedAt = new Date();
+    const revocationReason = dto?.reason || 'Terminated by superadmin';
 
-    // Log audit event
+    const updated = await this.prisma.impersonationSession.update({
+      where: { id: sessionId },
+      data: {
+        isActive: false,
+        revokedAt,
+        revocationReason,
+      },
+    });
+
     await this.auditService.log({
       tenantId: session.tenantId,
       actorUserId: session.targetUserId,
@@ -273,33 +213,34 @@ export class ImpersonationService {
       resourceType: 'IMPERSONATION_SESSION',
       resourceId: sessionId,
       afterData: {
-        terminatedAt: session.revokedAt,
-        reason: session.revocationReason,
+        terminatedAt: revokedAt,
+        reason: revocationReason,
       },
     });
 
     return {
       sessionId,
       status: 'TERMINATED',
-      revokedAt: session.revokedAt,
+      revokedAt,
       message: 'Impersonation session terminated successfully',
     };
   }
 
   async listSessions(filter?: ImpersonationFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.impersonationSessions.values());
-
+    const where: any = {};
     if (filter?.tenantId) {
-      list = list.filter((s: any) => s.tenantId === filter.tenantId);
+      where.tenantId = filter.tenantId;
     }
     if (filter?.superAdminUserId) {
-      list = list.filter((s: any) => s.superAdminUserId === filter.superAdminUserId);
+      where.superAdminUserId = filter.superAdminUserId;
     }
     if (filter?.isActive !== undefined) {
-      const active = filter.isActive === true || filter.isActive === 'true';
-      list = list.filter((s: any) => s.isActive === active);
+      where.isActive = filter.isActive === true || filter.isActive === 'true';
     }
 
-    return list.sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
+    return this.prisma.impersonationSession.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+    });
   }
 }

@@ -1,6 +1,5 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
-import { randomUUID } from 'crypto';
 import { NigerianTaxCalculator } from './calculator/nigerian-tax-calculator.js';
 import {
   UpsertStaffSalaryProfileDto,
@@ -16,113 +15,67 @@ export class BulkPayrollService {
   constructor(private readonly prisma: PrismaService) {}
 
   async upsertStaffSalaryProfile(tenantId: string, dto: UpsertStaffSalaryProfileDto) {
-    if (this.prisma.isDbConnected) {
-      return this.prisma.staffSalaryProfile.upsert({
-        where: {
-          tenantId_staffUserId: { tenantId, staffUserId: dto.staffUserId },
-        },
-        create: {
-          tenantId,
-          campusId: dto.campusId,
-          staffUserId: dto.staffUserId,
-          basicSalary: dto.basicSalary,
-          housingAllowance: dto.housingAllowance ?? 0,
-          transportAllowance: dto.transportAllowance ?? 0,
-          otherAllowances: dto.otherAllowances ?? 0,
-          customDeductions: dto.customDeductions ?? 0,
-          isPensionExempt: dto.isPensionExempt ?? false,
-          isNhfExempt: dto.isNhfExempt ?? false,
-          isNhisExempt: dto.isNhisExempt ?? true,
-          isTaxExempt: dto.isTaxExempt ?? false,
-          bankCode: dto.bankCode,
-          bankName: dto.bankName,
-          accountNumber: dto.accountNumber,
-          accountName: dto.accountName,
-          isActive: dto.isActive ?? true,
-        },
-        update: {
-          campusId: dto.campusId,
-          basicSalary: dto.basicSalary,
-          housingAllowance: dto.housingAllowance ?? 0,
-          transportAllowance: dto.transportAllowance ?? 0,
-          otherAllowances: dto.otherAllowances ?? 0,
-          customDeductions: dto.customDeductions ?? 0,
-          isPensionExempt: dto.isPensionExempt ?? false,
-          isNhfExempt: dto.isNhfExempt ?? false,
-          isNhisExempt: dto.isNhisExempt ?? true,
-          isTaxExempt: dto.isTaxExempt ?? false,
-          bankCode: dto.bankCode,
-          bankName: dto.bankName,
-          accountNumber: dto.accountNumber,
-          accountName: dto.accountName,
-          isActive: dto.isActive ?? true,
-        },
-      });
-    }
-
-    const key = `${tenantId}_${dto.staffUserId}`;
-    let profile = this.prisma.memoryStore.staffSalaryProfiles?.get(key);
-    const data = {
-      id: profile?.id || `ssp_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
-      tenantId,
-      campusId: dto.campusId,
-      staffUserId: dto.staffUserId,
-      basicSalary: dto.basicSalary,
-      housingAllowance: dto.housingAllowance ?? 0,
-      transportAllowance: dto.transportAllowance ?? 0,
-      otherAllowances: dto.otherAllowances ?? 0,
-      customDeductions: dto.customDeductions ?? 0,
-      isPensionExempt: dto.isPensionExempt ?? false,
-      isNhfExempt: dto.isNhfExempt ?? false,
-      isNhisExempt: dto.isNhisExempt ?? true,
-      isTaxExempt: dto.isTaxExempt ?? false,
-      bankCode: dto.bankCode,
-      bankName: dto.bankName,
-      accountNumber: dto.accountNumber,
-      accountName: dto.accountName,
-      isActive: dto.isActive ?? true,
-      updatedAt: new Date(),
-      createdAt: profile?.createdAt || new Date(),
-    };
-    this.prisma.memoryStore.staffSalaryProfiles.set(key, data);
-    return data;
+    return this.prisma.staffSalaryProfile.upsert({
+      where: {
+        tenantId_staffUserId: { tenantId, staffUserId: dto.staffUserId },
+      },
+      create: {
+        tenantId,
+        campusId: dto.campusId,
+        staffUserId: dto.staffUserId,
+        basicSalary: dto.basicSalary,
+        housingAllowance: dto.housingAllowance ?? 0,
+        transportAllowance: dto.transportAllowance ?? 0,
+        otherAllowances: dto.otherAllowances ?? 0,
+        customDeductions: dto.customDeductions ?? 0,
+        isPensionExempt: dto.isPensionExempt ?? false,
+        isNhfExempt: dto.isNhfExempt ?? false,
+        isNhisExempt: dto.isNhisExempt ?? true,
+        isTaxExempt: dto.isTaxExempt ?? false,
+        bankCode: dto.bankCode,
+        bankName: dto.bankName,
+        accountNumber: dto.accountNumber,
+        accountName: dto.accountName,
+        isActive: dto.isActive ?? true,
+      },
+      update: {
+        campusId: dto.campusId,
+        basicSalary: dto.basicSalary,
+        housingAllowance: dto.housingAllowance ?? 0,
+        transportAllowance: dto.transportAllowance ?? 0,
+        otherAllowances: dto.otherAllowances ?? 0,
+        customDeductions: dto.customDeductions ?? 0,
+        isPensionExempt: dto.isPensionExempt ?? false,
+        isNhfExempt: dto.isNhfExempt ?? false,
+        isNhisExempt: dto.isNhisExempt ?? true,
+        isTaxExempt: dto.isTaxExempt ?? false,
+        bankCode: dto.bankCode,
+        bankName: dto.bankName,
+        accountNumber: dto.accountNumber,
+        accountName: dto.accountName,
+        isActive: dto.isActive ?? true,
+      },
+    });
   }
 
   async getStaffSalaryProfile(tenantId: string, staffUserId: string) {
-    if (this.prisma.isDbConnected) {
-      const profile = await this.prisma.staffSalaryProfile.findFirst({
-        where: { tenantId, staffUserId },
-        include: { campus: { select: { id: true, name: true } } },
-      });
-      if (!profile) throw new NotFoundException(`Salary profile for staff "${staffUserId}" not found.`);
-      return profile;
-    }
-
-    const profile = this.prisma.memoryStore.staffSalaryProfiles?.get(`${tenantId}_${staffUserId}`);
-    if (!profile || profile.tenantId !== tenantId) {
-      throw new NotFoundException('Salary profile not found.');
-    }
+    const profile = await this.prisma.staffSalaryProfile.findFirst({
+      where: { tenantId, staffUserId },
+      include: { campus: { select: { id: true, name: true } } },
+    });
+    if (!profile) throw new NotFoundException(`Salary profile for staff "${staffUserId}" not found.`);
     return profile;
   }
 
   async listStaffSalaryProfiles(tenantId: string, query?: QueryStaffSalaryProfilesDto) {
-    if (this.prisma.isDbConnected) {
-      return this.prisma.staffSalaryProfile.findMany({
-        where: {
-          tenantId,
-          ...(query?.campusId && { campusId: query.campusId }),
-          ...(query?.isActive !== undefined && { isActive: query.isActive }),
-        },
-        include: { campus: { select: { id: true, name: true } } },
-        orderBy: { createdAt: 'desc' },
-      });
-    }
-
-    return Array.from(this.prisma.memoryStore.staffSalaryProfiles.values()).filter((p: any) => {
-      if (p.tenantId !== tenantId) return false;
-      if (query?.campusId && p.campusId !== query.campusId) return false;
-      if (query?.isActive !== undefined && p.isActive !== query.isActive) return false;
-      return true;
+    return this.prisma.staffSalaryProfile.findMany({
+      where: {
+        tenantId,
+        ...(query?.campusId && { campusId: query.campusId }),
+        ...(query?.isActive !== undefined && { isActive: query.isActive }),
+      },
+      include: { campus: { select: { id: true, name: true } } },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
@@ -158,121 +111,73 @@ export class BulkPayrollService {
           isTaxExempt: profile.isTaxExempt,
         });
 
-        if (this.prisma.isDbConnected) {
-          const existing = await this.prisma.payroll.findFirst({
-            where: {
-              tenantId,
-              staffUserId: profile.staffUserId,
-              month: Number(dto.month),
-              year: Number(dto.year),
-            },
-          });
-
-          if (existing && !dto.overrideExisting) {
-            skippedRecords.push({ staffUserId: profile.staffUserId, reason: 'Already exists for this period' });
-            continue;
-          }
-
-          let record: any;
-          if (existing && dto.overrideExisting) {
-            record = await this.prisma.payroll.update({
-              where: { id: existing.id },
-              data: {
-                campusId: profile.campusId,
-                basicSalary: breakdown.basicSalary,
-                housingAllowance: breakdown.housingAllowance,
-                transportAllowance: breakdown.transportAllowance,
-                otherAllowances: breakdown.otherAllowances + breakdown.bonus,
-                grossSalary: breakdown.grossSalary,
-                pensionEmployee: breakdown.pensionEmployee,
-                pensionEmployer: breakdown.pensionEmployer,
-                nhf: breakdown.nhf,
-                nhis: breakdown.nhis,
-                payeTax: breakdown.payeTax,
-                otherDeductions: breakdown.otherDeductions,
-                totalDeductions: breakdown.totalDeductions,
-                netSalary: breakdown.netSalary,
-                notes: dto.notes,
-                breakdown: breakdown as any,
-              },
-            });
-          } else {
-            record = await this.prisma.payroll.create({
-              data: {
-                tenantId,
-                campusId: profile.campusId,
-                staffUserId: profile.staffUserId,
-                month: Number(dto.month),
-                year: Number(dto.year),
-                basicSalary: breakdown.basicSalary,
-                housingAllowance: breakdown.housingAllowance,
-                transportAllowance: breakdown.transportAllowance,
-                otherAllowances: breakdown.otherAllowances + breakdown.bonus,
-                grossSalary: breakdown.grossSalary,
-                pensionEmployee: breakdown.pensionEmployee,
-                pensionEmployer: breakdown.pensionEmployer,
-                nhf: breakdown.nhf,
-                nhis: breakdown.nhis,
-                payeTax: breakdown.payeTax,
-                otherDeductions: breakdown.otherDeductions,
-                totalDeductions: breakdown.totalDeductions,
-                netSalary: breakdown.netSalary,
-                currency: 'NGN',
-                status: 'DRAFT',
-                notes: dto.notes,
-                breakdown: breakdown as any,
-              },
-            });
-          }
-
-          this.prisma.memoryStore.payroll.set(record.id, record);
-          createdRecords.push(record);
-        } else {
-          // Memory store
-          const existing = Array.from(this.prisma.memoryStore.payroll.values()).find(
-            (p: any) =>
-              p.tenantId === tenantId &&
-              p.staffUserId === profile.staffUserId &&
-              p.month === Number(dto.month) &&
-              p.year === Number(dto.year),
-          );
-
-          if (existing && !dto.overrideExisting) {
-            skippedRecords.push({ staffUserId: profile.staffUserId, reason: 'Already exists for this period' });
-            continue;
-          }
-
-          const id = existing?.id || `pay_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-          const record = {
-            id,
+        const existing = await this.prisma.payroll.findFirst({
+          where: {
             tenantId,
-            campusId: profile.campusId,
             staffUserId: profile.staffUserId,
             month: Number(dto.month),
             year: Number(dto.year),
-            basicSalary: breakdown.basicSalary,
-            housingAllowance: breakdown.housingAllowance,
-            transportAllowance: breakdown.transportAllowance,
-            otherAllowances: breakdown.otherAllowances + breakdown.bonus,
-            grossSalary: breakdown.grossSalary,
-            pensionEmployee: breakdown.pensionEmployee,
-            pensionEmployer: breakdown.pensionEmployer,
-            nhf: breakdown.nhf,
-            nhis: breakdown.nhis,
-            payeTax: breakdown.payeTax,
-            otherDeductions: breakdown.otherDeductions,
-            totalDeductions: breakdown.totalDeductions,
-            netSalary: breakdown.netSalary,
-            currency: 'NGN',
-            status: 'DRAFT',
-            notes: dto.notes,
-            breakdown,
-            createdAt: existing?.createdAt || new Date(),
-          };
+          },
+        });
 
-          this.prisma.memoryStore.payroll.set(id, record);
-          createdRecords.push(record);
+        if (existing && !dto.overrideExisting) {
+          skippedRecords.push({ staffUserId: profile.staffUserId, reason: 'Already exists for this period' });
+          continue;
         }
+
+        let record: any;
+        if (existing && dto.overrideExisting) {
+          record = await this.prisma.payroll.update({
+            where: { id: existing.id },
+            data: {
+              campusId: profile.campusId,
+              basicSalary: breakdown.basicSalary,
+              housingAllowance: breakdown.housingAllowance,
+              transportAllowance: breakdown.transportAllowance,
+              otherAllowances: breakdown.otherAllowances + breakdown.bonus,
+              grossSalary: breakdown.grossSalary,
+              pensionEmployee: breakdown.pensionEmployee,
+              pensionEmployer: breakdown.pensionEmployer,
+              nhf: breakdown.nhf,
+              nhis: breakdown.nhis,
+              payeTax: breakdown.payeTax,
+              otherDeductions: breakdown.otherDeductions,
+              totalDeductions: breakdown.totalDeductions,
+              netSalary: breakdown.netSalary,
+              notes: dto.notes,
+              breakdown: breakdown as any,
+            },
+          });
+        } else {
+          record = await this.prisma.payroll.create({
+            data: {
+              tenantId,
+              campusId: profile.campusId,
+              staffUserId: profile.staffUserId,
+              month: Number(dto.month),
+              year: Number(dto.year),
+              basicSalary: breakdown.basicSalary,
+              housingAllowance: breakdown.housingAllowance,
+              transportAllowance: breakdown.transportAllowance,
+              otherAllowances: breakdown.otherAllowances + breakdown.bonus,
+              grossSalary: breakdown.grossSalary,
+              pensionEmployee: breakdown.pensionEmployee,
+              pensionEmployer: breakdown.pensionEmployer,
+              nhf: breakdown.nhf,
+              nhis: breakdown.nhis,
+              payeTax: breakdown.payeTax,
+              otherDeductions: breakdown.otherDeductions,
+              totalDeductions: breakdown.totalDeductions,
+              netSalary: breakdown.netSalary,
+              currency: 'NGN',
+              status: 'DRAFT',
+              notes: dto.notes,
+              breakdown: breakdown as any,
+            },
+          });
+        }
+
+        createdRecords.push(record);
 
         totalGross += breakdown.grossSalary;
         totalNet += breakdown.netSalary;
@@ -309,37 +214,17 @@ export class BulkPayrollService {
   }
 
   async bulkApprovePayroll(tenantId: string, dto: BulkApprovePayrollDto) {
-    let count = 0;
-    if (this.prisma.isDbConnected) {
-      const result = await this.prisma.payroll.updateMany({
-        where: {
-          tenantId,
-          month: Number(dto.month),
-          year: Number(dto.year),
-          status: 'DRAFT',
-          ...(dto.campusId && { campusId: dto.campusId }),
-        },
-        data: { status: 'APPROVED' },
-      });
-      count = result.count;
-    }
+    const result = await this.prisma.payroll.updateMany({
+      where: {
+        tenantId,
+        month: Number(dto.month),
+        year: Number(dto.year),
+        status: 'DRAFT',
+        ...(dto.campusId && { campusId: dto.campusId }),
+      },
+      data: { status: 'APPROVED' },
+    });
 
-    // Also update in memory store
-    for (const record of this.prisma.memoryStore.payroll.values()) {
-      if (
-        record.tenantId === tenantId &&
-        record.month === Number(dto.month) &&
-        record.year === Number(dto.year) &&
-        record.status === 'DRAFT' &&
-        (!dto.campusId || record.campusId === dto.campusId)
-      ) {
-        record.status = 'APPROVED';
-        if (!this.prisma.isDbConnected) {
-          count++;
-        }
-      }
-    }
-
-    return { month: Number(dto.month), year: Number(dto.year), approvedCount: count };
+    return { month: Number(dto.month), year: Number(dto.year), approvedCount: result.count };
   }
 }

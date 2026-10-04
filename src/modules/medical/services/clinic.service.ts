@@ -40,23 +40,26 @@ export class ClinicService {
       patientName = (dto as any).student;
       admissionNumber = (dto as any).studentId || 'STD-2025';
     } else if (dto.patientType === PatientType.STUDENT) {
-      const student = this.prisma.memoryStore.students.get(dto.patientId);
-      if (!student || student.tenantId !== tenantId) {
+      const student = await this.prisma.student.findFirst({
+        where: { id: dto.patientId, tenantId },
+        include: {
+          parents: {
+            include: { parent: true },
+          },
+        },
+      });
+      if (!student) {
         throw new NotFoundException('Student patient not found');
       }
       patientName = `${student.firstName} ${student.lastName}`;
       admissionNumber = student.admissionNumber;
 
-      const memory = this.prisma.memoryStore as any;
-      const sp = Array.from(memory.studentParents?.values() || []).find(
-        (item: any) => item.studentId === student.id,
-      ) as any;
-      if (sp) {
-        const parent = this.prisma.memoryStore.parents.get(sp.parentId);
-        parentEmail = parent?.email;
-      }
+      const primaryParent = student.parents.find((sp) => sp.isPrimaryContact) || student.parents[0];
+      parentEmail = primaryParent?.parent?.email || undefined;
     } else if (dto.patientType === PatientType.STAFF) {
-      const user = this.prisma.memoryStore.users.get(dto.patientId);
+      const user = await this.prisma.user.findFirst({
+        where: { id: dto.patientId, tenantId },
+      });
       if (user) patientName = `${user.firstName} ${user.lastName}`;
     }
 
@@ -94,98 +97,43 @@ export class ClinicService {
       createdAt: new Date(),
     };
 
-    this.getVisitsMap().set(visitId, record);
+    this.visits.set(visitId, record);
 
     // Cross-Module Trigger: Create In-App Inbox Notification for Linked Parent(s)
     if (record.parentNotified && (dto.patientType === PatientType.STUDENT || !dto.patientType)) {
       const studentIdentifier = record.patientId || (dto as any).studentId;
-      let notifiedInDb = false;
-      if (this.prisma.isDbConnected) {
-        try {
-          const studentParents = await this.prisma.studentParent.findMany({
-            where: {
-              OR: [
-                { studentId: studentIdentifier },
-                { student: { tenantId, admissionNumber: studentIdentifier } },
-                { student: { tenantId, id: studentIdentifier } },
-              ],
-            },
-            include: { parent: { include: { user: true } } },
-          });
+      try {
+        const studentParents = await this.prisma.studentParent.findMany({
+          where: {
+            OR: [
+              { studentId: studentIdentifier },
+              { student: { tenantId, admissionNumber: studentIdentifier } },
+              { student: { tenantId, id: studentIdentifier } },
+            ],
+          },
+          include: { parent: { include: { user: true } } },
+        });
 
-          if (studentParents.length > 0) {
-            notifiedInDb = true;
-            for (const sp of studentParents) {
-              const parentUserId = sp.parent?.userId || sp.parent?.user?.id;
-              if (parentUserId) {
-                await this.prisma.inAppInboxItem.create({
-                  data: {
-                    id: `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
-                    tenantId,
-                    recipientUserId: parentUserId,
-                    category: 'HEALTH_UPDATE',
-                    priority: 'HIGH',
-                    title: `School Clinic Visit: ${patientName}`,
-                    message: `${patientName} visited the clinic today for "${record.complaint}". Status: ${record.status}. Attended by: ${record.officer}.`,
-                    actionUrl: '/parent',
-                    isRead: false,
-                  },
-                });
-              }
-            }
-          }
-        } catch (err: any) {
-          this.logger.warn(`Could not dispatch in-app parent clinic notice: ${err.message}`);
-        }
-      }
-
-      // Memory store fallback/synchronization
-      const memory = this.prisma.memoryStore as any;
-      if (memory && (!notifiedInDb || !this.prisma.isDbConnected)) {
-        const matchingParentUserIds = new Set<string>();
-
-        const sps = Array.from(memory.studentParents?.values() || []).filter(
-          (sp: any) =>
-            sp.studentId === studentIdentifier ||
-            sp.studentId === record.patientId ||
-            sp.studentId === (dto as any).studentId,
-        );
-        for (const sp of sps as any[]) {
-          const parent = memory.parents?.get(sp.parentId);
-          const parentUserId = parent?.userId || parent?.user?.id || `usr_${parent?.id}`;
-          if (parentUserId) matchingParentUserIds.add(parentUserId);
-        }
-
-        const allParents = Array.from(memory.parents?.values() || []).filter(
-          (p: any) => p.tenantId === tenantId,
-        );
-        for (const p of allParents as any[]) {
-          const sIds = Array.isArray(p.studentIds) ? p.studentIds : p.studentId ? [p.studentId] : [];
-          if (
-            sIds.includes(studentIdentifier) ||
-            sIds.includes(record.patientId) ||
-            sIds.includes((dto as any).studentId)
-          ) {
-            const parentUserId = p.userId || p.user?.id || `usr_${p.id}`;
-            if (parentUserId) matchingParentUserIds.add(parentUserId);
+        for (const sp of studentParents) {
+          const parentUserId = sp.parent?.userId || sp.parent?.user?.id;
+          if (parentUserId) {
+            await this.prisma.inAppInboxItem.create({
+              data: {
+                id: `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                tenantId,
+                recipientUserId: parentUserId,
+                category: 'HEALTH_UPDATE',
+                priority: 'HIGH',
+                title: `School Clinic Visit: ${patientName}`,
+                message: `${patientName} visited the clinic today for "${record.complaint}". Status: ${record.status}. Attended by: ${record.officer}.`,
+                actionUrl: '/parent',
+                isRead: false,
+              },
+            });
           }
         }
-
-        for (const parentUserId of matchingParentUserIds) {
-          const inbId = `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-          memory.inboxItems?.set(inbId, {
-            id: inbId,
-            tenantId,
-            recipientUserId: parentUserId,
-            category: 'HEALTH_UPDATE',
-            priority: 'HIGH',
-            title: `School Clinic Visit: ${patientName}`,
-            message: `${patientName} visited the clinic today for "${record.complaint}". Status: ${record.status}. Attended by: ${record.officer}.`,
-            actionUrl: '/parent',
-            isRead: false,
-            createdAt: new Date(),
-          });
-        }
+      } catch (err: any) {
+        this.logger.warn(`Could not dispatch in-app parent clinic notice: ${err.message}`);
       }
     }
 
@@ -204,8 +152,7 @@ export class ClinicService {
   }
 
   async dischargePatient(tenantId: string, visitId: string, dto?: DischargePatientDto) {
-    const visitsMap = this.getVisitsMap();
-    const visit = visitsMap.get(visitId);
+    const visit = this.visits.get(visitId);
     if (!visit || visit.tenantId !== tenantId) {
       throw new NotFoundException('Clinic visit record not found');
     }
@@ -214,12 +161,8 @@ export class ClinicService {
     visit.status = 'Discharged';
     visit.dischargedAt = dto?.dischargedAt ? new Date(dto.dischargedAt) : new Date();
     visit.dischargeNotes = dto?.dischargeNotes || null;
-    visitsMap.set(visitId, visit);
+    this.visits.set(visitId, visit);
     return this.enrichVisit(visit);
-  }
-
-  private getVisitsMap(): Map<string, any> {
-    return (this.prisma.memoryStore as any)?.clinicVisits || this.visits;
   }
 
   private enrichVisit(v: any) {
@@ -241,8 +184,7 @@ export class ClinicService {
   }
 
   async listClinicVisits(tenantId: string, filters: ClinicVisitFilterDto = {}) {
-    const visitsMap = this.getVisitsMap();
-    let result = Array.from(visitsMap.values()).filter((v: any) => v.tenantId === tenantId);
+    let result = Array.from(this.visits.values()).filter((v: any) => v.tenantId === tenantId);
 
     if (filters.patientType) result = result.filter((v: any) => v.patientType === filters.patientType);
     if (filters.visitType) result = result.filter((v: any) => v.visitType === filters.visitType);
@@ -254,8 +196,7 @@ export class ClinicService {
   }
 
   async getClinicVisit(tenantId: string, visitId: string) {
-    const visitsMap = this.getVisitsMap();
-    const visit = visitsMap.get(visitId);
+    const visit = this.visits.get(visitId);
     if (!visit || visit.tenantId !== tenantId) {
       throw new NotFoundException('Clinic visit record not found');
     }
@@ -264,8 +205,10 @@ export class ClinicService {
 
   // --- Medication Dispensation ---
   async recordMedicationDispensation(tenantId: string, dto: RecordMedicationDispensationDto) {
-    const student = this.prisma.memoryStore.students.get(dto.studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: dto.studentId, tenantId },
+    });
+    if (!student) {
       throw new NotFoundException('Student record not found');
     }
 
@@ -301,8 +244,15 @@ export class ClinicService {
 
   // --- First Aid & Critical Incidents ---
   async logHealthIncident(tenantId: string, dto: CreateHealthIncidentDto, loggedByStaffId?: string) {
-    const student = this.prisma.memoryStore.students.get(dto.studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: dto.studentId, tenantId },
+      include: {
+        parents: {
+          include: { parent: true },
+        },
+      },
+    });
+    if (!student) {
       throw new NotFoundException('Student record not found');
     }
 
@@ -333,23 +283,18 @@ export class ClinicService {
 
     // If major/critical or referred to hospital, dispatch immediate parent notification
     if (dto.notifyParents && this.queueService) {
-      const memory = this.prisma.memoryStore as any;
-      const sp = Array.from(memory.studentParents?.values() || []).find(
-        (item: any) => item.studentId === student.id,
-      ) as any;
+      const primaryParent = student.parents.find((sp) => sp.isPrimaryContact) || student.parents[0];
+      const parentEmail = primaryParent?.parent?.email;
 
-      if (sp) {
-        const parent = this.prisma.memoryStore.parents.get(sp.parentId);
-        if (parent?.email) {
-          await this.queueService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
-            tenantId,
-            data: {
-              recipientEmail: parent.email,
-              title: `URGENT Health Incident Notice: ${student.firstName} ${student.lastName}`,
-              message: `An incident (${dto.incidentType} - ${dto.severity}) occurred at ${dto.location}. First aid was administered. ${dto.isHospitalReferralRequired ? `Student referred to ${dto.hospitalName || 'hospital'}.` : ''}`,
-            },
-          });
-        }
+      if (parentEmail) {
+        await this.queueService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
+          tenantId,
+          data: {
+            recipientEmail: parentEmail,
+            title: `URGENT Health Incident Notice: ${student.firstName} ${student.lastName}`,
+            message: `An incident (${dto.incidentType} - ${dto.severity}) occurred at ${dto.location}. First aid was administered. ${dto.isHospitalReferralRequired ? `Student referred to ${dto.hospitalName || 'hospital'}.` : ''}`,
+          },
+        });
       }
     }
 
@@ -368,7 +313,7 @@ export class ClinicService {
 
   // --- Clinic Analytics & Sickbay Utilization ---
   async getClinicAnalytics(tenantId: string) {
-    const visits = Array.from(this.getVisitsMap().values()).filter((v: any) => v.tenantId === tenantId);
+    const visits = Array.from(this.visits.values()).filter((v: any) => v.tenantId === tenantId);
     const incidents = Array.from(this.incidents.values()).filter((i: any) => i.tenantId === tenantId);
     const dispensations = Array.from(this.dispensations.values()).filter((d: any) => d.tenantId === tenantId);
 

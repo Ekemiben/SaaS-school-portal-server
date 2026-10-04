@@ -23,37 +23,18 @@ export class ResultsService {
 
   // --- Dynamic Grading Rules Resolution ---
   async resolveGradingRules(tenantId: string): Promise<GradingRuleDto[]> {
-    if (this.prisma.isDbConnected) {
-      try {
-        const dbScales = await this.prisma.gradingScale.findMany({
-          where: { tenantId },
-          orderBy: { minScore: 'desc' },
-        });
+    const dbScales = await this.prisma.gradingScale.findMany({
+      where: { tenantId },
+      orderBy: { minScore: 'desc' },
+    });
 
-        if (dbScales.length > 0) {
-          return dbScales.map((s) => ({
-            grade: s.grade,
-            minScore: s.minScore,
-            maxScore: s.maxScore,
-            gradePoint: s.gradePoint,
-            remark: s.description || s.grade,
-          }));
-        }
-      } catch (err: any) {
-        this.logger.warn(`Could not resolve grading rules from DB: ${err.message}`);
-      }
-    }
-
-    const memoryScales = Array.from(this.prisma.memoryStore.gradingScales.values()).filter(
-      (gs: any) => gs.tenantId === tenantId,
-    );
-    if (memoryScales.length > 0 && memoryScales[0].bands?.length > 0) {
-      return memoryScales[0].bands.map((b: any) => ({
-        grade: b.symbol || b.grade || 'A',
-        minScore: Number(b.minScore) || 0,
-        maxScore: Number(b.maxScore) || 100,
-        gradePoint: Number(b.gradePoint) || 0,
-        remark: b.remark || b.description || '',
+    if (dbScales.length > 0) {
+      return dbScales.map((s) => ({
+        grade: s.grade,
+        minScore: s.minScore,
+        maxScore: s.maxScore,
+        gradePoint: s.gradePoint,
+        remark: s.description || s.grade,
       }));
     }
 
@@ -62,47 +43,31 @@ export class ResultsService {
 
   // --- Assessment Structures ---
   async listAssessmentStructures(tenantId: string, campusId?: string) {
-    if (this.prisma.isDbConnected) {
-      try {
-        const dbStructures = await this.prisma.assessmentStructure.findMany({
-          where: {
-            tenantId,
-            ...(campusId ? { campusId } : {}),
-          },
-          orderBy: { createdAt: 'desc' },
-        });
+    const dbStructures = await this.prisma.assessmentStructure.findMany({
+      where: {
+        tenantId,
+        ...(campusId ? { campusId } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+    });
 
-        if (dbStructures.length > 0) {
-          return dbStructures.map((s) => ({
-            id: s.id,
-            tenantId: s.tenantId,
-            campusId: s.campusId,
-            name: s.name,
-            code: s.code || s.name.toUpperCase().replace(/\s+/g, '_'),
-            description: s.description,
-            components: s.components as any,
-            totalWeight: s.totalWeight,
-            isDefault: s.isDefault,
-            createdAt: s.createdAt,
-            updatedAt: s.updatedAt,
-          }));
-        }
-      } catch (err: any) {
-        this.logger.warn(`Failed querying assessment structures from DB: ${err.message}`);
-      }
+    if (dbStructures.length > 0) {
+      return dbStructures.map((s) => ({
+        id: s.id,
+        tenantId: s.tenantId,
+        campusId: s.campusId,
+        name: s.name,
+        code: s.code || s.name.toUpperCase().replace(/\s+/g, '_'),
+        description: s.description,
+        components: s.components as any,
+        totalWeight: s.totalWeight,
+        isDefault: s.isDefault,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+      }));
     }
 
-    let list = Array.from(this.prisma.memoryStore.assessmentStructures?.values() || []).filter(
-      (s: any) => s.tenantId === tenantId,
-    );
-    if (campusId) {
-      list = list.filter((s: any) => !s.campusId || s.campusId === campusId);
-    }
-    if (list.length === 0) {
-      const defaultStructure = this.getDefaultAssessmentStructure(tenantId);
-      list.push(defaultStructure);
-    }
-    return list;
+    return [this.getDefaultAssessmentStructure(tenantId)];
   }
 
   async getAssessmentStructure(tenantId: string, id: string) {
@@ -110,36 +75,26 @@ export class ResultsService {
       return this.getDefaultAssessmentStructure(tenantId);
     }
 
-    if (this.prisma.isDbConnected) {
-      try {
-        const s = await this.prisma.assessmentStructure.findFirst({
-          where: { id, tenantId },
-        });
-        if (s) {
-          return {
-            id: s.id,
-            tenantId: s.tenantId,
-            campusId: s.campusId,
-            name: s.name,
-            code: s.code,
-            description: s.description,
-            components: s.components as any,
-            totalWeight: s.totalWeight,
-            isDefault: s.isDefault,
-            createdAt: s.createdAt,
-            updatedAt: s.updatedAt,
-          };
-        }
-      } catch (err: any) {
-        this.logger.warn(`Could not get assessment structure from DB: ${err.message}`);
-      }
-    }
-
-    const struct = this.prisma.memoryStore.assessmentStructures?.get(id);
-    if (!struct || struct.tenantId !== tenantId) {
+    const s = await this.prisma.assessmentStructure.findFirst({
+      where: { id, tenantId },
+    });
+    if (!s) {
       throw new NotFoundException('Assessment structure not found');
     }
-    return struct;
+
+    return {
+      id: s.id,
+      tenantId: s.tenantId,
+      campusId: s.campusId,
+      name: s.name,
+      code: s.code,
+      description: s.description,
+      components: s.components as any,
+      totalWeight: s.totalWeight,
+      isDefault: s.isDefault,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+    };
   }
 
   async createAssessmentStructure(tenantId: string, dto: CreateAssessmentStructureDto) {
@@ -149,64 +104,46 @@ export class ResultsService {
     }
 
     const id = `struct_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const structure = {
-      id,
-      tenantId,
-      campusId: dto.campusId || null,
-      name: dto.name,
-      code: dto.code || dto.name.toUpperCase().replace(/\s+/g, '_'),
-      description: dto.description || null,
-      components: dto.components,
-      totalWeight,
-      isDefault: dto.isDefault ?? false,
-      createdAt: new Date(),
-      updatedAt: new Date(),
+    const isDefault = dto.isDefault ?? false;
+
+    if (isDefault) {
+      await this.prisma.assessmentStructure.updateMany({
+        where: { tenantId },
+        data: { isDefault: false },
+      });
+    }
+
+    const code = dto.code || dto.name.toUpperCase().replace(/\s+/g, '_');
+
+    const created = await this.prisma.assessmentStructure.create({
+      data: {
+        id,
+        tenantId,
+        campusId: dto.campusId || null,
+        name: dto.name,
+        code,
+        description: dto.description || null,
+        components: dto.components as any,
+        totalWeight,
+        isDefault,
+      },
+    });
+
+    this.logger.log(`Created AssessmentStructure ${id} in PostgreSQL`);
+    return {
+      ...created,
+      components: created.components as any,
     };
-
-    if (this.prisma.isDbConnected) {
-      try {
-        if (structure.isDefault) {
-          await this.prisma.assessmentStructure.updateMany({
-            where: { tenantId },
-            data: { isDefault: false },
-          });
-        }
-        await this.prisma.assessmentStructure.create({
-          data: {
-            id,
-            tenantId,
-            campusId: dto.campusId || null,
-            name: dto.name,
-            code: structure.code,
-            description: structure.description,
-            components: dto.components as any,
-            totalWeight,
-            isDefault: structure.isDefault,
-          },
-        });
-        this.logger.log(`Created AssessmentStructure ${id} in PostgreSQL`);
-      } catch (err: any) {
-        this.logger.warn(`Could not persist assessment structure to DB: ${err.message}`);
-      }
-    }
-
-    if (structure.isDefault && this.prisma.memoryStore.assessmentStructures) {
-      for (const [sId, s] of this.prisma.memoryStore.assessmentStructures.entries()) {
-        if (s.tenantId === tenantId) {
-          s.isDefault = false;
-          this.prisma.memoryStore.assessmentStructures.set(sId, s);
-        }
-      }
-    }
-
-    if (!this.prisma.memoryStore.assessmentStructures) {
-      this.prisma.memoryStore.assessmentStructures = new Map();
-    }
-    this.prisma.memoryStore.assessmentStructures.set(id, structure);
-    return structure;
   }
 
   async updateAssessmentStructure(tenantId: string, id: string, dto: UpdateAssessmentStructureDto) {
+    const existing = await this.prisma.assessmentStructure.findFirst({
+      where: { id, tenantId },
+    });
+    if (!existing) {
+      throw new NotFoundException('Assessment structure not found');
+    }
+
     let totalWeight: number | undefined;
     if (dto.components) {
       totalWeight = dto.components.reduce((sum, c) => sum + (c.weight || 0), 0);
@@ -215,58 +152,43 @@ export class ResultsService {
       }
     }
 
-    if (this.prisma.isDbConnected) {
-      try {
-        if (dto.isDefault) {
-          await this.prisma.assessmentStructure.updateMany({
-            where: { tenantId },
-            data: { isDefault: false },
-          });
-        }
-        await this.prisma.assessmentStructure.updateMany({
-          where: { id, tenantId },
-          data: {
-            ...(dto.name ? { name: dto.name } : {}),
-            ...(dto.code ? { code: dto.code } : {}),
-            ...(dto.description !== undefined ? { description: dto.description } : {}),
-            ...(dto.components ? { components: dto.components as any } : {}),
-            ...(totalWeight !== undefined ? { totalWeight } : {}),
-            ...(dto.isDefault !== undefined ? { isDefault: dto.isDefault } : {}),
-          },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not update assessment structure in DB: ${err.message}`);
-      }
+    if (dto.isDefault) {
+      await this.prisma.assessmentStructure.updateMany({
+        where: { tenantId },
+        data: { isDefault: false },
+      });
     }
 
-    const struct = await this.getAssessmentStructure(tenantId, id);
-    if (dto.components && totalWeight !== undefined) {
-      struct.components = dto.components;
-      struct.totalWeight = totalWeight;
-    }
-    if (dto.name) struct.name = dto.name;
-    if (dto.code) struct.code = dto.code;
-    if (dto.description !== undefined) struct.description = dto.description;
-    if (dto.isDefault !== undefined) struct.isDefault = dto.isDefault;
-    struct.updatedAt = new Date();
+    const updated = await this.prisma.assessmentStructure.update({
+      where: { id },
+      data: {
+        ...(dto.name ? { name: dto.name } : {}),
+        ...(dto.code ? { code: dto.code } : {}),
+        ...(dto.description !== undefined ? { description: dto.description } : {}),
+        ...(dto.components ? { components: dto.components as any } : {}),
+        ...(totalWeight !== undefined ? { totalWeight } : {}),
+        ...(dto.isDefault !== undefined ? { isDefault: dto.isDefault } : {}),
+      },
+    });
 
-    this.prisma.memoryStore.assessmentStructures.set(id, struct);
-    return struct;
+    return {
+      ...updated,
+      components: updated.components as any,
+    };
   }
 
   async deleteAssessmentStructure(tenantId: string, id: string) {
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.assessmentStructure.deleteMany({
-          where: { id, tenantId },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not delete assessment structure from DB: ${err.message}`);
-      }
+    const existing = await this.prisma.assessmentStructure.findFirst({
+      where: { id, tenantId },
+    });
+    if (!existing) {
+      throw new NotFoundException('Assessment structure not found');
     }
 
-    const struct = await this.getAssessmentStructure(tenantId, id);
-    this.prisma.memoryStore.assessmentStructures.delete(id);
+    await this.prisma.assessmentStructure.delete({
+      where: { id },
+    });
+
     return { success: true, message: 'Assessment rubric deleted successfully' };
   }
 
@@ -292,7 +214,7 @@ export class ResultsService {
 
   // --- Weighted Score Entry ---
   async enterWeightedScore(tenantId: string, userId: string, dto: EnterWeightedScoreDto) {
-    let struct = dto.assessmentStructureId
+    const struct = dto.assessmentStructureId
       ? await this.getAssessmentStructure(tenantId, dto.assessmentStructureId)
       : this.getDefaultAssessmentStructure(tenantId);
 
@@ -313,107 +235,69 @@ export class ResultsService {
 
     const resultId = `res_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
 
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.result.upsert({
-          where: {
-            tenantId_examinationId_studentId_subjectId: {
-              tenantId,
-              examinationId: dto.examinationId,
-              studentId: dto.studentId,
-              subjectId: dto.subjectId,
-            },
-          },
-          update: {
-            classId: dto.classId || null,
-            assessmentStructureId: struct.id.startsWith('struct_default') ? null : struct.id,
-            marksObtained: evaluation.totalWeightedScore,
-            maxMarks: evaluation.maxMarks,
-            grade: evaluation.grade,
-            gradePoint: evaluation.gradePoint,
-            remarks: dto.remarks || evaluation.remarks,
-            componentScores: dto.componentScores as any,
-            enteredByUserId: userId,
-          },
-          create: {
-            id: resultId,
-            tenantId,
-            examinationId: dto.examinationId,
-            studentId: dto.studentId,
-            subjectId: dto.subjectId,
-            classId: dto.classId || null,
-            assessmentStructureId: struct.id.startsWith('struct_default') ? null : struct.id,
-            marksObtained: evaluation.totalWeightedScore,
-            maxMarks: evaluation.maxMarks,
-            grade: evaluation.grade,
-            gradePoint: evaluation.gradePoint,
-            remarks: dto.remarks || evaluation.remarks,
-            componentScores: dto.componentScores as any,
-            enteredByUserId: userId,
-          },
-        });
-        this.logger.log(`Persisted result for student ${dto.studentId} in exam ${dto.examinationId} to PostgreSQL`);
-        await this.prisma.auditLog.create({
-          data: {
-            tenantId,
-            actorUserId: userId || null,
-            action: 'RESULT_SCORE_RECORDED',
-            resourceType: 'Result',
-            resourceId: resultId,
-            afterData: {
-              studentId: dto.studentId,
-              subjectId: dto.subjectId,
-              examinationId: dto.examinationId,
-              marksObtained: evaluation.totalWeightedScore,
-              grade: evaluation.grade,
-              componentScores: dto.componentScores,
-            } as any,
-          },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not persist result to DB: ${err.message}`);
-      }
-    }
+    const savedResult = await this.prisma.result.upsert({
+      where: {
+        tenantId_examinationId_studentId_subjectId: {
+          tenantId,
+          examinationId: dto.examinationId,
+          studentId: dto.studentId,
+          subjectId: dto.subjectId,
+        },
+      },
+      update: {
+        classId: dto.classId || null,
+        assessmentStructureId: struct.id.startsWith('struct_default') ? null : struct.id,
+        marksObtained: evaluation.totalWeightedScore,
+        maxMarks: evaluation.maxMarks,
+        grade: evaluation.grade,
+        gradePoint: evaluation.gradePoint,
+        remarks: dto.remarks || evaluation.remarks,
+        componentScores: dto.componentScores as any,
+        enteredByUserId: userId,
+      },
+      create: {
+        id: resultId,
+        tenantId,
+        examinationId: dto.examinationId,
+        studentId: dto.studentId,
+        subjectId: dto.subjectId,
+        classId: dto.classId || null,
+        assessmentStructureId: struct.id.startsWith('struct_default') ? null : struct.id,
+        marksObtained: evaluation.totalWeightedScore,
+        maxMarks: evaluation.maxMarks,
+        grade: evaluation.grade,
+        gradePoint: evaluation.gradePoint,
+        remarks: dto.remarks || evaluation.remarks,
+        componentScores: dto.componentScores as any,
+        enteredByUserId: userId,
+      },
+    });
 
-    // Look for existing result record in memory
-    let existingId: string | undefined;
-    for (const [resId, r] of this.prisma.memoryStore.results.entries()) {
-      if (
-        r.tenantId === tenantId &&
-        r.examinationId === dto.examinationId &&
-        r.studentId === dto.studentId &&
-        r.subjectId === dto.subjectId
-      ) {
-        existingId = resId;
-        break;
-      }
-    }
+    this.logger.log(`Persisted result for student ${dto.studentId} in exam ${dto.examinationId} to PostgreSQL`);
 
-    const id = existingId || resultId;
-    const result = {
-      id,
-      tenantId,
-      examinationId: dto.examinationId,
-      studentId: dto.studentId,
-      subjectId: dto.subjectId,
-      classId: dto.classId || null,
-      assessmentStructureId: struct.id,
-      marksObtained: evaluation.totalWeightedScore,
-      maxMarks: evaluation.maxMarks,
-      grade: evaluation.grade,
-      gradePoint: evaluation.gradePoint,
-      remarks: dto.remarks || evaluation.remarks,
-      componentScores: dto.componentScores,
+    await this.prisma.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId: userId || null,
+        action: 'RESULT_SCORE_RECORDED',
+        resourceType: 'Result',
+        resourceId: savedResult.id,
+        afterData: {
+          studentId: dto.studentId,
+          subjectId: dto.subjectId,
+          examinationId: dto.examinationId,
+          marksObtained: evaluation.totalWeightedScore,
+          grade: evaluation.grade,
+          componentScores: dto.componentScores,
+        } as any,
+      },
+    });
+
+    return {
+      ...savedResult,
       componentBreakdown: evaluation.componentBreakdown,
-      isApproved: false,
-      isPublished: false,
-      enteredByUserId: userId,
-      createdAt: existingId ? this.prisma.memoryStore.results.get(existingId).createdAt : new Date(),
-      updatedAt: new Date(),
+      evaluation,
     };
-
-    this.prisma.memoryStore.results.set(id, result);
-    return { ...result, evaluation };
   }
 
   async bulkEnterWeightedScores(tenantId: string, userId: string, dto: BulkEnterWeightedScoresDto) {
@@ -460,190 +344,125 @@ export class ResultsService {
 
     const id = `res_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
 
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.result.upsert({
-          where: {
-            tenantId_examinationId_studentId_subjectId: {
-              tenantId,
-              examinationId: data.examinationId,
-              studentId: data.studentId,
-              subjectId: data.subjectId,
-            },
-          },
-          update: {
-            classId: data.classId || null,
-            marksObtained: data.marksObtained,
-            maxMarks,
-            grade: gradeInfo.grade,
-            gradePoint: gradeInfo.gradePoint,
-            remarks: data.remarks || gradeInfo.remark,
-            componentScores: { EXAM: data.marksObtained } as any,
-            enteredByUserId: userId,
-          },
-          create: {
-            id,
-            tenantId,
-            examinationId: data.examinationId,
-            studentId: data.studentId,
-            subjectId: data.subjectId,
-            classId: data.classId || null,
-            marksObtained: data.marksObtained,
-            maxMarks,
-            grade: gradeInfo.grade,
-            gradePoint: gradeInfo.gradePoint,
-            remarks: data.remarks || gradeInfo.remark,
-            componentScores: { EXAM: data.marksObtained } as any,
-            enteredByUserId: userId,
-          },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not save raw mark in DB: ${err.message}`);
-      }
-    }
+    const saved = await this.prisma.result.upsert({
+      where: {
+        tenantId_examinationId_studentId_subjectId: {
+          tenantId,
+          examinationId: data.examinationId,
+          studentId: data.studentId,
+          subjectId: data.subjectId,
+        },
+      },
+      update: {
+        classId: data.classId || null,
+        marksObtained: data.marksObtained,
+        maxMarks,
+        grade: gradeInfo.grade,
+        gradePoint: gradeInfo.gradePoint,
+        remarks: data.remarks || gradeInfo.remark,
+        componentScores: { EXAM: data.marksObtained } as any,
+        enteredByUserId: userId,
+      },
+      create: {
+        id,
+        tenantId,
+        examinationId: data.examinationId,
+        studentId: data.studentId,
+        subjectId: data.subjectId,
+        classId: data.classId || null,
+        marksObtained: data.marksObtained,
+        maxMarks,
+        grade: gradeInfo.grade,
+        gradePoint: gradeInfo.gradePoint,
+        remarks: data.remarks || gradeInfo.remark,
+        componentScores: { EXAM: data.marksObtained } as any,
+        enteredByUserId: userId,
+      },
+    });
 
-    const result = {
-      id,
-      tenantId,
-      examinationId: data.examinationId,
-      studentId: data.studentId,
-      subjectId: data.subjectId,
-      classId: data.classId || null,
-      marksObtained: data.marksObtained,
-      maxMarks,
-      grade: gradeInfo.grade,
-      gradePoint: gradeInfo.gradePoint,
-      remarks: data.remarks || gradeInfo.remark,
-      componentScores: { EXAM: data.marksObtained },
-      isApproved: false,
-      isPublished: false,
-      enteredByUserId: userId,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.results.set(id, result);
-    return result;
+    return saved;
   }
 
   async getResults(
     tenantId: string,
     filters: { examinationId?: string; studentId?: string; classId?: string; subjectId?: string },
   ) {
-    if (this.prisma.isDbConnected) {
-      try {
-        const dbResults = await this.prisma.result.findMany({
-          where: {
-            tenantId,
-            ...(filters.examinationId ? { examinationId: filters.examinationId } : {}),
-            ...(filters.studentId ? { studentId: filters.studentId } : {}),
-            ...(filters.classId ? { classId: filters.classId } : {}),
-            ...(filters.subjectId ? { subjectId: filters.subjectId } : {}),
-          },
-          include: {
-            student: true,
-            subject: true,
-            examination: true,
-          },
-          orderBy: { createdAt: 'asc' },
-        });
+    const dbResults = await this.prisma.result.findMany({
+      where: {
+        tenantId,
+        ...(filters.examinationId ? { examinationId: filters.examinationId } : {}),
+        ...(filters.studentId ? { studentId: filters.studentId } : {}),
+        ...(filters.classId ? { classId: filters.classId } : {}),
+        ...(filters.subjectId ? { subjectId: filters.subjectId } : {}),
+      },
+      include: {
+        student: true,
+        subject: true,
+        examination: true,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
 
-        if (dbResults.length > 0) {
-          return dbResults.map((r) => ({
-            id: r.id,
-            tenantId: r.tenantId,
-            examinationId: r.examinationId,
-            studentId: r.studentId,
-            studentName: r.student ? `${r.student.firstName} ${r.student.lastName}` : 'Student',
-            admissionNumber: r.student?.admissionNumber || '',
-            subjectId: r.subjectId,
-            subjectName: r.subject?.name || 'Subject',
-            subjectCode: r.subject?.code || '',
-            classId: r.classId,
-            marksObtained: r.marksObtained,
-            maxMarks: r.maxMarks,
-            grade: r.grade,
-            gradePoint: r.gradePoint,
-            remarks: r.remarks,
-            componentScores: r.componentScores as any,
-            isApproved: r.isApproved,
-            isPublished: r.isPublished,
-            createdAt: r.createdAt,
-            updatedAt: r.updatedAt,
-          }));
-        }
-      } catch (err: any) {
-        this.logger.warn(`Could not get results from DB: ${err.message}`);
-      }
-    }
-
-    let results = Array.from(this.prisma.memoryStore.results.values()).filter(
-      (r) => r.tenantId === tenantId,
-    );
-
-    if (filters.examinationId) results = results.filter((r) => r.examinationId === filters.examinationId);
-    if (filters.studentId) results = results.filter((r) => r.studentId === filters.studentId);
-    if (filters.classId) results = results.filter((r) => r.classId === filters.classId);
-    if (filters.subjectId) results = results.filter((r) => r.subjectId === filters.subjectId);
-
-    return results;
+    return dbResults.map((r) => ({
+      id: r.id,
+      tenantId: r.tenantId,
+      examinationId: r.examinationId,
+      studentId: r.studentId,
+      studentName: r.student ? `${r.student.firstName} ${r.student.lastName}` : 'Student',
+      admissionNumber: r.student?.admissionNumber || '',
+      subjectId: r.subjectId,
+      subjectName: r.subject?.name || 'Subject',
+      subjectCode: r.subject?.code || '',
+      classId: r.classId,
+      marksObtained: r.marksObtained,
+      maxMarks: r.maxMarks,
+      grade: r.grade,
+      gradePoint: r.gradePoint,
+      remarks: r.remarks,
+      componentScores: r.componentScores as any,
+      isApproved: r.isApproved,
+      isPublished: r.isPublished,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    }));
   }
 
   async getReportCard(tenantId: string, studentId: string, examinationId: string) {
-    let student: any = null;
-    let exam: any = null;
-    let results: any[] = [];
-
-    if (this.prisma.isDbConnected) {
-      try {
-        student = await this.prisma.student.findFirst({
-          where: { id: studentId, tenantId },
-          include: {
-            campus: true,
-            enrollments: {
-              where: { status: 'ACTIVE' },
-              include: { class: true },
-              take: 1,
-            },
-          },
-        });
-
-        exam = await this.prisma.examination.findFirst({
-          where: { id: examinationId, tenantId },
-          include: { academicYear: true, term: true },
-        });
-
-        const dbResults = await this.prisma.result.findMany({
-          where: { tenantId, studentId, examinationId },
-          include: { subject: true },
-        });
-
-        results = dbResults.map((r) => ({
-          ...r,
-          subjectName: r.subject?.name || 'Subject',
-          subjectCode: r.subject?.code || '',
-        }));
-      } catch (err: any) {
-        this.logger.warn(`Could not get report card from DB: ${err.message}`);
-      }
-    }
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+      include: {
+        campus: true,
+        enrollments: {
+          where: { status: 'ACTIVE' },
+          include: { class: true },
+          take: 1,
+        },
+      },
+    });
 
     if (!student) {
-      student = this.prisma.memoryStore.students.get(studentId);
-    }
-    if (!student || student.tenantId !== tenantId) {
       throw new NotFoundException('Student record not found');
     }
 
+    const exam = await this.prisma.examination.findFirst({
+      where: { id: examinationId, tenantId },
+      include: { academicYear: true, term: true },
+    });
+
     if (!exam) {
-      exam = this.prisma.memoryStore.examinations.get(examinationId);
+      throw new NotFoundException('Examination record not found');
     }
 
-    if (results.length === 0) {
-      results = Array.from(this.prisma.memoryStore.results.values()).filter(
-        (r) => r.tenantId === tenantId && r.studentId === studentId && r.examinationId === examinationId,
-      );
-    }
+    const dbResults = await this.prisma.result.findMany({
+      where: { tenantId, studentId, examinationId },
+      include: { subject: true },
+    });
+
+    const results = dbResults.map((r) => ({
+      ...r,
+      subjectName: r.subject?.name || 'Subject',
+      subjectCode: r.subject?.code || '',
+    }));
 
     const totalMarks = results.reduce((acc, r) => acc + (r.marksObtained || 0), 0);
     const maxMarks = results.reduce((acc, r) => acc + (r.maxMarks || 0), 0);
@@ -658,7 +477,7 @@ export class ResultsService {
         lastName: student.lastName,
         admissionNumber: student.admissionNumber,
         gender: student.gender,
-        className: student.enrollments?.[0]?.class?.name || (student as any).className || 'Class',
+        className: student.enrollments?.[0]?.class?.name || 'Class',
       },
       examination: exam,
       results,
@@ -674,108 +493,79 @@ export class ResultsService {
   }
 
   async approveResults(tenantId: string, examinationId: string, approvedByUserId: string, classId?: string) {
-    if (this.prisma.isDbConnected) {
-      try {
-        const updateRes = await this.prisma.result.updateMany({
-          where: {
-            tenantId,
-            examinationId,
-            ...(classId ? { classId } : {}),
-          },
-          data: {
-            isApproved: true,
-            approvedAt: new Date(),
-            approvedByUserId,
-          },
-        });
-        this.logger.log(`Approved ${updateRes.count} results in DB`);
-        await this.prisma.auditLog.create({
-          data: {
-            tenantId,
-            actorUserId: approvedByUserId || null,
-            action: 'RESULTS_APPROVED',
-            resourceType: 'Examination',
-            resourceId: examinationId,
-            afterData: {
-              examinationId,
-              classId: classId || 'ALL',
-              approvedCount: updateRes.count,
-              approvedAt: new Date(),
-            } as any,
-          },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not approve results in DB: ${err.message}`);
-      }
-    }
+    const updateRes = await this.prisma.result.updateMany({
+      where: {
+        tenantId,
+        examinationId,
+        ...(classId ? { classId } : {}),
+      },
+      data: {
+        isApproved: true,
+        approvedAt: new Date(),
+        approvedByUserId,
+      },
+    });
 
-    let count = 0;
-    for (const [id, res] of this.prisma.memoryStore.results.entries()) {
-      if (res.tenantId === tenantId && res.examinationId === examinationId) {
-        if (!classId || res.classId === classId) {
-          res.isApproved = true;
-          res.approvedAt = new Date();
-          res.approvedByUserId = approvedByUserId;
-          this.prisma.memoryStore.results.set(id, res);
-          count++;
-        }
-      }
-    }
-    return { success: true, count, message: `${count} results approved successfully` };
+    this.logger.log(`Approved ${updateRes.count} results in DB`);
+
+    await this.prisma.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId: approvedByUserId || null,
+        action: 'RESULTS_APPROVED',
+        resourceType: 'Examination',
+        resourceId: examinationId,
+        afterData: {
+          examinationId,
+          classId: classId || 'ALL',
+          approvedCount: updateRes.count,
+          approvedAt: new Date(),
+        } as any,
+      },
+    });
+
+    return { success: true, count: updateRes.count, message: `${updateRes.count} results approved successfully` };
   }
 
   async publishResults(tenantId: string, examinationId: string, classId?: string) {
-    if (this.prisma.isDbConnected) {
-      try {
-        const updateRes = await this.prisma.result.updateMany({
-          where: {
-            tenantId,
-            examinationId,
-            ...(classId ? { classId } : {}),
-          },
-          data: {
-            isPublished: true,
-            publishedAt: new Date(),
-          },
-        });
-        this.logger.log(`Published ${updateRes.count} results in DB`);
-        await this.prisma.auditLog.create({
-          data: {
-            tenantId,
-            actorUserId: null,
-            action: 'RESULTS_PUBLISHED',
-            resourceType: 'Examination',
-            resourceId: examinationId,
-            afterData: {
-              examinationId,
-              classId: classId || 'ALL',
-              publishedCount: updateRes.count,
-              publishedAt: new Date(),
-            } as any,
-          },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not publish results in DB: ${err.message}`);
-      }
-    }
+    const updateRes = await this.prisma.result.updateMany({
+      where: {
+        tenantId,
+        examinationId,
+        ...(classId ? { classId } : {}),
+      },
+      data: {
+        isPublished: true,
+        publishedAt: new Date(),
+      },
+    });
 
-    let count = 0;
-    for (const [id, res] of this.prisma.memoryStore.results.entries()) {
-      if (res.tenantId === tenantId && res.examinationId === examinationId) {
-        if (!classId || res.classId === classId) {
-          res.isPublished = true;
-          res.publishedAt = new Date();
-          this.prisma.memoryStore.results.set(id, res);
-          count++;
-        }
-      }
-    }
-    return { success: true, count, message: `${count} results published and visible to parents/students` };
+    this.logger.log(`Published ${updateRes.count} results in DB`);
+
+    await this.prisma.auditLog.create({
+      data: {
+        tenantId,
+        actorUserId: null,
+        action: 'RESULTS_PUBLISHED',
+        resourceType: 'Examination',
+        resourceId: examinationId,
+        afterData: {
+          examinationId,
+          classId: classId || 'ALL',
+          publishedCount: updateRes.count,
+          publishedAt: new Date(),
+        } as any,
+      },
+    });
+
+    return { success: true, count: updateRes.count, message: `${updateRes.count} results published and visible to parents/students` };
   }
 
   async getPrintableReportCard(tenantId: string, studentId: string, examinationId: string) {
     const report = await this.getReportCard(tenantId, studentId, examinationId);
-    const tenant = this.prisma.memoryStore.tenants.get(tenantId);
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+    });
 
     return {
       template: 'STANDARD_WEIGHTED_TRANSCRIPT_V1',

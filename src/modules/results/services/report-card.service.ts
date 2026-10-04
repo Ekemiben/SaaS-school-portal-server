@@ -34,42 +34,60 @@ export class ReportCardService {
     examinationId: string,
     overrides?: Partial<PublishSingleReportCardDto>,
   ): Promise<ReportCardRenderData> {
-    const tenant = this.prisma.memoryStore.tenants.get(tenantId);
-    const student = this.prisma.memoryStore.students.get(studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+    });
+
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+      include: {
+        campus: true,
+        enrollments: {
+          where: { status: 'ACTIVE' },
+          include: { class: true },
+          take: 1,
+        },
+      },
+    });
+
+    if (!student) {
       throw new NotFoundException('Student record not found');
     }
 
-    const exam = this.prisma.memoryStore.examinations.get(examinationId);
-    if (!exam || exam.tenantId !== tenantId) {
+    const exam = await this.prisma.examination.findFirst({
+      where: { id: examinationId, tenantId },
+    });
+
+    if (!exam) {
       throw new NotFoundException('Examination record not found');
     }
 
-    const campus = student.campusId ? this.prisma.memoryStore.campuses.get(student.campusId) : null;
-    const cls = student.currentClassId ? this.prisma.memoryStore.classes.get(student.currentClassId) : null;
+    const campus = student.campus;
+    const cls = student.enrollments?.[0]?.class;
 
     // Fetch / compute student academic summary
     const summary = await this.academicSummaryService.getStudentAcademicSummary(tenantId, studentId, examinationId);
 
     // Fetch attendance stats for this student
-    const attendanceRecords = Array.from(this.prisma.memoryStore.attendance.values()).filter(
-      (a: any) => a.tenantId === tenantId && a.studentId === studentId,
-    );
-    const daysPresent = attendanceRecords.filter((a: any) => a.status === 'PRESENT' || a.status === 'LATE').length;
+    const attendanceRecords = await this.prisma.attendance.findMany({
+      where: { tenantId, studentId },
+    });
+
+    const daysPresent = attendanceRecords.filter((a) => a.status === 'PRESENT' || a.status === 'LATE').length;
     const daysTotal = attendanceRecords.length > 0 ? attendanceRecords.length : 60; // default 60 term days if untracked
 
     // Fetch subject result details and component breakdowns
-    const results = Array.from(this.prisma.memoryStore.results.values()).filter(
-      (r: any) => r.tenantId === tenantId && r.studentId === studentId && r.examinationId === examinationId,
-    );
+    const results = await this.prisma.result.findMany({
+      where: { tenantId, studentId, examinationId },
+      include: { subject: true },
+    });
 
-    const subjects = results.map((r: any) => {
-      const subject = this.prisma.memoryStore.subjects.get(r.subjectId);
-      const subSummary = summary?.subjectSummaries?.find((s: any) => s.subjectId === r.subjectId);
+    const subjects = results.map((r) => {
+      const subSummary = (summary?.subjectSummaries as any[])?.find((s: any) => s.subjectId === r.subjectId);
       return {
-        subjectName: subject?.name || 'Subject',
-        subjectCode: subject?.code || '',
-        componentScores: r.componentScores || undefined,
+        subjectName: r.subject?.name || 'Subject',
+        subjectCode: r.subject?.code || '',
+        componentScores: (r.componentScores as any) || undefined,
         marksObtained: r.marksObtained,
         maxMarks: r.maxMarks,
         percentage: Number(((r.marksObtained / (r.maxMarks || 100)) * 100).toFixed(1)),
@@ -91,7 +109,7 @@ export class ReportCardService {
       school: {
         name: tenant?.name || 'School Name',
         slug: tenant?.slug || 'school',
-        logoUrl: tenant?.logoUrl,
+        logoUrl: tenant?.logoUrl || undefined,
         primaryColor: tenant?.primaryColor || '#1e3a8a',
         secondaryColor: tenant?.secondaryColor || '#0ea5e9',
         campusName: campus?.name,
@@ -109,7 +127,7 @@ export class ReportCardService {
         gradeLevel: cls?.gradeLevel,
         attendancePresent: daysPresent > 0 ? daysPresent : 58,
         attendanceTotal: daysTotal,
-        photoUrl: student.photoUrl,
+        photoUrl: student.photoUrl || undefined,
       },
       examination: {
         id: exam.id,
@@ -147,7 +165,6 @@ export class ReportCardService {
   ): Promise<ReportCardAssetResponseDto> {
     const data = await this.prepareReportCardData(tenantId, dto.studentId, dto.examinationId, dto);
     const htmlContent = ReportCardRenderer.renderHtml(data);
-    const htmlBuffer = Buffer.from(htmlContent, 'utf-8');
 
     const storageKey = `tenants/${tenantId}/reports/report_cards/${dto.examinationId}/report_card_${dto.studentId}.html`;
     const originalName = `report_card_${dto.studentId}.html`;
@@ -179,8 +196,10 @@ export class ReportCardService {
     userId: string,
     dto: BatchPublishReportCardsDto,
   ): Promise<{ jobId: string; classId: string; totalStudents: number; status: string; reportCards?: ReportCardAssetResponseDto[] }> {
-    const cls = this.prisma.memoryStore.classes.get(dto.classId);
-    if (!cls || cls.tenantId !== tenantId) {
+    const cls = await this.prisma.class.findFirst({
+      where: { id: dto.classId, tenantId },
+    });
+    if (!cls) {
       throw new NotFoundException('Class not found');
     }
 
@@ -190,9 +209,15 @@ export class ReportCardService {
       examinationId: dto.examinationId,
     });
 
-    const students = Array.from(this.prisma.memoryStore.students.values()).filter(
-      (s: any) => s.tenantId === tenantId && (s.currentClassId === dto.classId || s.classId === dto.classId),
-    );
+    const students = await this.prisma.student.findMany({
+      where: {
+        tenantId,
+        status: 'ACTIVE',
+        enrollments: {
+          some: { classId: dto.classId, status: 'ACTIVE' },
+        },
+      },
+    });
 
     const jobId = `job_batch_rc_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
     const results: ReportCardAssetResponseDto[] = [];
@@ -209,25 +234,11 @@ export class ReportCardService {
 
         // Queue parent notification if requested
         if (dto.notifyParents && this.queueService) {
-          let parent: any = null;
-          if (this.prisma.isDbConnected) {
-            try {
-              const sp = await this.prisma.studentParent.findFirst({
-                where: { studentId: student.id },
-                include: { parent: true },
-              });
-              parent = sp?.parent;
-            } catch {}
-          }
-          if (!parent) {
-            const memoryParent = Array.from(this.prisma.memoryStore.parents.values()).find(
-              (p: any) =>
-                p.tenantId === tenantId &&
-                ((p.linkedWards && p.linkedWards.some((w: any) => (w.id === student.id || w.studentId === student.id))) ||
-                  p.studentId === student.id),
-            );
-            parent = memoryParent;
-          }
+          const sp = await this.prisma.studentParent.findFirst({
+            where: { studentId: student.id },
+            include: { parent: true },
+          });
+          const parent = sp?.parent;
 
           await this.queueService.dispatch(
             QUEUES.NOTIFICATIONS,

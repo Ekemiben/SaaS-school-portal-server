@@ -11,7 +11,6 @@ describe('Step 1 Staff Master & Onboarding Integrity Verification', () => {
 
   beforeEach(() => {
     mockPrisma = {
-      isDbConnected: true,
       subscription: { findFirst: vi.fn().mockResolvedValue({ maxStaff: 100 }) },
       teacher: {
         count: vi.fn().mockResolvedValue(5),
@@ -30,7 +29,6 @@ describe('Step 1 Staff Master & Onboarding Integrity Verification', () => {
       staffRoom: { findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), findMany: vi.fn() },
       staffSalaryProfile: { upsert: vi.fn() },
       $transaction: vi.fn(async (callback) => callback(mockPrisma)),
-      memoryStore: { teachers: new Map() },
     };
 
     teachersService = new TeachersService(mockPrisma as any);

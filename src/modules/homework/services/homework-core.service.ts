@@ -15,23 +15,26 @@ export class HomeworkCoreService {
   ) {}
 
   async createHomework(tenantId: string, teacherUserId: string, dto: CreateHomeworkDto) {
-    const classRecord = this.prisma.memoryStore.classes.get(dto.classId);
-    if (!classRecord || classRecord.tenantId !== tenantId) {
+    const classRecord = await this.prisma.class.findFirst({
+      where: { id: dto.classId, tenantId },
+    });
+    if (!classRecord) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Class not found in this school',
       });
     }
 
-    const subject = this.prisma.memoryStore.subjects.get(dto.subjectId);
-    if (!subject || subject.tenantId !== tenantId) {
+    const subject = await this.prisma.subject.findFirst({
+      where: { id: dto.subjectId, tenantId },
+    });
+    if (!subject) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Subject not found in this school',
       });
     }
 
-    const id = `hw_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const dueDate = new Date(dto.dueDate);
 
     // Normalize attachments
@@ -40,32 +43,33 @@ export class HomeworkCoreService {
       attachments = [{ url: dto.attachmentKey, name: 'Attachment', sizeBytes: 0, mimeType: 'application/octet-stream' }];
     }
 
-    const assignment = {
-      id,
-      tenantId,
-      campusId: dto.campusId || classRecord.campusId || null,
-      classId: dto.classId,
-      subjectId: dto.subjectId,
-      academicYearId: dto.academicYearId || classRecord.academicYearId || null,
-      termId: dto.termId || null,
-      createdById: teacherUserId,
-      title: dto.title,
-      description: dto.description,
-      dueDate,
-      maxMarks: dto.maxMarks ?? 100,
-      passingMarks: dto.passingMarks ?? null,
-      allowLateSubmissions: dto.allowLateSubmissions ?? true,
-      latePenaltyPercent: dto.latePenaltyPercent ?? 0,
-      status: dto.status || 'PUBLISHED',
-      attachments,
-      rubricCriteria: dto.rubricCriteria || [],
-      targetGroup: dto.targetGroup || 'ALL',
-      selectedStudentIds: dto.selectedStudentIds || [],
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.homework.set(id, assignment);
+    const assignment = await this.prisma.homework.create({
+      data: {
+        tenantId,
+        campusId: dto.campusId || classRecord.campusId || null,
+        classId: dto.classId,
+        subjectId: dto.subjectId,
+        academicYearId: dto.academicYearId || classRecord.academicYearId || null,
+        termId: dto.termId || null,
+        createdById: teacherUserId,
+        title: dto.title,
+        description: dto.description,
+        dueDate,
+        maxMarks: dto.maxMarks ?? 100,
+        passingMarks: dto.passingMarks ?? null,
+        allowLateSubmissions: dto.allowLateSubmissions ?? true,
+        latePenaltyPercent: dto.latePenaltyPercent ?? 0,
+        status: dto.status || 'PUBLISHED',
+        attachments: attachments as any,
+        rubricCriteria: (dto.rubricCriteria as any) || [],
+        targetGroup: dto.targetGroup || 'ALL',
+        selectedStudentIds: (dto.selectedStudentIds as any) || [],
+      },
+      include: {
+        class: true,
+        subject: true,
+      },
+    });
 
     if (assignment.status === 'PUBLISHED') {
       this.dispatchAssignmentNotification(tenantId, assignment).catch((err) =>
@@ -81,88 +85,115 @@ export class HomeworkCoreService {
   }
 
   async getHomeworkList(tenantId: string, filter: HomeworkFilterDto) {
-    let assignments = Array.from(this.prisma.memoryStore.homework.values()).filter(
-      (h) => h.tenantId === tenantId,
-    );
+    const assignments = await this.prisma.homework.findMany({
+      where: {
+        tenantId,
+        ...(filter.classId ? { classId: filter.classId } : {}),
+        ...(filter.subjectId ? { subjectId: filter.subjectId } : {}),
+        ...(filter.campusId ? { campusId: filter.campusId } : {}),
+        ...(filter.status ? { status: filter.status } : {}),
+      },
+      include: {
+        class: true,
+        subject: true,
+        _count: {
+          select: { submissions: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
 
-    if (filter.classId) {
-      assignments = assignments.filter((h) => h.classId === filter.classId);
-    }
-    if (filter.subjectId) {
-      assignments = assignments.filter((h) => h.subjectId === filter.subjectId);
-    }
-    if (filter.campusId) {
-      assignments = assignments.filter((h) => h.campusId === filter.campusId);
-    }
-    if (filter.status) {
-      assignments = assignments.filter((h) => h.status === filter.status);
-    }
-
-    return assignments
-      .map((h) => {
-        const cls = this.prisma.memoryStore.classes.get(h.classId);
-        const sub = this.prisma.memoryStore.subjects.get(h.subjectId);
-        const submissionsCount = Array.from(this.prisma.memoryStore.homeworkSubmissions.values()).filter(
-          (s) => s.tenantId === tenantId && s.homeworkId === h.id,
-        ).length;
-
-        return {
-          ...h,
-          className: cls?.name || 'Class',
-          subjectName: sub?.name || 'Subject',
-          submissionsCount,
-        };
-      })
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return assignments.map((h) => ({
+      ...h,
+      className: h.class?.name || 'Class',
+      subjectName: h.subject?.name || 'Subject',
+      submissionsCount: h._count.submissions,
+    }));
   }
 
   async getHomeworkById(tenantId: string, id: string) {
-    const assignment = this.prisma.memoryStore.homework.get(id);
-    if (!assignment || assignment.tenantId !== tenantId) {
+    const assignment = await this.prisma.homework.findFirst({
+      where: { id, tenantId },
+      include: {
+        class: true,
+        subject: true,
+        submissions: true,
+      },
+    });
+
+    if (!assignment) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Homework assignment not found',
       });
     }
 
-    const cls = this.prisma.memoryStore.classes.get(assignment.classId);
-    const sub = this.prisma.memoryStore.subjects.get(assignment.subjectId);
-    const submissions = Array.from(this.prisma.memoryStore.homeworkSubmissions.values()).filter(
-      (s) => s.tenantId === tenantId && s.homeworkId === id,
-    );
+    const submissions = assignment.submissions;
 
     return {
       ...assignment,
-      className: cls?.name || 'Class',
-      subjectName: sub?.name || 'Subject',
+      className: assignment.class?.name || 'Class',
+      subjectName: assignment.subject?.name || 'Subject',
       submissionsCount: submissions.length,
       gradedCount: submissions.filter((s) => s.status === 'GRADED').length,
     };
   }
 
   async updateHomework(tenantId: string, id: string, dto: UpdateHomeworkDto) {
-    const assignment = await this.getHomeworkById(tenantId, id);
+    const existing = await this.prisma.homework.findFirst({
+      where: { id, tenantId },
+    });
 
-    if (dto.title !== undefined) assignment.title = dto.title;
-    if (dto.description !== undefined) assignment.description = dto.description;
-    if (dto.dueDate !== undefined) assignment.dueDate = new Date(dto.dueDate);
-    if (dto.maxMarks !== undefined) assignment.maxMarks = dto.maxMarks;
-    if (dto.passingMarks !== undefined) assignment.passingMarks = dto.passingMarks;
-    if (dto.allowLateSubmissions !== undefined) assignment.allowLateSubmissions = dto.allowLateSubmissions;
-    if (dto.latePenaltyPercent !== undefined) assignment.latePenaltyPercent = dto.latePenaltyPercent;
-    if (dto.status !== undefined) assignment.status = dto.status;
-    if (dto.attachments !== undefined) assignment.attachments = dto.attachments;
-    if (dto.rubricCriteria !== undefined) assignment.rubricCriteria = dto.rubricCriteria;
+    if (!existing) {
+      throw new NotFoundException({
+        errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
+        message: 'Homework assignment not found',
+      });
+    }
 
-    assignment.updatedAt = new Date();
-    this.prisma.memoryStore.homework.set(id, assignment);
+    const updated = await this.prisma.homework.update({
+      where: { id },
+      data: {
+        ...(dto.title !== undefined ? { title: dto.title } : {}),
+        ...(dto.description !== undefined ? { description: dto.description } : {}),
+        ...(dto.dueDate !== undefined ? { dueDate: new Date(dto.dueDate) } : {}),
+        ...(dto.maxMarks !== undefined ? { maxMarks: dto.maxMarks } : {}),
+        ...(dto.passingMarks !== undefined ? { passingMarks: dto.passingMarks } : {}),
+        ...(dto.allowLateSubmissions !== undefined ? { allowLateSubmissions: dto.allowLateSubmissions } : {}),
+        ...(dto.latePenaltyPercent !== undefined ? { latePenaltyPercent: dto.latePenaltyPercent } : {}),
+        ...(dto.status !== undefined ? { status: dto.status } : {}),
+        ...(dto.attachments !== undefined ? { attachments: dto.attachments as any } : {}),
+        ...(dto.rubricCriteria !== undefined ? { rubricCriteria: dto.rubricCriteria as any } : {}),
+      },
+      include: {
+        class: true,
+        subject: true,
+      },
+    });
 
-    return assignment;
+    return {
+      ...updated,
+      className: updated.class?.name || 'Class',
+      subjectName: updated.subject?.name || 'Subject',
+    };
   }
 
   async deleteHomework(tenantId: string, id: string) {
-    await this.getHomeworkById(tenantId, id);
-    this.prisma.memoryStore.homework.delete(id);
+    const existing = await this.prisma.homework.findFirst({
+      where: { id, tenantId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException({
+        errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
+        message: 'Homework assignment not found',
+      });
+    }
+
+    await this.prisma.homework.delete({
+      where: { id },
+    });
+
     return { success: true, message: 'Homework assignment deleted successfully' };
   }
 

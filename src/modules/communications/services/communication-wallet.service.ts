@@ -55,62 +55,36 @@ export class CommunicationWalletService {
   async getOrCreateWallet(tenantId: string): Promise<CommunicationWalletRecord> {
     const now = new Date();
 
-    if (this.prisma.isDbConnected) {
-      try {
-        let wallet = await this.prisma.communicationWallet.findUnique({
-          where: { tenantId },
-        });
+    let wallet = await this.prisma.communicationWallet.findUnique({
+      where: { tenantId },
+    });
 
-        if (!wallet) {
-          const walletId = `cwal_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
-          wallet = await this.prisma.communicationWallet.create({
-            data: {
-              id: walletId,
-              tenantId,
-              currency: 'NGN',
-              balance: 0.0,
-              status: 'ACTIVE',
-              monthlyUsage: 0.0,
-              createdAt: now,
-              updatedAt: now,
-            },
-          });
-        }
-
-        const record: CommunicationWalletRecord = {
-          id: wallet.id,
-          tenantId: wallet.tenantId,
-          currency: wallet.currency,
-          balance: Number(wallet.balance),
-          status: wallet.status as any,
-          monthlyUsage: Number(wallet.monthlyUsage),
-          createdAt: wallet.createdAt.toISOString(),
-          updatedAt: wallet.updatedAt.toISOString(),
-        };
-
-        this.prisma.memoryStore.communicationWallets.set(tenantId, record);
-        return record;
-      } catch (err: any) {
-        this.logger.warn(`Could not fetch/create wallet in DB: ${err.message}`);
-      }
+    if (!wallet) {
+      const walletId = `cwal_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
+      wallet = await this.prisma.communicationWallet.create({
+        data: {
+          id: walletId,
+          tenantId,
+          currency: 'NGN',
+          balance: 0.0,
+          status: 'ACTIVE',
+          monthlyUsage: 0.0,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
     }
 
-    // Memory store fallback
-    let fallback = this.prisma.memoryStore.communicationWallets.get(tenantId);
-    if (!fallback) {
-      fallback = {
-        id: `cwal_${randomUUID().replace(/-/g, '').substring(0, 16)}`,
-        tenantId,
-        currency: 'NGN',
-        balance: 0.0,
-        status: 'ACTIVE',
-        monthlyUsage: 0.0,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      };
-      this.prisma.memoryStore.communicationWallets.set(tenantId, fallback);
-    }
-    return fallback;
+    return {
+      id: wallet.id,
+      tenantId: wallet.tenantId,
+      currency: wallet.currency,
+      balance: Number(wallet.balance),
+      status: wallet.status as any,
+      monthlyUsage: Number(wallet.monthlyUsage),
+      createdAt: wallet.createdAt.toISOString(),
+      updatedAt: wallet.updatedAt.toISOString(),
+    };
   }
 
   async creditWallet(
@@ -127,122 +101,99 @@ export class CommunicationWalletService {
     const now = new Date();
 
     // Idempotency check: if paymentReference was already processed, return existing
-    if (this.prisma.isDbConnected) {
-      try {
-        const duplicate = await this.prisma.communicationWalletTransaction.findFirst({
-          where: {
-            tenantId,
-            paymentReference,
-            status: 'SUCCESS',
-          },
-        });
+    const duplicate = await this.prisma.communicationWalletTransaction.findFirst({
+      where: {
+        tenantId,
+        paymentReference,
+        status: 'SUCCESS',
+      },
+    });
 
-        if (duplicate) {
-          this.logger.warn(`Idempotent duplicate credit request for reference ${paymentReference}`);
-          const wallet = await this.getOrCreateWallet(tenantId);
-          return {
-            wallet,
-            transaction: {
-              id: duplicate.id,
-              tenantId: duplicate.tenantId,
-              walletId: duplicate.walletId,
-              type: duplicate.type as any,
-              amount: Number(duplicate.amount),
-              balanceBefore: Number(duplicate.balanceBefore),
-              balanceAfter: Number(duplicate.balanceAfter),
-              reference: duplicate.reference,
-              paymentReference: duplicate.paymentReference,
-              channel: duplicate.channel,
-              description: duplicate.description,
-              status: duplicate.status as any,
-              metadata: duplicate.metadata as any,
-              createdAt: duplicate.createdAt.toISOString(),
-            },
-          };
-        }
-      } catch (err: any) {
-        this.logger.warn(`Could not check idempotency in DB: ${err.message}`);
-      }
-    }
-
-    const memTxs = Array.from(this.prisma.memoryStore.communicationWalletTransactions.values());
-    const duplicate = memTxs.find(
-      (t: any) =>
-        t.tenantId === tenantId &&
-        t.paymentReference === paymentReference &&
-        (t.status === 'SUCCESS' || t.status === 'SUCCESSFUL'),
-    );
     if (duplicate) {
+      this.logger.warn(`Idempotent duplicate credit request for reference ${paymentReference}`);
       const wallet = await this.getOrCreateWallet(tenantId);
-      return { wallet, transaction: duplicate };
+      return {
+        wallet,
+        transaction: {
+          id: duplicate.id,
+          tenantId: duplicate.tenantId,
+          walletId: duplicate.walletId,
+          type: duplicate.type as any,
+          amount: Number(duplicate.amount),
+          balanceBefore: Number(duplicate.balanceBefore),
+          balanceAfter: Number(duplicate.balanceAfter),
+          reference: duplicate.reference,
+          paymentReference: duplicate.paymentReference,
+          channel: duplicate.channel,
+          description: duplicate.description,
+          status: duplicate.status as any,
+          metadata: duplicate.metadata as any,
+          createdAt: duplicate.createdAt.toISOString(),
+        },
+      };
     }
 
     const wallet = await this.getOrCreateWallet(tenantId);
     const balanceBefore = wallet.balance;
     const balanceAfter = Number((balanceBefore + amount).toFixed(4));
-    wallet.balance = balanceAfter;
-    wallet.updatedAt = now.toISOString();
 
     const transactionId = `cwtx_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
     const reference = `CTX-${Date.now()}-${randomUUID().substring(0, 6).toUpperCase()}`;
 
-    const transactionRecord: CommunicationWalletTransactionRecord = {
-      id: transactionId,
-      tenantId,
-      walletId: wallet.id,
-      type: WalletTransactionType.CREDIT,
-      amount: Number(amount.toFixed(4)),
-      balanceBefore,
-      balanceAfter,
-      reference,
-      paymentReference,
-      channel: metadata?.channel || null,
-      description,
-      status: WalletTransactionStatus.SUCCESSFUL,
-      metadata: metadata || null,
-      createdAt: now.toISOString(),
+    await this.prisma.communicationWallet.update({
+      where: { tenantId },
+      data: {
+        balance: balanceAfter,
+        updatedAt: now,
+      },
+    });
+
+    const tx = await this.prisma.communicationWalletTransaction.create({
+      data: {
+        id: transactionId,
+        tenantId,
+        walletId: wallet.id,
+        type: 'CREDIT',
+        amount: Number(amount.toFixed(4)),
+        balanceBefore,
+        balanceAfter,
+        reference,
+        paymentReference,
+        channel: metadata?.channel || null,
+        description,
+        status: 'SUCCESS',
+        metadata: metadata || undefined,
+        createdAt: now,
+      },
+    });
+
+    const updatedWallet: CommunicationWalletRecord = {
+      ...wallet,
+      balance: balanceAfter,
+      updatedAt: now.toISOString(),
     };
 
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.communicationWallet.update({
-          where: { tenantId },
-          data: {
-            balance: balanceAfter,
-            updatedAt: now,
-          },
-        });
-
-        await this.prisma.communicationWalletTransaction.create({
-          data: {
-            id: transactionRecord.id,
-            tenantId: transactionRecord.tenantId,
-            walletId: transactionRecord.walletId,
-            type: 'CREDIT',
-            amount: transactionRecord.amount,
-            balanceBefore: transactionRecord.balanceBefore,
-            balanceAfter: transactionRecord.balanceAfter,
-            reference: transactionRecord.reference,
-            paymentReference: transactionRecord.paymentReference,
-            channel: transactionRecord.channel,
-            description: transactionRecord.description,
-            status: 'SUCCESS',
-            metadata: transactionRecord.metadata as any,
-            createdAt: now,
-          },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not persist wallet credit in DB: ${err.message}`);
-      }
-    }
-
-    this.prisma.memoryStore.communicationWallets.set(tenantId, wallet);
-    this.prisma.memoryStore.communicationWalletTransactions.set(transactionRecord.id, transactionRecord);
+    const transactionRecord: CommunicationWalletTransactionRecord = {
+      id: tx.id,
+      tenantId: tx.tenantId,
+      walletId: tx.walletId,
+      type: WalletTransactionType.CREDIT,
+      amount: Number(tx.amount),
+      balanceBefore: Number(tx.balanceBefore),
+      balanceAfter: Number(tx.balanceAfter),
+      reference: tx.reference,
+      paymentReference: tx.paymentReference,
+      channel: tx.channel,
+      description: tx.description,
+      status: WalletTransactionStatus.SUCCESSFUL,
+      metadata: tx.metadata as any,
+      createdAt: tx.createdAt.toISOString(),
+    };
 
     this.logger.log(
       `Credited ₦${amount} to communication wallet for tenant ${tenantId}. New Balance: ₦${balanceAfter}`,
     );
-    return { wallet, transaction: transactionRecord };
+    return { wallet: updatedWallet, transaction: transactionRecord };
   }
 
   async debitWallet(
@@ -281,64 +232,51 @@ export class CommunicationWalletService {
     const balanceAfter = Number((balanceBefore - amount).toFixed(4));
     const monthlyUsage = Number((wallet.monthlyUsage + amount).toFixed(4));
 
-    wallet.balance = balanceAfter;
-    wallet.monthlyUsage = monthlyUsage;
-    wallet.updatedAt = now.toISOString();
-
     const transactionId = `cwtx_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
     const reference = `CTX-${Date.now()}-${randomUUID().substring(0, 6).toUpperCase()}`;
 
+    await this.prisma.communicationWallet.update({
+      where: { tenantId },
+      data: {
+        balance: balanceAfter,
+        monthlyUsage,
+        updatedAt: now,
+      },
+    });
+
+    const tx = await this.prisma.communicationWalletTransaction.create({
+      data: {
+        id: transactionId,
+        tenantId,
+        walletId: wallet.id,
+        type: 'DEBIT',
+        amount: Number(amount.toFixed(4)),
+        balanceBefore,
+        balanceAfter,
+        reference,
+        channel,
+        description,
+        status: 'SUCCESS',
+        metadata: metadata || undefined,
+        createdAt: now,
+      },
+    });
+
     const transactionRecord: CommunicationWalletTransactionRecord = {
-      id: transactionId,
-      tenantId,
-      walletId: wallet.id,
+      id: tx.id,
+      tenantId: tx.tenantId,
+      walletId: tx.walletId,
       type: WalletTransactionType.DEBIT,
-      amount: Number(amount.toFixed(4)),
-      balanceBefore,
-      balanceAfter,
-      reference,
-      channel,
-      description,
+      amount: Number(tx.amount),
+      balanceBefore: Number(tx.balanceBefore),
+      balanceAfter: Number(tx.balanceAfter),
+      reference: tx.reference,
+      channel: tx.channel,
+      description: tx.description,
       status: WalletTransactionStatus.SUCCESSFUL,
-      metadata: metadata || null,
-      createdAt: now.toISOString(),
+      metadata: tx.metadata as any,
+      createdAt: tx.createdAt.toISOString(),
     };
-
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.communicationWallet.update({
-          where: { tenantId },
-          data: {
-            balance: balanceAfter,
-            monthlyUsage,
-            updatedAt: now,
-          },
-        });
-
-        await this.prisma.communicationWalletTransaction.create({
-          data: {
-            id: transactionRecord.id,
-            tenantId: transactionRecord.tenantId,
-            walletId: transactionRecord.walletId,
-            type: 'DEBIT',
-            amount: transactionRecord.amount,
-            balanceBefore: transactionRecord.balanceBefore,
-            balanceAfter: transactionRecord.balanceAfter,
-            reference: transactionRecord.reference,
-            channel: transactionRecord.channel,
-            description: transactionRecord.description,
-            status: 'SUCCESS',
-            metadata: transactionRecord.metadata as any,
-            createdAt: now,
-          },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not persist wallet debit in DB: ${err.message}`);
-      }
-    }
-
-    this.prisma.memoryStore.communicationWallets.set(tenantId, wallet);
-    this.prisma.memoryStore.communicationWalletTransactions.set(transactionRecord.id, transactionRecord);
 
     return { success: true, balanceAfter, transaction: transactionRecord };
   }
@@ -348,23 +286,11 @@ export class CommunicationWalletService {
     transactionId: string,
     reason: string,
   ): Promise<CommunicationWalletTransactionRecord> {
-    let original: any = null;
-
-    if (this.prisma.isDbConnected) {
-      try {
-        original = await this.prisma.communicationWalletTransaction.findFirst({
-          where: { tenantId, id: transactionId },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not find transaction in DB: ${err.message}`);
-      }
-    }
+    const original = await this.prisma.communicationWalletTransaction.findFirst({
+      where: { tenantId, id: transactionId },
+    });
 
     if (!original) {
-      original = this.prisma.memoryStore.communicationWalletTransactions.get(transactionId);
-    }
-
-    if (!original || original.tenantId !== tenantId) {
       throw new NotFoundException(`Transaction ${transactionId} not found`);
     }
 
@@ -374,123 +300,85 @@ export class CommunicationWalletService {
     const balanceBefore = wallet.balance;
     const balanceAfter = Number((balanceBefore + refundAmount).toFixed(4));
 
-    wallet.balance = balanceAfter;
-    wallet.updatedAt = now.toISOString();
-
     const refundId = `cwtx_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
     const reference = `REF-${Date.now()}-${randomUUID().substring(0, 6).toUpperCase()}`;
 
-    const refundTx: CommunicationWalletTransactionRecord = {
-      id: refundId,
-      tenantId,
-      walletId: wallet.id,
-      type: WalletTransactionType.REFUND,
-      amount: refundAmount,
-      balanceBefore,
-      balanceAfter,
-      reference,
-      paymentReference: original.reference,
-      channel: original.channel,
-      description: `Refund for ${original.reference}: ${reason}`,
-      status: WalletTransactionStatus.SUCCESSFUL,
-      metadata: { originalTransactionId: transactionId, reason },
-      createdAt: now.toISOString(),
-    };
+    await this.prisma.communicationWallet.update({
+      where: { tenantId },
+      data: {
+        balance: balanceAfter,
+        updatedAt: now,
+      },
+    });
 
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.communicationWallet.update({
-          where: { tenantId },
-          data: {
-            balance: balanceAfter,
-            updatedAt: now,
-          },
-        });
-
-        await this.prisma.communicationWalletTransaction.create({
-          data: {
-            id: refundTx.id,
-            tenantId: refundTx.tenantId,
-            walletId: refundTx.walletId,
-            type: 'REFUND',
-            amount: refundTx.amount,
-            balanceBefore: refundTx.balanceBefore,
-            balanceAfter: refundTx.balanceAfter,
-            reference: refundTx.reference,
-            paymentReference: refundTx.paymentReference,
-            channel: refundTx.channel,
-            description: refundTx.description,
-            status: 'SUCCESS',
-            metadata: refundTx.metadata as any,
-            createdAt: now,
-          },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not persist refund in DB: ${err.message}`);
-      }
-    }
-
-    this.prisma.memoryStore.communicationWallets.set(tenantId, wallet);
-    this.prisma.memoryStore.communicationWalletTransactions.set(refundTx.id, refundTx);
+    const refundTx = await this.prisma.communicationWalletTransaction.create({
+      data: {
+        id: refundId,
+        tenantId,
+        walletId: wallet.id,
+        type: 'REFUND',
+        amount: refundAmount,
+        balanceBefore,
+        balanceAfter,
+        reference,
+        paymentReference: original.reference,
+        channel: original.channel,
+        description: `Refund for ${original.reference}: ${reason}`,
+        status: 'SUCCESS',
+        metadata: { originalTransactionId: transactionId, reason },
+        createdAt: now,
+      },
+    });
 
     this.logger.log(`Refunded ₦${refundAmount} for transaction ${transactionId} (Tenant: ${tenantId})`);
-    return refundTx;
+    return {
+      id: refundTx.id,
+      tenantId: refundTx.tenantId,
+      walletId: refundTx.walletId,
+      type: WalletTransactionType.REFUND,
+      amount: Number(refundTx.amount),
+      balanceBefore: Number(refundTx.balanceBefore),
+      balanceAfter: Number(refundTx.balanceAfter),
+      reference: refundTx.reference,
+      paymentReference: refundTx.paymentReference,
+      channel: refundTx.channel,
+      description: refundTx.description,
+      status: WalletTransactionStatus.SUCCESSFUL,
+      metadata: refundTx.metadata as any,
+      createdAt: refundTx.createdAt.toISOString(),
+    };
   }
 
   async listTransactions(
     tenantId: string,
     filter?: WalletTransactionFilterDto,
   ): Promise<CommunicationWalletTransactionRecord[]> {
-    if (this.prisma.isDbConnected) {
-      try {
-        const where: any = { tenantId };
-        if (filter?.type) where.type = filter.type;
-        if (filter?.status) where.status = filter.status === 'SUCCESSFUL' ? 'SUCCESS' : filter.status;
-        if (filter?.channel) where.channel = filter.channel;
+    const where: any = { tenantId };
+    if (filter?.type) where.type = filter.type;
+    if (filter?.status) where.status = filter.status === 'SUCCESSFUL' ? 'SUCCESS' : filter.status;
+    if (filter?.channel) where.channel = filter.channel;
 
-        const rows = await this.prisma.communicationWalletTransaction.findMany({
-          where,
-          orderBy: { createdAt: 'desc' },
-        });
+    const rows = await this.prisma.communicationWalletTransaction.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+    });
 
-        if (rows.length > 0) {
-          return rows.map((r) => ({
-            id: r.id,
-            tenantId: r.tenantId,
-            walletId: r.walletId,
-            type: r.type as any,
-            amount: Number(r.amount),
-            balanceBefore: Number(r.balanceBefore),
-            balanceAfter: Number(r.balanceAfter),
-            reference: r.reference,
-            paymentReference: r.paymentReference,
-            channel: r.channel,
-            description: r.description,
-            status: (r.status === 'SUCCESS' ? WalletTransactionStatus.SUCCESSFUL : r.status) as any,
-            metadata: r.metadata as any,
-            createdAt: r.createdAt.toISOString(),
-          }));
-        }
-      } catch (err: any) {
-        this.logger.warn(`Could not list transactions from DB: ${err.message}`);
-      }
-    }
-
-    let results = Array.from(this.prisma.memoryStore.communicationWalletTransactions.values()).filter(
-      (t: any) => t.tenantId === tenantId,
-    );
-
-    if (filter?.type) {
-      results = results.filter((t: any) => t.type === filter.type);
-    }
-    if (filter?.status) {
-      results = results.filter((t: any) => t.status === filter.status || (filter.status === 'SUCCESSFUL' && t.status === 'SUCCESS'));
-    }
-    if (filter?.channel) {
-      results = results.filter((t: any) => t.channel === filter.channel);
-    }
-
-    return results.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return rows.map((r) => ({
+      id: r.id,
+      tenantId: r.tenantId,
+      walletId: r.walletId,
+      type: r.type as any,
+      amount: Number(r.amount),
+      balanceBefore: Number(r.balanceBefore),
+      balanceAfter: Number(r.balanceAfter),
+      reference: r.reference,
+      paymentReference: r.paymentReference,
+      channel: r.channel,
+      description: r.description,
+      status: (r.status === 'SUCCESS' ? WalletTransactionStatus.SUCCESSFUL : r.status) as any,
+      metadata: r.metadata as any,
+      createdAt: r.createdAt.toISOString(),
+    }));
   }
 
   async getWalletAnalytics(tenantId: string): Promise<WalletAnalyticsSummary> {

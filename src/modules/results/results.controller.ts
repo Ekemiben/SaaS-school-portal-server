@@ -44,56 +44,31 @@ export class ResultsController {
       if (!studentId) {
         throw new ForbiddenException('Student ID is required for parent access.');
       }
-      let isLinked = false;
-      if (this.prisma.isDbConnected) {
-        try {
-          const link = await this.prisma.studentParent.findFirst({
-            where: {
-              studentId,
-              parent: {
-                tenantId,
-                OR: [
-                  { userId: user.id },
-                  ...(user.email ? [{ email: user.email.toLowerCase().trim() }] : []),
-                  ...(user.phone ? [{ phone: user.phone.trim() }] : []),
-                ],
-              },
-            },
-          });
-          isLinked = !!link;
-        } catch {}
-      }
-      if (!isLinked) {
-        const memoryParent = Array.from(this.prisma.memoryStore.parents.values()).find(
-          (p: any) =>
-            p.tenantId === tenantId &&
-            (p.userId === user.id || p.email === user.id || p.email === user.email),
-        ) as any;
-        if (memoryParent) {
-          const linkedWards = memoryParent.linkedWards || [];
-          isLinked = linkedWards.some((w: any) => w.id === studentId || w.studentId === studentId);
-        }
-      }
+      
+      const link = await this.prisma.studentParent.findFirst({
+        where: {
+          studentId,
+          parent: {
+            tenantId,
+            OR: [
+              { userId: user.id },
+              ...(user.email ? [{ email: user.email.toLowerCase().trim() }] : []),
+              ...(user.phone ? [{ phone: user.phone.trim() }] : []),
+            ],
+          },
+        },
+      });
 
-      if (!isLinked) {
+      if (!link) {
         throw new ForbiddenException('You are not authorized to view results for this student.');
       }
 
       if (examinationId) {
-        let isPublished = false;
-        if (this.prisma.isDbConnected) {
-          try {
-            const exam = await this.prisma.examination.findFirst({
-              where: { id: examinationId, tenantId },
-            });
-            isPublished = !!exam?.isPublished;
-          } catch {}
-        } else {
-          const exam = this.prisma.memoryStore.examinations.get(examinationId);
-          isPublished = !!(exam && exam.tenantId === tenantId && (exam.isPublished || exam.status === 'PUBLISHED'));
-        }
+        const exam = await this.prisma.examination.findFirst({
+          where: { id: examinationId, tenantId },
+        });
 
-        if (!isPublished) {
+        if (!exam?.isPublished) {
           throw new ForbiddenException('Results for this examination have not been published yet.');
         }
       }

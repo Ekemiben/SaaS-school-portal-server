@@ -24,8 +24,10 @@ export class StockMovementService {
     userId: string,
     dto: RecordStockMovementDto,
   ) {
-    const item = this.prisma.memoryStore.inventoryItems.get(dto.inventoryItemId);
-    if (!item || item.tenantId !== tenantId) {
+    const item = await this.prisma.inventoryItem.findFirst({
+      where: { id: dto.inventoryItemId, tenantId },
+    });
+    if (!item) {
       throw new NotFoundException(`Inventory item with ID '${dto.inventoryItemId}' not found`);
     }
 
@@ -54,33 +56,32 @@ export class StockMovementService {
     }
 
     // Update item stock
-    item.quantityOnHand = newQty;
-    item.status = newQty > 0 ? 'ACTIVE' : 'OUT_OF_STOCK';
-    item.updatedAt = new Date();
-    this.prisma.memoryStore.inventoryItems.set(item.id, item);
+    await this.prisma.inventoryItem.update({
+      where: { id: item.id },
+      data: {
+        quantityOnHand: newQty,
+        status: newQty > 0 ? 'ACTIVE' : 'OUT_OF_STOCK',
+      },
+    });
 
     // Record movement
-    const movementId = `mvt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const movement = {
-      id: movementId,
-      tenantId,
-      campusId: item.campusId || campusId || null,
-      inventoryItemId: item.id,
-      type: dto.type,
-      quantity: dto.quantity,
-      previousQty,
-      newQty,
-      unitCost: dto.unitCost !== undefined ? dto.unitCost : item.unitCost,
-      referenceNumber: dto.referenceNumber || null,
-      issuedToType: dto.issuedToType || null,
-      issuedToId: dto.issuedToId || null,
-      performedBy: userId,
-      notes: dto.notes || null,
-      createdAt: new Date(),
-    };
-
-    this.prisma.memoryStore.inventoryStockMovements.set(movementId, movement);
-    return movement;
+    return this.prisma.inventoryStockMovement.create({
+      data: {
+        tenantId,
+        campusId: item.campusId || campusId || null,
+        inventoryItemId: item.id,
+        type: dto.type,
+        quantity: dto.quantity,
+        previousQty,
+        newQty,
+        unitCost: dto.unitCost !== undefined ? dto.unitCost : item.unitCost,
+        referenceNumber: dto.referenceNumber || null,
+        issuedToType: dto.issuedToType || null,
+        issuedToId: dto.issuedToId || null,
+        performedBy: userId,
+        notes: dto.notes || null,
+      },
+    });
   }
 
   async issueItem(
@@ -109,8 +110,10 @@ export class StockMovementService {
     const results = [];
 
     for (const adj of dto.adjustments) {
-      const item = this.prisma.memoryStore.inventoryItems.get(adj.inventoryItemId);
-      if (!item || item.tenantId !== tenantId) {
+      const item = await this.prisma.inventoryItem.findFirst({
+        where: { id: adj.inventoryItemId, tenantId },
+      });
+      if (!item) {
         continue;
       }
 
@@ -118,31 +121,32 @@ export class StockMovementService {
       const actualQty = adj.actualQuantity;
       const diff = actualQty - prevQty;
 
-      item.quantityOnHand = actualQty;
-      item.status = actualQty > 0 ? 'ACTIVE' : 'OUT_OF_STOCK';
-      item.updatedAt = new Date();
-      this.prisma.memoryStore.inventoryItems.set(item.id, item);
+      await this.prisma.inventoryItem.update({
+        where: { id: item.id },
+        data: {
+          quantityOnHand: actualQty,
+          status: actualQty > 0 ? 'ACTIVE' : 'OUT_OF_STOCK',
+        },
+      });
 
-      const movementId = `mvt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      const movement = {
-        id: movementId,
-        tenantId,
-        campusId: item.campusId || campusId || null,
-        inventoryItemId: item.id,
-        type: 'AUDIT_ADJUSTMENT',
-        quantity: Math.abs(diff),
-        previousQty: prevQty,
-        newQty: actualQty,
-        unitCost: item.unitCost,
-        referenceNumber: dto.auditReference || `AUDIT-${Date.now()}`,
-        issuedToType: null,
-        issuedToId: null,
-        performedBy: userId,
-        notes: adj.notes || `Stock audit adjustment (Variance: ${diff > 0 ? '+' : ''}${diff})`,
-        createdAt: new Date(),
-      };
+      const movement = await this.prisma.inventoryStockMovement.create({
+        data: {
+          tenantId,
+          campusId: item.campusId || campusId || null,
+          inventoryItemId: item.id,
+          type: 'AUDIT_ADJUSTMENT',
+          quantity: Math.abs(diff),
+          previousQty: prevQty,
+          newQty: actualQty,
+          unitCost: item.unitCost,
+          referenceNumber: dto.auditReference || `AUDIT-${Date.now()}`,
+          issuedToType: null,
+          issuedToId: null,
+          performedBy: userId,
+          notes: adj.notes || `Stock audit adjustment (Variance: ${diff > 0 ? '+' : ''}${diff})`,
+        },
+      });
 
-      this.prisma.memoryStore.inventoryStockMovements.set(movementId, movement);
       results.push(movement);
     }
 
@@ -150,26 +154,27 @@ export class StockMovementService {
   }
 
   async findMovements(tenantId: string, filter?: StockMovementFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.inventoryStockMovements.values()).filter(
-      (m: any) => m.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
 
     if (filter?.campusId) {
-      list = list.filter((m: any) => m.campusId === filter.campusId);
+      where.campusId = filter.campusId;
     }
     if (filter?.inventoryItemId) {
-      list = list.filter((m: any) => m.inventoryItemId === filter.inventoryItemId);
+      where.inventoryItemId = filter.inventoryItemId;
     }
     if (filter?.type) {
-      list = list.filter((m: any) => m.type === filter.type);
+      where.type = filter.type;
     }
     if (filter?.issuedToType) {
-      list = list.filter((m: any) => m.issuedToType === filter.issuedToType);
+      where.issuedToType = filter.issuedToType;
     }
     if (filter?.issuedToId) {
-      list = list.filter((m: any) => m.issuedToId === filter.issuedToId);
+      where.issuedToId = filter.issuedToId;
     }
 
-    return list.sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
+    return this.prisma.inventoryStockMovement.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+    });
   }
 }

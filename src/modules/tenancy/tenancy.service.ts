@@ -13,19 +13,12 @@ export class TenancyService {
   ) {}
 
   async resolveCurrentTenant(tenantId: string) {
-    if (this.prisma.isDbConnected) {
-      const tenant = await this.prisma.tenant.findUnique({
-        where: { id: tenantId },
-        include: { domains: true },
-      });
-      if (!tenant) throw new NotFoundException('School organization tenant not found');
-      return this.sanitizeTenantConfig(tenant);
-    }
-
-    const tenant = this.prisma.memoryStore.tenants.get(tenantId);
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      include: { domains: true },
+    });
     if (!tenant) throw new NotFoundException('School organization tenant not found');
-    const domains = Array.from(this.prisma.memoryStore.domains.values()).filter((d) => d.tenantId === tenantId);
-    return this.sanitizeTenantConfig({ ...tenant, domains });
+    return this.sanitizeTenantConfig(tenant);
   }
 
   async resolveByHostname(hostname: string) {
@@ -38,26 +31,13 @@ export class TenancyService {
       return null;
     }
 
-    if (this.prisma.isDbConnected) {
-      const tenantDomain = await this.prisma.tenantDomain.findUnique({
-        where: { domain: cleanHost },
-        include: { tenant: { include: { domains: true } } },
-      });
+    const tenantDomain = await this.prisma.tenantDomain.findUnique({
+      where: { domain: cleanHost },
+      include: { tenant: { include: { domains: true } } },
+    });
 
-      if (tenantDomain && tenantDomain.isVerified) {
-        return this.sanitizeTenantConfig(tenantDomain.tenant);
-      }
-    } else {
-      const domainMatch = Array.from(this.prisma.memoryStore.domains.values()).find(
-        (d) => d.domain === cleanHost && d.isVerified,
-      );
-      if (domainMatch) {
-        const tenant = this.prisma.memoryStore.tenants.get(domainMatch.tenantId);
-        if (tenant) {
-          const domains = Array.from(this.prisma.memoryStore.domains.values()).filter((d) => d.tenantId === tenant.id);
-          return this.sanitizeTenantConfig({ ...tenant, domains });
-        }
-      }
+    if (tenantDomain && tenantDomain.isVerified) {
+      return this.sanitizeTenantConfig(tenantDomain.tenant);
     }
 
     const parts = cleanHost.split('.');
@@ -68,7 +48,7 @@ export class TenancyService {
       }
     }
 
-    // Root domain or unresolvable hostname - return null (never fall back to Greenfield)
+    // Root domain or unresolvable hostname - return null (never fall back to hardcoded tenants)
     return null;
   }
 
@@ -76,20 +56,11 @@ export class TenancyService {
     if (!slug) return null;
     const cleanSlug = slug.toLowerCase().trim();
 
-    if (this.prisma.isDbConnected) {
-      const tenant = await this.prisma.tenant.findUnique({
-        where: { slug: cleanSlug },
-        include: { domains: true },
-      });
-      if (tenant) return this.sanitizeTenantConfig(tenant);
-    } else {
-      const tenant = Array.from(this.prisma.memoryStore.tenants.values()).find((t) => t.slug === cleanSlug);
-      if (tenant) {
-        const domains = Array.from(this.prisma.memoryStore.domains.values()).filter((d) => d.tenantId === tenant.id);
-        return this.sanitizeTenantConfig({ ...tenant, domains });
-      }
-    }
-    // Tenant not found - return null (never fall back to Greenfield)
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { slug: cleanSlug },
+      include: { domains: true },
+    });
+    if (tenant) return this.sanitizeTenantConfig(tenant);
     return null;
   }
 
@@ -132,251 +103,146 @@ export class TenancyService {
     const cycle = (data.billingCycle || 'TERMLY').toUpperCase();
     const isPayNow = data.paymentOption === 'pay_now';
 
-    if (this.prisma.isDbConnected) {
-      const existing = await this.prisma.tenant.findUnique({ where: { slug } });
-      if (existing) throw new ConflictException(`Subdomain slug "${slug}" is already taken.`);
+    const existing = await this.prisma.tenant.findUnique({ where: { slug } });
+    if (existing) throw new ConflictException(`Subdomain slug "${slug}" is already taken.`);
 
-      const now = new Date();
-      // Approved Architecture: 2-month trial period (60 days)
-      const trialEndsAt = new Date(now.getTime() + 60 * 86400000);
-      const periodEnd = isPayNow ? new Date(now.getTime() + 90 * 86400000) : trialEndsAt;
-
-      let planRow = await this.prisma.subscriptionPlan.findUnique({
-        where: { tier: targetTier },
-      });
-      if (!planRow) {
-        planRow = await this.prisma.subscriptionPlan.findFirst();
-      }
-
-      const tenant = await this.prisma.tenant.create({
-        data: {
-          name: data.schoolName,
-          slug,
-          currency: data.currency || planRow?.currency || 'NGN',
-          status: 'TRIAL',
-          plan: targetTier.toLowerCase(),
-          domains: {
-            create: {
-              domain: `${slug}.yoursaas.com`,
-              type: 'SUBDOMAIN',
-              isPrimary: true,
-              isVerified: true,
-              sslStatus: 'ACTIVE',
-            },
-          },
-          campuses: {
-            create: {
-              name: 'Main Campus',
-              code: 'MAIN-01',
-              country: data.country || 'Nigeria',
-              isMain: true,
-            },
-          },
-        },
-        include: { domains: true, campuses: true },
-      });
-
-      // Create authoritative PostgreSQL Subscription
-      const subId = `sub_${tenant.id.replace(/[^a-zA-Z0-9]/g, '_')}`;
-      const sub = await this.prisma.subscription.create({
-        data: {
-          id: subId,
-          tenantId: tenant.id,
-          planId: planRow?.id,
-          planTier: targetTier,
-          status: isPayNow ? 'PENDING' : 'TRIAL',
-          billingCycle: cycle === 'ANNUAL' ? 'ANNUAL' : 'TERMLY',
-          priceAtPurchase: planRow ? Number(planRow.termlyPrice) : 150000,
-          currency: data.currency || planRow?.currency || 'NGN',
-          trialEndsAt: isPayNow ? null : trialEndsAt,
-          currentPeriodStart: now,
-          currentPeriodEnd: periodEnd,
-          maxStudents: planRow?.maxStudents || 500,
-          maxCampuses: planRow?.maxCampuses || 1,
-          maxStaff: planRow?.maxStaff || 30,
-          storageLimitMb: planRow?.storageLimitMb || 10240,
-          autoRenew: true,
-        },
-      });
-
-      // Bootstrap initial PostgreSQL educational & operational baseline
-      await this.bootstrapTenantInitialData(
-        tenant.id,
-        tenant.name,
-        tenant.campuses?.[0]?.id,
-        data.ownerEmail,
-      );
-
-      this.prisma.memoryStore.tenants.set(tenant.id, tenant);
-      this.prisma.memoryStore.subscriptions.set(sub.id, {
-        ...sub,
-        tier: targetTier.toLowerCase(),
-      });
-
-      const subDomainId = `domain_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-      this.prisma.memoryStore.domains.set(subDomainId, {
-        id: subDomainId,
-        tenantId: tenant.id,
-        domain: `${slug}.yoursaas.com`,
-        type: 'SUBDOMAIN',
-        isPrimary: true,
-        isVerified: true,
-        sslStatus: 'ACTIVE',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-
-      return {
-        ...this.sanitizeTenantConfig(tenant),
-        subscription: sub,
-      };
-    }
-
-    const tenantId = `tenant_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
     const now = new Date();
+    // Approved Architecture: 2-month trial period (60 days)
     const trialEndsAt = new Date(now.getTime() + 60 * 86400000);
     const periodEnd = isPayNow ? new Date(now.getTime() + 90 * 86400000) : trialEndsAt;
-    const subId = `sub_${tenantId.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
-    const newTenant = {
-      id: tenantId,
-      name: data.schoolName,
-      slug,
-      logoUrl: null,
-      faviconUrl: null,
-      primaryColor: '#0f172a',
-      secondaryColor: '#3b82f6',
-      timezone: 'UTC',
-      locale: 'en',
-      currency: data.currency || 'NGN',
-      status: 'TRIAL',
-      plan: targetTier.toLowerCase(),
-      features: { attendance: true, examinations: true, fees: true, transport: false, onlinePayments: true },
-      createdAt: now,
-      updatedAt: now,
-    };
+    let planRow = await this.prisma.subscriptionPlan.findUnique({
+      where: { tier: targetTier },
+    });
+    if (!planRow) {
+      planRow = await this.prisma.subscriptionPlan.findFirst();
+    }
 
-    const newSub = {
-      id: subId,
-      tenantId,
-      planTier: targetTier,
-      tier: targetTier.toLowerCase(),
-      status: isPayNow ? 'PENDING' : 'TRIAL',
-      billingCycle: cycle === 'ANNUAL' ? 'ANNUAL' : 'TERMLY',
-      priceAtPurchase: 150000,
-      currency: data.currency || 'NGN',
-      trialEndsAt: isPayNow ? null : trialEndsAt,
-      currentPeriodStart: now,
-      currentPeriodEnd: periodEnd,
-      maxStudents: targetTier === 'STANDARD' ? 1500 : targetTier === 'PREMIUM' ? 5000 : 500,
-      maxCampuses: targetTier === 'STANDARD' ? 3 : targetTier === 'PREMIUM' ? 10 : 1,
-      maxStaff: targetTier === 'STANDARD' ? 100 : targetTier === 'PREMIUM' ? 300 : 30,
-      storageLimitMb: targetTier === 'STANDARD' ? 25600 : targetTier === 'PREMIUM' ? 102400 : 10240,
-      autoRenew: true,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    this.prisma.memoryStore.tenants.set(tenantId, newTenant);
-    this.prisma.memoryStore.subscriptions.set(subId, newSub);
-    const subDomainId = `domain_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-    this.prisma.memoryStore.domains.set(subDomainId, {
-      id: subDomainId,
-      tenantId,
-      domain: `${slug}.yoursaas.com`,
-      type: 'SUBDOMAIN',
-      isPrimary: true,
-      isVerified: true,
-      sslStatus: 'ACTIVE',
-      createdAt: now,
-      updatedAt: now,
+    const tenant = await this.prisma.tenant.create({
+      data: {
+        name: data.schoolName,
+        slug,
+        currency: data.currency || planRow?.currency || 'NGN',
+        status: 'TRIAL',
+        plan: targetTier.toLowerCase(),
+        domains: {
+          create: {
+            domain: `${slug}.yoursaas.com`,
+            type: 'SUBDOMAIN',
+            isPrimary: true,
+            isVerified: true,
+            sslStatus: 'ACTIVE',
+          },
+        },
+        campuses: {
+          create: {
+            name: 'Main Campus',
+            code: 'MAIN-01',
+            country: data.country || 'Nigeria',
+            isMain: true,
+          },
+        },
+      },
+      include: { domains: true, campuses: true },
     });
 
+    // Create authoritative PostgreSQL Subscription
+    const subId = `sub_${tenant.id.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const sub = await this.prisma.subscription.create({
+      data: {
+        id: subId,
+        tenantId: tenant.id,
+        planId: planRow?.id,
+        planTier: targetTier,
+        status: isPayNow ? 'PENDING' : 'TRIAL',
+        billingCycle: cycle === 'ANNUAL' ? 'ANNUAL' : 'TERMLY',
+        priceAtPurchase: planRow ? Number(planRow.termlyPrice) : 150000,
+        currency: data.currency || planRow?.currency || 'NGN',
+        trialEndsAt: isPayNow ? null : trialEndsAt,
+        currentPeriodStart: now,
+        currentPeriodEnd: periodEnd,
+        maxStudents: planRow?.maxStudents || 500,
+        maxCampuses: planRow?.maxCampuses || 1,
+        maxStaff: planRow?.maxStaff || 30,
+        storageLimitMb: planRow?.storageLimitMb || 10240,
+        autoRenew: true,
+      },
+    });
+
+    // Bootstrap initial PostgreSQL educational & operational baseline
+    await this.bootstrapTenantInitialData(
+      tenant.id,
+      tenant.name,
+      tenant.campuses?.[0]?.id,
+      data.ownerEmail,
+    );
+
     return {
-      ...this.sanitizeTenantConfig(newTenant),
-      subscription: newSub,
+      ...this.sanitizeTenantConfig(tenant),
+      subscription: sub,
     };
   }
 
   async updateBranding(tenantId: string, data: any) {
-    if (this.prisma.isDbConnected) {
-      const existing = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
-      if (!existing) throw new NotFoundException('Tenant not found');
+    const existing = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+    if (!existing) throw new NotFoundException('Tenant not found');
 
-      const updatePayload: any = {};
-      if (data.name) updatePayload.name = data.name;
-      if (data.logoUrl !== undefined) updatePayload.logoUrl = data.logoUrl;
-      if (data.faviconUrl !== undefined) updatePayload.faviconUrl = data.faviconUrl;
-      if (data.primaryColor) updatePayload.primaryColor = data.primaryColor;
-      if (data.secondaryColor) updatePayload.secondaryColor = data.secondaryColor;
-      if (data.timezone) updatePayload.timezone = data.timezone;
-      if (data.locale) updatePayload.locale = data.locale;
-      if (data.currency) updatePayload.currency = data.currency;
+    const updatePayload: any = {};
+    if (data.name) updatePayload.name = data.name;
+    if (data.logoUrl !== undefined) updatePayload.logoUrl = data.logoUrl;
+    if (data.faviconUrl !== undefined) updatePayload.faviconUrl = data.faviconUrl;
+    if (data.primaryColor) updatePayload.primaryColor = data.primaryColor;
+    if (data.secondaryColor) updatePayload.secondaryColor = data.secondaryColor;
+    if (data.timezone) updatePayload.timezone = data.timezone;
+    if (data.locale) updatePayload.locale = data.locale;
+    if (data.currency) updatePayload.currency = data.currency;
 
-      if (
-        data.features ||
-        data.schoolHouses ||
-        data.principalSignatureUrl !== undefined ||
-        data.schoolStampUrl !== undefined ||
-        data.reportCardLayout !== undefined
-      ) {
-        const existingFeatures = (existing.features as any) || {};
-        updatePayload.features = {
-          ...existingFeatures,
-          ...(data.features || {}),
-          ...(data.schoolHouses ? { schoolHouses: data.schoolHouses } : {}),
-          ...(data.principalSignatureUrl !== undefined ? { principalSignatureUrl: data.principalSignatureUrl } : {}),
-          ...(data.schoolStampUrl !== undefined ? { schoolStampUrl: data.schoolStampUrl } : {}),
-          ...(data.reportCardLayout !== undefined ? { reportCardLayout: data.reportCardLayout } : {}),
-        };
-      }
-
-      const tenant = await this.prisma.tenant.update({
-        where: { id: tenantId },
-        data: updatePayload,
-        include: { domains: true },
-      });
-      return this.sanitizeTenantConfig(tenant);
+    if (
+      data.features ||
+      data.schoolHouses ||
+      data.principalSignatureUrl !== undefined ||
+      data.schoolStampUrl !== undefined ||
+      data.reportCardLayout !== undefined
+    ) {
+      const existingFeatures = (existing.features as any) || {};
+      updatePayload.features = {
+        ...existingFeatures,
+        ...(data.features || {}),
+        ...(data.schoolHouses ? { schoolHouses: data.schoolHouses } : {}),
+        ...(data.principalSignatureUrl !== undefined ? { principalSignatureUrl: data.principalSignatureUrl } : {}),
+        ...(data.schoolStampUrl !== undefined ? { schoolStampUrl: data.schoolStampUrl } : {}),
+        ...(data.reportCardLayout !== undefined ? { reportCardLayout: data.reportCardLayout } : {}),
+      };
     }
 
-    const tenant = this.prisma.memoryStore.tenants.get(tenantId);
-    if (!tenant) throw new NotFoundException('Tenant not found');
-    Object.assign(tenant, data, { updatedAt: new Date() });
-    this.prisma.memoryStore.tenants.set(tenantId, tenant);
+    const tenant = await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: updatePayload,
+      include: { domains: true },
+    });
     return this.sanitizeTenantConfig(tenant);
   }
 
   async listPublicSchools() {
-    if (this.prisma.isDbConnected) {
-      const tenants = await this.prisma.tenant.findMany({
-        where: { status: { in: ['ACTIVE', 'TRIAL'] } },
-        include: {
-          domains: true,
-          campuses: true,
-          _count: { select: { students: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-      });
+    const tenants = await this.prisma.tenant.findMany({
+      where: { status: { in: ['ACTIVE', 'TRIAL'] } },
+      include: {
+        domains: true,
+        campuses: true,
+        _count: { select: { students: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
 
-      return tenants.map((t) => ({
-        id: t.id,
-        name: t.name,
-        slug: t.slug,
-        domain: t.domains?.[0]?.domain || `${t.slug}.yoursaas.com`,
-        location: t.campuses?.[0]
-          ? [t.campuses[0].city, t.campuses[0].country].filter(Boolean).join(', ') || 'Nigeria'
-          : 'Nigeria',
-        students: `${t._count?.students || 0} students`,
-      }));
-    }
-
-    return Array.from(this.prisma.memoryStore.tenants.values()).map((t: any) => ({
+    return tenants.map((t) => ({
       id: t.id,
       name: t.name,
       slug: t.slug,
-      domain: `${t.slug}.yoursaas.com`,
-      location: 'Nigeria',
-      students: '0 students',
+      domain: t.domains?.[0]?.domain || `${t.slug}.yoursaas.com`,
+      location: t.campuses?.[0]
+        ? [t.campuses[0].city, t.campuses[0].country].filter(Boolean).join(', ') || 'Nigeria'
+        : 'Nigeria',
+      students: `${t._count?.students || 0} students`,
     }));
   }
 

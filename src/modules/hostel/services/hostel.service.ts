@@ -18,6 +18,7 @@ import {
   RoomFilterDto,
   BedFilterDto,
 } from '../dto/hostel-filter.dto.js';
+import { randomUUID } from 'crypto';
 
 @Injectable()
 export class HostelService {
@@ -26,34 +27,41 @@ export class HostelService {
   constructor(private readonly prisma: PrismaService) {}
 
   async createHostel(tenantId: string, campusId: string, dto: CreateHostelDto) {
-    const targetCampusId = dto.campusId || campusId;
-    const id = `hst_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const hostel = {
-      id,
-      tenantId,
-      campusId: targetCampusId,
-      name: dto.name || (dto as any).hall || 'Hostel Hall',
-      hall: dto.name || (dto as any).hall || 'Hostel Hall',
-      code: dto.code || `HST-${Math.floor(100 + Math.random() * 900)}`,
-      gender: dto.gender || 'Boys',
-      wardenName: dto.wardenName || (dto as any).warden || null,
-      warden: dto.wardenName || (dto as any).warden || null,
-      wardenPhone: dto.wardenPhone || null,
-      wardenUserId: dto.wardenUserId || null,
-      description: dto.description || null,
-      status: dto.status || 'Available',
-      totalRooms: Number((dto as any).rooms || (dto as any).totalRooms || 20),
-      rooms: Number((dto as any).rooms || (dto as any).totalRooms || 20),
-      totalBeds: Number((dto as any).totalBeds || (dto as any).beds || 80),
-      occupiedBeds: 0,
-      residents: [],
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+    let targetCampusId = dto.campusId || campusId;
+    const campusExists = await this.prisma.campus.findFirst({
+      where: { id: targetCampusId, tenantId },
+    });
+    if (!campusExists) {
+      const mainCampus = (await this.prisma.campus.findFirst({
+        where: { tenantId, isMain: true },
+      })) || (await this.prisma.campus.findFirst({
+        where: { tenantId },
+      }));
+      if (mainCampus) targetCampusId = mainCampus.id;
+    }
 
-    this.prisma.memoryStore.hostels.set(id, hostel);
-    this.logger.log(`Created hostel ${hostel.id} (${hostel.name}) for tenant ${tenantId}`);
-    return this.enrichHostel(hostel);
+    const id = `hst_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+    const created = await this.prisma.hostel.create({
+      data: {
+        id,
+        tenantId,
+        campusId: targetCampusId,
+        name: dto.name || (dto as any).hall || 'Hostel Hall',
+        code: dto.code || `HST-${Math.floor(100 + Math.random() * 900)}`,
+        gender: dto.gender || 'Boys',
+        wardenName: dto.wardenName || (dto as any).warden || null,
+        wardenPhone: dto.wardenPhone || null,
+        wardenUserId: dto.wardenUserId || null,
+        description: dto.description || null,
+        status: dto.status || 'Available',
+        totalRooms: Number((dto as any).rooms || (dto as any).totalRooms || 0),
+        totalBeds: Number((dto as any).totalBeds || (dto as any).beds || 0),
+        occupiedBeds: 0,
+      },
+    });
+
+    this.logger.log(`Created hostel ${created.id} (${created.name}) for tenant ${tenantId}`);
+    return this.enrichHostel(created);
   }
 
   private enrichHostel(h: any) {
@@ -73,53 +81,59 @@ export class HostelService {
   }
 
   async listHostels(tenantId: string, campusId?: string, filter?: HostelFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.hostels.values()).filter(
-      (h) => h.tenantId === tenantId,
-    );
-
+    const where: any = { tenantId };
     const targetCampus = filter?.campusId || campusId;
-    if (targetCampus) list = list.filter((h) => h.campusId === targetCampus);
-    if (filter?.gender && filter.gender !== 'ALL') list = list.filter((h) => h.gender === filter.gender);
-    if (filter?.status) list = list.filter((h) => h.status === filter.status);
-
+    if (targetCampus) where.campusId = targetCampus;
+    if (filter?.gender && filter.gender !== 'ALL') where.gender = filter.gender;
+    if (filter?.status) where.status = filter.status;
     if (filter?.search) {
-      const q = filter.search.toLowerCase();
-      list = list.filter(
-        (h) =>
-          (h.name && h.name.toLowerCase().includes(q)) ||
-          (h.hall && h.hall.toLowerCase().includes(q)) ||
-          (h.wardenName && h.wardenName.toLowerCase().includes(q)) ||
-          (h.warden && h.warden.toLowerCase().includes(q)) ||
-          (h.code && h.code.toLowerCase().includes(q)),
-      );
+      const q = filter.search.trim();
+      where.OR = [
+        { name: { contains: q, mode: 'insensitive' } },
+        { code: { contains: q, mode: 'insensitive' } },
+        { wardenName: { contains: q, mode: 'insensitive' } },
+      ];
     }
 
-    const sorted = list.sort((a, b) => (a.name || a.hall || '').localeCompare(b.name || b.hall || ''));
-    return sorted.map((h) => this.enrichHostel(h));
+    const rows = await this.prisma.hostel.findMany({
+      where,
+      orderBy: { name: 'asc' },
+    });
+
+    return rows.map((h) => this.enrichHostel(h));
   }
 
   async getHostelById(tenantId: string, hostelId: string) {
-    const hostel = this.prisma.memoryStore.hostels.get(hostelId);
-    if (!hostel || hostel.tenantId !== tenantId) {
+    const hostel = await this.prisma.hostel.findFirst({
+      where: { id: hostelId, tenantId },
+      include: {
+        rooms: {
+          include: { beds: true },
+        },
+      },
+    });
+    if (!hostel) {
       throw new NotFoundException(`Hostel with ID ${hostelId} not found`);
     }
     return this.enrichHostel(hostel);
   }
 
   async updateHostel(tenantId: string, hostelId: string, dto: UpdateHostelDto) {
-    const hostel = await this.getHostelById(tenantId, hostelId);
-    if (dto.name) hostel.name = dto.name;
-    if (dto.code !== undefined) hostel.code = dto.code;
-    if (dto.gender) hostel.gender = dto.gender;
-    if (dto.wardenName !== undefined) hostel.wardenName = dto.wardenName;
-    if (dto.wardenPhone !== undefined) hostel.wardenPhone = dto.wardenPhone;
-    if (dto.wardenUserId !== undefined) hostel.wardenUserId = dto.wardenUserId;
-    if (dto.description !== undefined) hostel.description = dto.description;
-    if (dto.status) hostel.status = dto.status;
-    hostel.updatedAt = new Date();
-
-    this.prisma.memoryStore.hostels.set(hostelId, hostel);
-    return hostel;
+    await this.getHostelById(tenantId, hostelId);
+    const updated = await this.prisma.hostel.update({
+      where: { id: hostelId },
+      data: {
+        ...(dto.name ? { name: dto.name } : {}),
+        ...(dto.code !== undefined ? { code: dto.code } : {}),
+        ...(dto.gender ? { gender: dto.gender } : {}),
+        ...(dto.wardenName !== undefined ? { wardenName: dto.wardenName } : {}),
+        ...(dto.wardenPhone !== undefined ? { wardenPhone: dto.wardenPhone } : {}),
+        ...(dto.wardenUserId !== undefined ? { wardenUserId: dto.wardenUserId } : {}),
+        ...(dto.description !== undefined ? { description: dto.description } : {}),
+        ...(dto.status ? { status: dto.status } : {}),
+      },
+    });
+    return this.enrichHostel(updated);
   }
 
   // --- Rooms ---
@@ -127,54 +141,63 @@ export class HostelService {
   async createRoom(tenantId: string, campusId: string, dto: CreateHostelRoomDto) {
     const hostel = await this.getHostelById(tenantId, dto.hostelId);
 
-    const existingRooms = Array.from(this.prisma.memoryStore.hostelRooms.values()).filter(
-      (r) => r.tenantId === tenantId && r.hostelId === dto.hostelId,
-    );
-    if (existingRooms.some((r) => r.roomNumber.toLowerCase() === dto.roomNumber.toLowerCase())) {
+    const existing = await this.prisma.hostelRoom.findFirst({
+      where: {
+        tenantId,
+        hostelId: dto.hostelId,
+        roomNumber: dto.roomNumber,
+      },
+    });
+    if (existing) {
       throw new BadRequestException(
         `Room ${dto.roomNumber} already exists in hostel ${hostel.name}`,
       );
     }
 
-    const id = `hrm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const room = {
-      id,
-      tenantId,
-      campusId: hostel.campusId || campusId,
-      hostelId: dto.hostelId,
-      roomNumber: dto.roomNumber,
-      floor: dto.floor || null,
-      roomType: dto.roomType || 'STANDARD',
-      capacity: dto.capacity || 4,
-      occupied: 0,
-      status: 'AVAILABLE',
-      notes: dto.notes || null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+    const id = `hrm_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+    const room = await this.prisma.hostelRoom.create({
+      data: {
+        id,
+        tenantId,
+        campusId: hostel.campusId || campusId,
+        hostelId: dto.hostelId,
+        roomNumber: dto.roomNumber,
+        floor: dto.floor || null,
+        roomType: dto.roomType || 'STANDARD',
+        capacity: dto.capacity || 4,
+        occupied: 0,
+        status: 'AVAILABLE',
+        notes: dto.notes || null,
+      },
+    });
 
-    this.prisma.memoryStore.hostelRooms.set(id, room);
     await this.recalculateHostelCounts(tenantId, dto.hostelId);
     return room;
   }
 
   async listRooms(tenantId: string, filter?: RoomFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.hostelRooms.values()).filter(
-      (r) => r.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
+    if (filter?.hostelId) where.hostelId = filter.hostelId;
+    if (filter?.campusId) where.campusId = filter.campusId;
+    if (filter?.roomType) where.roomType = filter.roomType;
+    if (filter?.status) where.status = filter.status;
+    if (filter?.floor) where.floor = filter.floor;
 
-    if (filter?.hostelId) list = list.filter((r) => r.hostelId === filter.hostelId);
-    if (filter?.campusId) list = list.filter((r) => r.campusId === filter.campusId);
-    if (filter?.roomType) list = list.filter((r) => r.roomType === filter.roomType);
-    if (filter?.status) list = list.filter((r) => r.status === filter.status);
-    if (filter?.floor) list = list.filter((r) => r.floor === filter.floor);
-
-    return list.sort((a, b) => a.roomNumber.localeCompare(b.roomNumber));
+    return this.prisma.hostelRoom.findMany({
+      where,
+      orderBy: { roomNumber: 'asc' },
+      include: {
+        beds: true,
+      },
+    });
   }
 
   async getRoomById(tenantId: string, roomId: string) {
-    const room = this.prisma.memoryStore.hostelRooms.get(roomId);
-    if (!room || room.tenantId !== tenantId) {
+    const room = await this.prisma.hostelRoom.findFirst({
+      where: { id: roomId, tenantId },
+      include: { beds: true },
+    });
+    if (!room) {
       throw new NotFoundException(`Room with ID ${roomId} not found`);
     }
     return room;
@@ -182,17 +205,19 @@ export class HostelService {
 
   async updateRoom(tenantId: string, roomId: string, dto: UpdateHostelRoomDto) {
     const room = await this.getRoomById(tenantId, roomId);
-    if (dto.roomNumber) room.roomNumber = dto.roomNumber;
-    if (dto.floor !== undefined) room.floor = dto.floor;
-    if (dto.roomType) room.roomType = dto.roomType;
-    if (dto.capacity !== undefined) room.capacity = dto.capacity;
-    if (dto.status) room.status = dto.status;
-    if (dto.notes !== undefined) room.notes = dto.notes;
-    room.updatedAt = new Date();
-
-    this.prisma.memoryStore.hostelRooms.set(roomId, room);
+    const updated = await this.prisma.hostelRoom.update({
+      where: { id: roomId },
+      data: {
+        ...(dto.roomNumber ? { roomNumber: dto.roomNumber } : {}),
+        ...(dto.floor !== undefined ? { floor: dto.floor } : {}),
+        ...(dto.roomType ? { roomType: dto.roomType } : {}),
+        ...(dto.capacity !== undefined ? { capacity: dto.capacity } : {}),
+        ...(dto.status ? { status: dto.status } : {}),
+        ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+      },
+    });
     await this.recalculateHostelCounts(tenantId, room.hostelId);
-    return room;
+    return updated;
   }
 
   // --- Beds ---
@@ -200,50 +225,55 @@ export class HostelService {
   async createBed(tenantId: string, campusId: string, dto: CreateHostelBedDto) {
     const room = await this.getRoomById(tenantId, dto.roomId);
 
-    const existingBeds = Array.from(this.prisma.memoryStore.hostelBeds.values()).filter(
-      (b) => b.tenantId === tenantId && b.roomId === dto.roomId,
-    );
-    if (existingBeds.some((b) => b.bedNumber.toLowerCase() === dto.bedNumber.toLowerCase())) {
+    const existing = await this.prisma.hostelBed.findFirst({
+      where: {
+        tenantId,
+        roomId: dto.roomId,
+        bedNumber: dto.bedNumber,
+      },
+    });
+    if (existing) {
       throw new BadRequestException(
         `Bed ${dto.bedNumber} already exists in room ${room.roomNumber}`,
       );
     }
 
-    const id = `hbd_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const bed = {
-      id,
-      tenantId,
-      campusId: room.campusId || campusId,
-      hostelId: dto.hostelId,
-      roomId: dto.roomId,
-      bedNumber: dto.bedNumber,
-      status: dto.status || 'VACANT',
-      notes: dto.notes || null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+    const id = `hbd_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+    const bed = await this.prisma.hostelBed.create({
+      data: {
+        id,
+        tenantId,
+        campusId: room.campusId || campusId,
+        hostelId: dto.hostelId,
+        roomId: dto.roomId,
+        bedNumber: dto.bedNumber,
+        status: dto.status || 'VACANT',
+        notes: dto.notes || null,
+      },
+    });
 
-    this.prisma.memoryStore.hostelBeds.set(id, bed);
     await this.recalculateHostelCounts(tenantId, dto.hostelId);
     return bed;
   }
 
   async listBeds(tenantId: string, filter?: BedFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.hostelBeds.values()).filter(
-      (b) => b.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
+    if (filter?.hostelId) where.hostelId = filter.hostelId;
+    if (filter?.roomId) where.roomId = filter.roomId;
+    if (filter?.campusId) where.campusId = filter.campusId;
+    if (filter?.status) where.status = filter.status;
 
-    if (filter?.hostelId) list = list.filter((b) => b.hostelId === filter.hostelId);
-    if (filter?.roomId) list = list.filter((b) => b.roomId === filter.roomId);
-    if (filter?.campusId) list = list.filter((b) => b.campusId === filter.campusId);
-    if (filter?.status) list = list.filter((b) => b.status === filter.status);
-
-    return list.sort((a, b) => a.bedNumber.localeCompare(b.bedNumber));
+    return this.prisma.hostelBed.findMany({
+      where,
+      orderBy: { bedNumber: 'asc' },
+    });
   }
 
   async getBedById(tenantId: string, bedId: string) {
-    const bed = this.prisma.memoryStore.hostelBeds.get(bedId);
-    if (!bed || bed.tenantId !== tenantId) {
+    const bed = await this.prisma.hostelBed.findFirst({
+      where: { id: bedId, tenantId },
+    });
+    if (!bed) {
       throw new NotFoundException(`Bed with ID ${bedId} not found`);
     }
     return bed;
@@ -251,32 +281,32 @@ export class HostelService {
 
   async updateBed(tenantId: string, bedId: string, dto: UpdateHostelBedDto) {
     const bed = await this.getBedById(tenantId, bedId);
-    if (dto.bedNumber) bed.bedNumber = dto.bedNumber;
-    if (dto.status) bed.status = dto.status;
-    if (dto.notes !== undefined) bed.notes = dto.notes;
-    bed.updatedAt = new Date();
-
-    this.prisma.memoryStore.hostelBeds.set(bedId, bed);
+    const updated = await this.prisma.hostelBed.update({
+      where: { id: bedId },
+      data: {
+        ...(dto.bedNumber ? { bedNumber: dto.bedNumber } : {}),
+        ...(dto.status ? { status: dto.status } : {}),
+        ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+      },
+    });
     await this.recalculateHostelCounts(tenantId, bed.hostelId);
-    return bed;
+    return updated;
   }
 
   async recalculateHostelCounts(tenantId: string, hostelId: string) {
-    const hostel = this.prisma.memoryStore.hostels.get(hostelId);
-    if (!hostel || hostel.tenantId !== tenantId) return;
+    const [roomsCount, bedsCount, occupiedCount] = await Promise.all([
+      this.prisma.hostelRoom.count({ where: { tenantId, hostelId } }),
+      this.prisma.hostelBed.count({ where: { tenantId, hostelId } }),
+      this.prisma.hostelBed.count({ where: { tenantId, hostelId, status: 'OCCUPIED' } }),
+    ]);
 
-    const rooms = Array.from(this.prisma.memoryStore.hostelRooms.values()).filter(
-      (r) => r.tenantId === tenantId && r.hostelId === hostelId,
-    );
-    const beds = Array.from(this.prisma.memoryStore.hostelBeds.values()).filter(
-      (b) => b.tenantId === tenantId && b.hostelId === hostelId,
-    );
-
-    hostel.totalRooms = rooms.length;
-    hostel.totalBeds = beds.length;
-    hostel.occupiedBeds = beds.filter((b) => b.status === 'OCCUPIED').length;
-    hostel.updatedAt = new Date();
-
-    this.prisma.memoryStore.hostels.set(hostelId, hostel);
+    await this.prisma.hostel.update({
+      where: { id: hostelId },
+      data: {
+        totalRooms: roomsCount,
+        totalBeds: bedsCount,
+        occupiedBeds: occupiedCount,
+      },
+    }).catch(() => {});
   }
 }

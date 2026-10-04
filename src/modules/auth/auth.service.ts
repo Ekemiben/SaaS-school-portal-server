@@ -2,6 +2,7 @@ import {
   Injectable,
   UnauthorizedException,
   ConflictException,
+  NotFoundException,
   Logger,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -24,57 +25,41 @@ export class AuthService {
     if (!tenantIdentifier) return null;
     const cleanId = tenantIdentifier.toLowerCase().trim();
 
-    if (this.prisma.isDbConnected) {
-      try {
-        const tenantRecord = await this.prisma.tenant.findFirst({
-          where: {
-            OR: [
-              { id: tenantIdentifier },
-              { slug: cleanId },
-              { domains: { some: { domain: cleanId } } },
-            ],
-          },
-          include: { domains: true },
-        });
-        if (tenantRecord) return tenantRecord;
-      } catch (err: any) {
-        this.logger.warn(`Could not resolve tenant for auth in DB: ${err.message}`);
-      }
+    try {
+      const tenantRecord = await this.prisma.tenant.findFirst({
+        where: {
+          OR: [
+            { id: tenantIdentifier },
+            { slug: cleanId },
+            { domains: { some: { domain: cleanId } } },
+          ],
+        },
+        include: { domains: true },
+      });
+      return tenantRecord || null;
+    } catch (err: any) {
+      this.logger.warn(`Could not resolve tenant for auth in DB: ${err.message}`);
+      return null;
     }
-
-    const memTenant = this.prisma.memoryStore.tenants.get(tenantIdentifier) ||
-      Array.from(this.prisma.memoryStore.tenants.values()).find(
-        (t: any) => t.slug === cleanId || t.id === tenantIdentifier,
-      );
-    return memTenant || null;
   }
 
   async isPlatformUser(email: string): Promise<boolean> {
     const normalizedEmail = email.toLowerCase().trim();
-    if (this.prisma.isDbConnected) {
-      try {
-        const dbPlatUser = await this.prisma.user.findFirst({
-          where: { email: normalizedEmail, tenantId: null },
-          select: { id: true },
-        });
-        return Boolean(dbPlatUser);
-      } catch {
-        return false;
-      }
+    try {
+      const dbPlatUser = await this.prisma.user.findFirst({
+        where: { email: normalizedEmail, tenantId: null },
+        select: { id: true },
+      });
+      return Boolean(dbPlatUser);
+    } catch {
+      return false;
     }
-    return Array.from(this.prisma.memoryStore.users.values()).some(
-      (u: any) => (u.tenantId === null || u.tenantId === undefined) && u.email === normalizedEmail,
-    );
   }
 
   async ensureTenantRole(
     tenantId: string,
     roleName: 'STUDENT' | 'PARENT' | 'TEACHER' | 'School Owner' | 'School Admin',
   ): Promise<any> {
-    if (!this.prisma.isDbConnected) {
-      return { id: `role_${roleName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_mock`, name: roleName };
-    }
-
     let role = await this.prisma.role.findFirst({
       where: { tenantId, name: roleName },
     });
@@ -142,28 +127,62 @@ export class AuthService {
     let resolvedStudent: any = null;
     let resolvedParent: any = null;
 
-    // 1. Query PostgreSQL strictly scoped to targetTenantId
-    if (this.prisma.isDbConnected) {
-      try {
-        // A. Direct User match by email or exact phone
-        user = await this.prisma.user.findFirst({
-          where: {
-            tenantId: targetTenantId,
-            OR: [
-              { email: normalized },
-              { phone: trimmed },
-              ...(cleanPhone ? [{ phone: cleanPhone }] : []),
-            ],
+    // A. Direct User match by email or exact phone
+    user = await this.prisma.user.findFirst({
+      where: {
+        tenantId: targetTenantId,
+        OR: [
+          { email: normalized },
+          { phone: trimmed },
+          ...(cleanPhone ? [{ phone: cleanPhone }] : []),
+        ],
+      },
+      include: {
+        tenant: { include: { domains: true } },
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                permissions: {
+                  include: { permission: true },
+                },
+              },
+            },
           },
+        },
+        userCampuses: true,
+      },
+    });
+
+    // B. If not found in User, check Student by admissionNumber, email, or phone
+    if (!user) {
+      resolvedStudent = await this.prisma.student.findFirst({
+        where: {
+          tenantId: targetTenantId,
+          OR: [
+            { admissionNumber: { equals: trimmed, mode: 'insensitive' } },
+            { email: normalized },
+            ...(cleanPhone ? [{ phone: cleanPhone }] : []),
+          ],
+        },
+        include: { campus: true, tenant: true },
+      });
+
+      if (resolvedStudent) {
+        const studentRole = await this.ensureTenantRole(targetTenantId, 'STUDENT');
+        const studentEmail = resolvedStudent.email
+          ? resolvedStudent.email.toLowerCase().trim()
+          : `${resolvedStudent.admissionNumber.toLowerCase().replace(/[^a-z0-9]/g, '')}@student.${resolvedStudent.tenant?.slug || 'portal'}.school`;
+
+        user = await this.prisma.user.findFirst({
+          where: { tenantId: targetTenantId, email: studentEmail },
           include: {
             tenant: { include: { domains: true } },
             userRoles: {
               include: {
                 role: {
                   include: {
-                    permissions: {
-                      include: { permission: true },
-                    },
+                    permissions: { include: { permission: true } },
                   },
                 },
               },
@@ -172,166 +191,110 @@ export class AuthService {
           },
         });
 
-        // B. If not found in User, check Student by admissionNumber, email, or phone
-        if (!user) {
-          resolvedStudent = await this.prisma.student.findFirst({
-            where: {
-              tenantId: targetTenantId,
-              OR: [
-                { admissionNumber: { equals: trimmed, mode: 'insensitive' } },
-                { email: normalized },
-                ...(cleanPhone ? [{ phone: cleanPhone }] : []),
-              ],
-            },
-            include: { campus: true, tenant: true },
-          });
-
-          if (resolvedStudent) {
-            const studentRole = await this.ensureTenantRole(targetTenantId, 'STUDENT');
-            const studentEmail = resolvedStudent.email
-              ? resolvedStudent.email.toLowerCase().trim()
-              : `${resolvedStudent.admissionNumber.toLowerCase().replace(/[^a-z0-9]/g, '')}@student.${resolvedStudent.tenant?.slug || 'portal'}.school`;
-
-            // Look for existing user account under studentEmail
-            user = await this.prisma.user.findFirst({
-              where: { tenantId: targetTenantId, email: studentEmail },
-              include: {
-                tenant: { include: { domains: true } },
-                userRoles: {
-                  include: {
-                    role: {
-                      include: {
-                        permissions: { include: { permission: true } },
-                      },
-                    },
-                  },
-                },
-                userCampuses: true,
-              },
-            });
-
-            if (!user) {
-              this.logger.warn(`Student login failed: No user account found for student ${resolvedStudent.admissionNumber}`);
-            }
-
-            if (resolvedStudent && user && !resolvedStudent.email) {
-              await this.prisma.student.update({
-                where: { id: resolvedStudent.id },
-                data: { email: user.email },
-              });
-            }
-          }
+        if (resolvedStudent && user && !resolvedStudent.email) {
+          await this.prisma.student.update({
+            where: { id: resolvedStudent.id },
+            data: { email: user.email },
+          }).catch(() => {});
         }
-
-        // C. If still not found, check Parent by userId, phone, or email
-        if (!user) {
-          const phoneFilter = cleanPhone.length >= 7 ? cleanPhone.slice(-10) : cleanPhone;
-          resolvedParent = await this.prisma.parent.findFirst({
-            where: {
-              tenantId: targetTenantId,
-              OR: [
-                ...(phoneFilter ? [{ phone: { contains: phoneFilter } }] : []),
-                { email: normalized },
-              ],
-            },
-            include: { tenant: true, user: true, students: { include: { student: true } } },
-          });
-
-          if (resolvedParent) {
-            if (resolvedParent.userId) {
-              user = await this.prisma.user.findFirst({
-                where: { id: resolvedParent.userId, tenantId: targetTenantId },
-                include: {
-                  tenant: { include: { domains: true } },
-                  userRoles: {
-                    include: {
-                      role: {
-                        include: {
-                          permissions: { include: { permission: true } },
-                        },
-                      },
-                    },
-                  },
-                  userCampuses: true,
-                },
-              });
-            }
-
-            if (!user && resolvedParent.email) {
-              user = await this.prisma.user.findFirst({
-                where: { tenantId: targetTenantId, email: resolvedParent.email.toLowerCase().trim() },
-                include: {
-                  tenant: { include: { domains: true } },
-                  userRoles: {
-                    include: {
-                      role: {
-                        include: {
-                          permissions: { include: { permission: true } },
-                        },
-                      },
-                    },
-                  },
-                  userCampuses: true,
-                },
-              });
-
-              if (user && !resolvedParent.userId) {
-                await this.prisma.parent.update({
-                  where: { id: resolvedParent.id },
-                  data: { userId: user.id },
-                }).catch(() => {});
-              }
-            }
-          }
-        }
-
-        // D. If still not found, check Teacher by employeeNumber, email, or phone
-        if (!user) {
-          const phoneFilter = cleanPhone.length >= 7 ? cleanPhone.slice(-10) : cleanPhone;
-          const resolvedTeacher = await this.prisma.teacher.findFirst({
-            where: {
-              tenantId: targetTenantId,
-              OR: [
-                { employeeNumber: { equals: trimmed, mode: 'insensitive' } },
-                { email: normalized },
-                ...(phoneFilter ? [{ phone: { contains: phoneFilter } }] : []),
-              ],
-            },
-            include: { tenant: true, campus: true },
-          });
-
-          if (resolvedTeacher && resolvedTeacher.userId) {
-            user = await this.prisma.user.findFirst({
-              where: { id: resolvedTeacher.userId, tenantId: targetTenantId },
-              include: {
-                tenant: { include: { domains: true } },
-                userRoles: {
-                  include: {
-                    role: {
-                      include: {
-                        permissions: { include: { permission: true } },
-                      },
-                    },
-                  },
-                },
-                userCampuses: true,
-              },
-            });
-          }
-        }
-      } catch (err: any) {
-        this.logger.warn(`Could not query user from DB during login: ${err.message}`);
       }
     }
 
-    if (!user && this.prisma?.memoryStore?.users) {
-      user = Array.from(this.prisma.memoryStore.users.values()).find(
-        (u: any) =>
-          u.tenantId === targetTenantId &&
-          (u.email?.toLowerCase() === normalized ||
-            u.phone === trimmed ||
-            (cleanPhone && u.phone === cleanPhone)),
-      );
+    // C. If still not found, check Parent by userId, phone, or email
+    if (!user) {
+      const phoneFilter = cleanPhone.length >= 7 ? cleanPhone.slice(-10) : cleanPhone;
+      resolvedParent = await this.prisma.parent.findFirst({
+        where: {
+          tenantId: targetTenantId,
+          OR: [
+            ...(phoneFilter ? [{ phone: { contains: phoneFilter } }] : []),
+            { email: normalized },
+          ],
+        },
+        include: { tenant: true, user: true, students: { include: { student: true } } },
+      });
+
+      if (resolvedParent) {
+        if (resolvedParent.userId) {
+          user = await this.prisma.user.findFirst({
+            where: { id: resolvedParent.userId, tenantId: targetTenantId },
+            include: {
+              tenant: { include: { domains: true } },
+              userRoles: {
+                include: {
+                  role: {
+                    include: {
+                      permissions: { include: { permission: true } },
+                    },
+                  },
+                },
+              },
+              userCampuses: true,
+            },
+          });
+        }
+
+        if (!user && resolvedParent.email) {
+          user = await this.prisma.user.findFirst({
+            where: { tenantId: targetTenantId, email: resolvedParent.email.toLowerCase().trim() },
+            include: {
+              tenant: { include: { domains: true } },
+              userRoles: {
+                include: {
+                  role: {
+                    include: {
+                      permissions: { include: { permission: true } },
+                    },
+                  },
+                },
+              },
+              userCampuses: true,
+            },
+          });
+
+          if (user && !resolvedParent.userId) {
+            await this.prisma.parent.update({
+              where: { id: resolvedParent.id },
+              data: { userId: user.id },
+            }).catch(() => {});
+          }
+        }
+      }
+    }
+
+    // D. If still not found, check Teacher by employeeNumber, email, or phone
+    if (!user) {
+      const phoneFilter = cleanPhone.length >= 7 ? cleanPhone.slice(-10) : cleanPhone;
+      const resolvedTeacher = await this.prisma.teacher.findFirst({
+        where: {
+          tenantId: targetTenantId,
+          OR: [
+            { employeeNumber: { equals: trimmed, mode: 'insensitive' } },
+            { email: normalized },
+            ...(phoneFilter ? [{ phone: { contains: phoneFilter } }] : []),
+          ],
+        },
+        include: { tenant: true, campus: true },
+      });
+
+      if (resolvedTeacher && resolvedTeacher.userId) {
+        user = await this.prisma.user.findFirst({
+          where: { id: resolvedTeacher.userId, tenantId: targetTenantId },
+          include: {
+            tenant: { include: { domains: true } },
+            userRoles: {
+              include: {
+                role: {
+                  include: {
+                    permissions: { include: { permission: true } },
+                  },
+                },
+              },
+            },
+            userCampuses: true,
+          },
+        });
+      }
     }
 
     if (!user) {
@@ -361,7 +324,7 @@ export class AuthService {
     }
 
     // Auto-heal legacy school owners missing UserRole in PostgreSQL
-    if (this.prisma.isDbConnected && user.tenantId && (!user.userRoles || user.userRoles.length === 0)) {
+    if (user.tenantId && (!user.userRoles || user.userRoles.length === 0)) {
       try {
         let role = await this.prisma.role.findFirst({
           where: { tenantId: user.tenantId, name: 'School Owner' },
@@ -459,7 +422,7 @@ export class AuthService {
     let studentProfile: any = null;
     let parentProfile: any = null;
 
-    if (this.prisma.isDbConnected && user.tenantId) {
+    if (user.tenantId) {
       try {
         if (role === 'STUDENT' || roles.includes('STUDENT')) {
           const stu =
@@ -557,36 +520,22 @@ export class AuthService {
   async platformLogin(email: string, passwordPlain: string) {
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Platform users strictly have tenantId === null / undefined
-    let user: any = null;
-    if (this.prisma.isDbConnected) {
-      try {
-        user = await this.prisma.user.findFirst({
-          where: { email: normalizedEmail, tenantId: null },
+    const user = await this.prisma.user.findFirst({
+      where: { email: normalizedEmail, tenantId: null },
+      include: {
+        userRoles: {
           include: {
-            userRoles: {
+            role: {
               include: {
-                role: {
-                  include: {
-                    permissions: {
-                      include: { permission: true },
-                    },
-                  },
+                permissions: {
+                  include: { permission: true },
                 },
               },
             },
           },
-        });
-      } catch {
-        user = null;
-      }
-    }
-
-    if (!user) {
-      user = Array.from(this.prisma.memoryStore.users.values()).find(
-        (u) => (u.tenantId === null || u.tenantId === undefined) && u.email === normalizedEmail,
-      );
-    }
+        },
+      },
+    });
 
     if (!user) {
       throw new UnauthorizedException({
@@ -595,9 +544,8 @@ export class AuthService {
       });
     }
 
-    // Must be an active platform role
     const validRoles = ['SUPER_ADMIN', 'PLATFORM_ADMIN', 'PLATFORM_SUPPORT'];
-    const userRole = user.platformRole || user.role || (user.roles && user.roles[0]);
+    const userRole = user.platformRole || (user as any).role || (user.userRoles && user.userRoles[0]?.role?.name);
     if (!user.isPlatformAdmin && !validRoles.includes(userRole)) {
       throw new UnauthorizedException({
         code: ErrorCodes.UNAUTHORIZED,
@@ -624,7 +572,6 @@ export class AuthService {
       });
     }
 
-    // Extract or auto-seed platform permissions
     let permissions: string[] = [];
     if (userRole === 'SUPER_ADMIN') {
       permissions = Object.values(SystemPermissions);
@@ -655,8 +602,7 @@ export class AuthService {
               SystemPermissions.PLATFORM_IMPERSONATION_START,
             ];
 
-        // Seed to PostgreSQL if connected
-        if (this.prisma.isDbConnected && user.id) {
+        if (user.id) {
           try {
             const roleIdentifier = `PLATFORM_ROLE_${user.id}`;
             let role = await this.prisma.role.findFirst({
@@ -729,141 +675,93 @@ export class AuthService {
   ) {
     const normalizedEmail = data.email.toLowerCase().trim();
 
-    if (this.prisma.isDbConnected) {
-      try {
-        const existingDb = await this.prisma.user.findFirst({
-          where: { tenantId, email: normalizedEmail },
-        });
-        if (existingDb) {
-          throw new ConflictException('A user with this email address already exists in this school.');
-        }
-      } catch (err: any) {
-        if (err instanceof ConflictException) throw err;
-      }
-    }
-
-    const existing = Array.from(this.prisma.memoryStore.users.values()).find(
-      (u) => u.tenantId === tenantId && u.email === normalizedEmail,
-    );
-    if (existing) {
+    const existingDb = await this.prisma.user.findFirst({
+      where: { tenantId, email: normalizedEmail },
+    });
+    if (existingDb) {
       throw new ConflictException('A user with this email address already exists in this school.');
     }
 
     const passwordHash = await bcrypt.hash(data.passwordPlain, 10);
     const userId = `user_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
 
-    // Give default owner full permissions
-    const ownerPermissions = [
-      'settings.view', 'settings.manage', 'domains.manage', 'subscription.manage',
-      'users.view', 'users.create', 'users.update', 'users.delete', 'users.manage',
-      'campuses.view', 'campuses.manage', 'students.view', 'students.create', 'students.update', 'students.delete',
-      'academics.view', 'academics.manage', 'attendance.view', 'attendance.mark',
-      'examinations.manage', 'results.enter', 'results.approve', 'results.publish',
-      'fees.view', 'fees.create', 'fees.manage', 'invoices.manage', 'payments.view', 'payments.refund',
-      'payroll.manage', 'expenses.manage', 'transport.manage', 'reports.view', 'files.manage', 'audit.view',
-    ];
+    let role = await this.prisma.role.findFirst({
+      where: { tenantId, name: 'School Owner' },
+    });
+    if (!role) {
+      role = await this.prisma.role.create({
+        data: {
+          tenantId,
+          name: 'School Owner',
+          description: 'Primary owner and administrator of the school',
+          isSystem: true,
+        },
+      });
+    }
 
-    const campuses = Array.from(this.prisma.memoryStore.campuses.values())
-      .filter((c) => c.tenantId === tenantId)
-      .map((c) => c.id);
+    const mainCampus =
+      (await this.prisma.campus.findFirst({
+        where: { tenantId, isMain: true },
+      })) ||
+      (await this.prisma.campus.findFirst({
+        where: { tenantId },
+      }));
 
-    const newUser = {
-      id: userId,
-      tenantId,
-      email: normalizedEmail,
-      passwordHash,
-      firstName: data.firstName,
-      lastName: data.lastName,
-      phone: data.phone || null,
-      isActive: true,
-      isPlatformAdmin: false,
-      roles: ['School Owner'],
-      permissionIds: ownerPermissions,
-      campusIds: campuses,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    if (this.prisma.isDbConnected) {
-      try {
-        let role = await this.prisma.role.findFirst({
-          where: { tenantId, name: 'School Owner' },
-        });
-        if (!role) {
-          role = await this.prisma.role.create({
-            data: {
-              tenantId,
-              name: 'School Owner',
-              description: 'Primary owner and administrator of the school',
-              isSystem: true,
-            },
-          });
-        }
-
-        const mainCampus = await this.prisma.campus.findFirst({
-          where: { tenantId, isMain: true },
-        }) || await this.prisma.campus.findFirst({
-          where: { tenantId },
-        });
-
-        await this.prisma.user.create({
-          data: {
-            id: userId,
-            tenantId,
-            email: normalizedEmail,
-            passwordHash,
-            firstName: data.firstName,
-            lastName: data.lastName,
-            phone: data.phone || null,
-            isActive: true,
-            isPlatformAdmin: false,
-            userRoles: {
-              create: {
-                roleId: role.id,
-              },
-            },
-            userCampuses: mainCampus ? {
+    const newUser = await this.prisma.user.create({
+      data: {
+        id: userId,
+        tenantId,
+        email: normalizedEmail,
+        passwordHash,
+        firstName: data.firstName,
+        lastName: data.lastName,
+        phone: data.phone || null,
+        isActive: true,
+        isPlatformAdmin: false,
+        userRoles: {
+          create: {
+            roleId: role.id,
+          },
+        },
+        userCampuses: mainCampus
+          ? {
               create: {
                 campusId: mainCampus.id,
                 isDefault: true,
               },
-            } : undefined,
-          },
-        });
+            }
+          : undefined,
+      },
+      include: {
+        userRoles: { include: { role: true } },
+        userCampuses: true,
+      },
+    });
 
-        const permissions = await this.prisma.permission.findMany();
-        if (permissions.length > 0) {
-          const schoolPerms = permissions.filter((p) => !p.name.startsWith('platform.'));
-          await this.prisma.rolePermission.createMany({
-            data: schoolPerms.map((p) => ({
-              roleId: role.id,
-              permissionId: p.id,
-            })),
-            skipDuplicates: true,
-          });
-        }
-      } catch (err: any) {
-        this.logger.error(`Could not persist school owner to DB: ${err.message}`);
-        throw err;
-      }
+    const permissions = await this.prisma.permission.findMany();
+    if (permissions.length > 0) {
+      const schoolPerms = permissions.filter((p) => !p.name.startsWith('platform.'));
+      await this.prisma.rolePermission.createMany({
+        data: schoolPerms.map((p) => ({
+          roleId: role.id,
+          permissionId: p.id,
+        })),
+        skipDuplicates: true,
+      });
     }
 
-    this.prisma.memoryStore.users.set(userId, newUser);
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      include: { domains: true },
+    });
 
-    let tenant: any = null;
-    if (this.prisma.isDbConnected) {
-      try {
-        tenant = await this.prisma.tenant.findUnique({
-          where: { id: tenantId },
-          include: { domains: true },
-        });
-      } catch {}
-    }
-    if (!tenant) {
-      tenant = this.prisma.memoryStore.tenants.get(tenantId);
-    }
-
-    return this.generateTokens({ ...newUser, tenant });
+    return this.generateTokens({
+      ...newUser,
+      tenant,
+      role: 'School Owner',
+      roles: ['School Owner'],
+      campusIds: mainCampus ? [mainCampus.id] : [],
+    });
   }
 
   async refreshToken(refreshToken: string) {
@@ -872,20 +770,13 @@ export class AuthService {
         secret: process.env.JWT_REFRESH_SECRET || 'dev_refresh_secret_key_change_in_prod_456',
       });
 
-      let user: any = null;
-      if (this.prisma.isDbConnected) {
-        try {
-          user = await this.prisma.user.findUnique({
-            where: { id: payload.sub || payload.id },
-          });
-        } catch {
-          user = null;
-        }
-      }
-
-      if (!user) {
-        user = this.prisma.memoryStore.users.get(payload.sub || payload.id);
-      }
+      const user = await this.prisma.user.findUnique({
+        where: { id: payload.sub || payload.id },
+        include: {
+          userRoles: { include: { role: true } },
+          userCampuses: true,
+        },
+      });
 
       if (!user || !user.isActive) {
         throw new UnauthorizedException('User account no longer active');
@@ -898,56 +789,38 @@ export class AuthService {
   }
 
   async getProfile(userId: string, tenantId?: string) {
-    let user: any = null;
-    if (this.prisma.isDbConnected) {
-      try {
-        user = await this.prisma.user.findUnique({
-          where: { id: userId },
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        userRoles: {
           include: {
-            userRoles: {
+            role: {
               include: {
-                role: {
-                  include: {
-                    permissions: {
-                      include: { permission: true },
-                    },
-                  },
+                permissions: {
+                  include: { permission: true },
                 },
               },
             },
-            userCampuses: true,
           },
-        });
-      } catch {
-        user = null;
-      }
-    }
-    if (!user) {
-      user = this.prisma.memoryStore.users.get(userId);
-    }
+        },
+        userCampuses: true,
+      },
+    });
 
     if (!user) {
       throw new UnauthorizedException('User not found.');
     }
 
-    // If it is a tenant-scoped user, tenantId must match
     if (user.tenantId && tenantId && user.tenantId !== tenantId) {
       throw new UnauthorizedException('User not found or does not match school context.');
     }
 
     let tenant: any = null;
     if (user.tenantId) {
-      if (this.prisma.isDbConnected) {
-        try {
-          tenant = await this.prisma.tenant.findUnique({
-            where: { id: user.tenantId },
-            include: { domains: true },
-          });
-        } catch {}
-      }
-      if (!tenant) {
-        tenant = this.prisma.memoryStore.tenants.get(user.tenantId);
-      }
+      tenant = await this.prisma.tenant.findUnique({
+        where: { id: user.tenantId },
+        include: { domains: true },
+      });
     }
 
     const roles = (user.userRoles || []).map((ur: any) => ur.role?.name).filter(Boolean);
@@ -955,7 +828,7 @@ export class AuthService {
       user.platformRole ||
       (roles.length > 0
         ? roles[0]
-        : user.role || (user.isPlatformAdmin ? 'SUPER_ADMIN' : 'School Admin'));
+        : (user as any).role || (user.isPlatformAdmin ? 'SUPER_ADMIN' : 'School Admin'));
     const isPlatformUser = user.tenantId === null || user.tenantId === undefined;
     const isStudent = role === 'STUDENT' || roles.includes('STUDENT');
     const isParent = role === 'PARENT' || roles.includes('PARENT');
@@ -970,7 +843,7 @@ export class AuthService {
     let studentProfile: any = null;
     let parentProfile: any = null;
 
-    if (this.prisma.isDbConnected && user.tenantId) {
+    if (user.tenantId) {
       try {
         if (isStudent) {
           const student = await this.prisma.student.findFirst({
@@ -1123,95 +996,43 @@ export class AuthService {
     let targetTenantId: string | undefined = undefined;
 
     if (tenantIdentifier) {
-      if (this.prisma.isDbConnected) {
-        try {
-          const tenantRecord = await this.prisma.tenant.findFirst({
-            where: {
-              OR: [
-                { id: tenantIdentifier },
-                { slug: tenantIdentifier.toLowerCase().trim() },
-              ],
-            },
-          });
-          if (tenantRecord) {
-            targetTenantId = tenantRecord.id;
-          }
-        } catch {}
-      }
-      if (!targetTenantId) {
-        const memTenant = this.prisma.memoryStore.tenants.get(tenantIdentifier) ||
-          Array.from(this.prisma.memoryStore.tenants.values()).find(
-            (t) => t.slug === tenantIdentifier.toLowerCase().trim() || t.id === tenantIdentifier,
-          );
-        if (memTenant) {
-          targetTenantId = memTenant.id;
-        } else {
-          targetTenantId = tenantIdentifier;
-        }
+      const tenantRecord = await this.prisma.tenant.findFirst({
+        where: {
+          OR: [
+            { id: tenantIdentifier },
+            { slug: tenantIdentifier.toLowerCase().trim() },
+          ],
+        },
+      });
+      if (tenantRecord) {
+        targetTenantId = tenantRecord.id;
       }
     }
 
-    let user: any = null;
-    if (this.prisma.isDbConnected) {
-      try {
-        if (targetTenantId) {
-          user = await this.prisma.user.findFirst({
-            where: { email: normalizedEmail, tenantId: targetTenantId, isActive: true },
-            include: { tenant: true },
-          });
-        } else {
-          user = await this.prisma.user.findFirst({
-            where: { email: normalizedEmail, tenantId: null, isActive: true },
-            include: { tenant: true },
-          });
-        }
-      } catch (err: any) {
-        this.logger.warn(`Could not query user for password reset in DB: ${err.message}`);
-      }
-    }
+    let user = targetTenantId
+      ? await this.prisma.user.findFirst({
+          where: { email: normalizedEmail, tenantId: targetTenantId, isActive: true },
+          include: { tenant: true },
+        })
+      : await this.prisma.user.findFirst({
+          where: { email: normalizedEmail, tenantId: null, isActive: true },
+          include: { tenant: true },
+        });
 
     if (!user) {
-      if (targetTenantId) {
-        user = Array.from(this.prisma.memoryStore.users.values()).find(
-          (u) => u.tenantId === targetTenantId && u.email === normalizedEmail && u.isActive,
-        );
-      } else {
-        user = Array.from(this.prisma.memoryStore.users.values()).find(
-          (u) => (u.tenantId === null || u.tenantId === undefined) && u.email === normalizedEmail && u.isActive,
-        );
-      }
-    }
-
-    if (!user) {
-      // Return ambiguous message to prevent email enumeration (Constitution v2.1 Section 26)
       return { success: true, message: 'If an account exists, a password reset link has been dispatched.' };
     }
 
     const token = `rst_${randomUUID().replace(/-/g, '')}`;
     const expiresAt = new Date(Date.now() + 3600000); // 1 hour
 
-    // Persist in PostgreSQL PasswordResetToken table
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.passwordResetToken.create({
-          data: {
-            userId: user.id,
-            token,
-            expiresAt,
-            used: false,
-          },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not persist PasswordResetToken to DB: ${err.message}`);
-      }
-    }
-
-    // Mirror in memoryStore
-    this.prisma.memoryStore.resetTokens.set(token, {
-      token,
-      userId: user.id,
-      tenantId: user.tenantId,
-      expiresAt,
+    await this.prisma.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        token,
+        expiresAt,
+        used: false,
+      },
     });
 
     this.logger.log(`[PasswordReset] Reset token generated for user ${user.email} (tenant: ${user.tenantId || 'platform'})`);
@@ -1224,26 +1045,10 @@ export class AuthService {
   }
 
   async resetPassword(tenantIdentifier: string | undefined | null, token: string, newPasswordPlain: string) {
-    let resetRecord: any = null;
-
-    if (this.prisma.isDbConnected) {
-      try {
-        resetRecord = await this.prisma.passwordResetToken.findUnique({
-          where: { token },
-          include: { user: true },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not query PasswordResetToken from DB: ${err.message}`);
-      }
-    }
-
-    if (!resetRecord) {
-      const memRecord = this.prisma.memoryStore.resetTokens.get(token);
-      if (memRecord) {
-        const memUser = this.prisma.memoryStore.users.get(memRecord.userId);
-        resetRecord = { ...memRecord, user: memUser, used: false };
-      }
-    }
+    const resetRecord = await this.prisma.passwordResetToken.findUnique({
+      where: { token },
+      include: { user: true },
+    });
 
     if (!resetRecord || resetRecord.used || new Date() > new Date(resetRecord.expiresAt)) {
       throw new UnauthorizedException({
@@ -1259,44 +1064,22 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(newPasswordPlain, 12);
 
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.user.update({
-          where: { id: user.id },
-          data: { passwordHash, updatedAt: new Date() },
-        });
-        if (resetRecord.id) {
-          await this.prisma.passwordResetToken.update({
-            where: { id: resetRecord.id },
-            data: { used: true },
-          });
-        }
-      } catch (err: any) {
-        this.logger.warn(`Could not update reset password in DB: ${err.message}`);
-      }
-    }
-
-    const memUser = this.prisma.memoryStore.users.get(user.id);
-    if (memUser) {
-      memUser.passwordHash = passwordHash;
-      memUser.updatedAt = new Date();
-      this.prisma.memoryStore.users.set(user.id, memUser);
-    }
-    this.prisma.memoryStore.resetTokens.delete(token);
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: user.id },
+        data: { passwordHash, updatedAt: new Date() },
+      }),
+      this.prisma.passwordResetToken.update({
+        where: { id: resetRecord.id },
+        data: { used: true },
+      }),
+    ]);
 
     return { success: true, message: 'Password has been reset successfully. Please log in.' };
   }
 
   async changePassword(userId: string, tenantId: string, currentPasswordPlain: string, newPasswordPlain: string) {
-    let user: any = null;
-    if (this.prisma.isDbConnected) {
-      try {
-        user = await this.prisma.user.findUnique({ where: { id: userId } });
-      } catch {}
-    }
-    if (!user) {
-      user = this.prisma.memoryStore.users.get(userId);
-    }
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
 
     if (!user || (tenantId && user.tenantId && user.tenantId !== tenantId)) {
       throw new UnauthorizedException('User not found.');
@@ -1312,35 +1095,30 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(newPasswordPlain, 12);
 
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.user.update({
-          where: { id: userId },
-          data: { passwordHash, updatedAt: new Date() },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not update changed password in DB: ${err.message}`);
-      }
-    }
-
-    const memUser = this.prisma.memoryStore.users.get(userId);
-    if (memUser) {
-      memUser.passwordHash = passwordHash;
-      memUser.updatedAt = new Date();
-      this.prisma.memoryStore.users.set(userId, memUser);
-    }
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash, updatedAt: new Date() },
+    });
 
     return { success: true, message: 'Password updated successfully.' };
   }
 
   async switchCampus(userId: string, tenantId: string, campusId: string) {
-    const user = this.prisma.memoryStore.users.get(userId);
-    if (!user || user.tenantId !== tenantId) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, tenantId },
+      include: {
+        userRoles: { include: { role: true } },
+        userCampuses: true,
+      },
+    });
+    if (!user) {
       throw new UnauthorizedException('User not found.');
     }
 
-    const campus = this.prisma.memoryStore.campuses.get(campusId);
-    if (!campus || campus.tenantId !== tenantId) {
+    const campus = await this.prisma.campus.findFirst({
+      where: { id: campusId, tenantId },
+    });
+    if (!campus) {
       throw new UnauthorizedException('Selected campus does not belong to this school.');
     }
 
@@ -1348,17 +1126,25 @@ export class AuthService {
   }
 
   async setup2FA(userId: string, tenantId: string) {
-    const user = this.prisma.memoryStore.users.get(userId);
-    if (!user || user.tenantId !== tenantId) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, tenantId },
+    });
+    if (!user) {
       throw new UnauthorizedException('User not found.');
     }
 
     const secret = `MFA_SEC_${randomUUID().substring(0, 16).toUpperCase()}`;
-    this.prisma.memoryStore.mfaSecrets.set(userId, {
-      secret,
-      verified: false,
-      userId,
-      tenantId,
+    await this.prisma.mfaSecret.upsert({
+      where: { userId },
+      create: {
+        userId,
+        secret,
+        isEnabled: false,
+      },
+      update: {
+        secret,
+        isEnabled: false,
+      },
     });
 
     return {
@@ -1369,12 +1155,13 @@ export class AuthService {
   }
 
   async verify2FA(userId: string, tenantId: string, code: string) {
-    const record = this.prisma.memoryStore.mfaSecrets.get(userId);
-    if (!record || record.tenantId !== tenantId) {
+    const record = await this.prisma.mfaSecret.findUnique({
+      where: { userId },
+    });
+    if (!record) {
       throw new UnauthorizedException('2FA setup not initiated.');
     }
 
-    // Accept valid 6-digit code or demo test code '123456'
     if (code !== '123456' && code.length !== 6) {
       throw new UnauthorizedException({
         code: ErrorCodes.UNAUTHORIZED,
@@ -1382,14 +1169,16 @@ export class AuthService {
       });
     }
 
-    record.verified = true;
-    this.prisma.memoryStore.mfaSecrets.set(userId, record);
-
-    const user = this.prisma.memoryStore.users.get(userId);
-    if (user) {
-      user.mfaEnabled = true;
-      this.prisma.memoryStore.users.set(userId, user);
-    }
+    await this.prisma.$transaction([
+      this.prisma.mfaSecret.update({
+        where: { userId },
+        data: { isEnabled: true },
+      }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { updatedAt: new Date() },
+      }),
+    ]);
 
     return { success: true, message: 'Two-factor authentication enabled successfully.' };
   }
@@ -1405,8 +1194,6 @@ export class AuthService {
       ? Object.values(SystemPermissions)
       : (user.permissionIds || user.permissions || []);
 
-    // Keep JWT payload compact to never exceed browser 4096-byte cookie limit.
-    // SUPER_ADMIN inherently possesses full platform authority.
     const tokenPermissions = isPlatformUser && role === 'SUPER_ADMIN'
       ? ['*']
       : effectivePermissions;
@@ -1457,17 +1244,10 @@ export class AuthService {
 
     let tenant: any = user.tenant || null;
     if (!tenant && user.tenantId) {
-      if (this.prisma.isDbConnected) {
-        try {
-          tenant = await this.prisma.tenant.findUnique({
-            where: { id: user.tenantId },
-            include: { domains: true },
-          });
-        } catch {}
-      }
-      if (!tenant) {
-        tenant = this.prisma.memoryStore.tenants.get(user.tenantId);
-      }
+      tenant = await this.prisma.tenant.findUnique({
+        where: { id: user.tenantId },
+        include: { domains: true },
+      });
     }
 
     const sanitizedTenant = tenant

@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service.js';
 import { TrackingMode, IngestTelemetryDto } from '../dto/fleet-and-trip.dto.js';
 import { ITrackingProvider, LiveLocationStatus, LocationTelemetryResult } from './tracking-provider.interface.js';
-import { randomUUID } from 'crypto';
 
 @Injectable()
 export class NoneTrackingProvider implements ITrackingProvider {
@@ -60,7 +59,7 @@ export class PhoneTrackingProvider implements ITrackingProvider {
       routeId: telemetry.routeId,
     };
 
-    // 1. Transient memory cache
+    // 1. Transient memory cache for sub-second updates
     const cacheKey = `tenant:${tenantId}:vehicle:${telemetry.vehicleNumber}:latest`;
     const tripCacheKey = telemetry.tripId ? `tenant:${tenantId}:trip:${telemetry.tripId}:latest` : null;
 
@@ -70,26 +69,8 @@ export class PhoneTrackingProvider implements ITrackingProvider {
     }
 
     // 2. Persistent storage in PostgreSQL
-    if (this.prisma.isDbConnected) {
-      await this.prisma.vehicleGpsLog.create({
-        data: {
-          tenantId,
-          vehicleNumber: telemetry.vehicleNumber,
-          routeId: telemetry.routeId,
-          tripId: telemetry.tripId,
-          latitude: telemetry.latitude,
-          longitude: telemetry.longitude,
-          speed: telemetry.speed,
-          heading: telemetry.heading,
-          accuracy: telemetry.accuracy,
-          source,
-          recordedAt,
-        },
-      });
-    } else {
-      const logId = `gps_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-      this.prisma.memoryStore.vehicleGpsLogs.set(logId, {
-        id: logId,
+    await this.prisma.vehicleGpsLog.create({
+      data: {
         tenantId,
         vehicleNumber: telemetry.vehicleNumber,
         routeId: telemetry.routeId,
@@ -101,9 +82,8 @@ export class PhoneTrackingProvider implements ITrackingProvider {
         accuracy: telemetry.accuracy,
         source,
         recordedAt,
-        createdAt: new Date(),
-      });
-    }
+      },
+    });
 
     return {
       accepted: true,
@@ -127,8 +107,8 @@ export class PhoneTrackingProvider implements ITrackingProvider {
 
     let cached = this.memoryCache.get(key);
 
-    // If not in cache, fallback to latest log from DB
-    if (!cached && this.prisma.isDbConnected) {
+    // If not in cache, query latest log from DB
+    if (!cached) {
       const latest = await this.prisma.vehicleGpsLog.findFirst({
         where: {
           tenantId,
