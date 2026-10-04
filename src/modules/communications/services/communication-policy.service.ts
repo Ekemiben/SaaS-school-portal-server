@@ -34,7 +34,7 @@ export interface CommunicationSettingsRecord {
 export class CommunicationPolicyService {
   private readonly logger = new Logger(CommunicationPolicyService.name);
 
-  constructor(@Optional() private readonly prisma?: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   private getDefaultSettings(tenantId: string): CommunicationSettingsRecord {
     const now = new Date().toISOString();
@@ -72,87 +72,70 @@ export class CommunicationPolicyService {
   }
 
   async getSettings(tenantId: string): Promise<CommunicationSettingsRecord> {
-    if (this.prisma?.isDbConnected) {
-      try {
-        let settings = await this.prisma.communicationSettings.findUnique({
-          where: { tenantId },
-        });
+    let settings = await this.prisma.communicationSettings.findUnique({
+      where: { tenantId },
+    });
 
-        if (!settings) {
-          const defaults = this.getDefaultSettings(tenantId);
-          settings = await this.prisma.communicationSettings.create({
-            data: {
-              id: defaults.id,
-              tenantId,
-              inAppEnabled: defaults.inAppEnabled,
-              pushEnabled: defaults.pushEnabled,
-              emailEnabled: defaults.emailEnabled,
-              whatsappEnabled: defaults.whatsappEnabled,
-              smsEnabled: defaults.smsEnabled,
-              walletEnabled: defaults.walletEnabled,
-              monthlySpendingLimit: defaults.monthlySpendingLimit,
-              lowBalanceThreshold: defaults.lowBalanceThreshold,
-              autoTopUpEnabled: defaults.autoTopUpEnabled,
-              autoTopUpAmount: defaults.autoTopUpAmount,
-              smsUnitCost: defaults.smsUnitCost,
-              whatsappUnitCost: defaults.whatsappUnitCost,
-              feeReminderChannels: defaults.feeReminderChannels as any,
-              attendanceAlertChannels: defaults.attendanceAlertChannels as any,
-              resultsChannels: defaults.resultsChannels as any,
-              homeworkChannels: defaults.homeworkChannels as any,
-              emergencyChannels: defaults.emergencyChannels as any,
-              transportChannels: defaults.transportChannels as any,
-              generalNoticeChannels: defaults.generalNoticeChannels as any,
-            },
-          });
-        }
-
-        const record: CommunicationSettingsRecord = {
-          id: settings.id,
-          tenantId: settings.tenantId,
-          inAppEnabled: settings.inAppEnabled,
-          pushEnabled: settings.pushEnabled,
-          emailEnabled: settings.emailEnabled,
-          whatsappEnabled: settings.whatsappEnabled,
-          smsEnabled: settings.smsEnabled,
-          walletEnabled: settings.walletEnabled,
-          monthlySpendingLimit: Number(settings.monthlySpendingLimit),
-          lowBalanceThreshold: Number(settings.lowBalanceThreshold),
-          autoTopUpEnabled: settings.autoTopUpEnabled,
-          autoTopUpAmount: settings.autoTopUpAmount ? Number(settings.autoTopUpAmount) : null,
-          smsUnitCost: Number(settings.smsUnitCost),
-          whatsappUnitCost: Number(settings.whatsappUnitCost),
-          feeReminderChannels: (settings.feeReminderChannels as any) || [CampaignChannel.IN_APP, CampaignChannel.PUSH, CampaignChannel.EMAIL],
-          attendanceAlertChannels: (settings.attendanceAlertChannels as any) || [CampaignChannel.IN_APP, CampaignChannel.PUSH],
-          resultsChannels: (settings.resultsChannels as any) || [CampaignChannel.IN_APP, CampaignChannel.PUSH, CampaignChannel.EMAIL],
-          homeworkChannels: (settings.homeworkChannels as any) || [CampaignChannel.IN_APP, CampaignChannel.PUSH],
-          emergencyChannels: (settings.emergencyChannels as any) || [
-            CampaignChannel.IN_APP,
-            CampaignChannel.PUSH,
-            CampaignChannel.EMAIL,
-            CampaignChannel.WHATSAPP,
-            CampaignChannel.SMS,
-          ],
-          transportChannels: (settings.transportChannels as any) || [CampaignChannel.IN_APP, CampaignChannel.PUSH],
-          generalNoticeChannels: (settings.generalNoticeChannels as any) || [CampaignChannel.IN_APP, CampaignChannel.PUSH, CampaignChannel.EMAIL],
-          createdAt: settings.createdAt.toISOString(),
-          updatedAt: settings.updatedAt.toISOString(),
-        };
-
-        this.prisma.memoryStore.communicationSettings.set(tenantId, record);
-        return record;
-      } catch (err: any) {
-        this.logger.warn(`Could not load settings from DB: ${err.message}`);
-      }
+    if (!settings) {
+      const defaults = this.getDefaultSettings(tenantId);
+      settings = await this.prisma.communicationSettings.create({
+        data: {
+          id: defaults.id,
+          tenantId,
+          inAppEnabled: defaults.inAppEnabled,
+          pushEnabled: defaults.pushEnabled,
+          emailEnabled: defaults.emailEnabled,
+          whatsappEnabled: defaults.whatsappEnabled,
+          smsEnabled: defaults.smsEnabled,
+          walletEnabled: defaults.walletEnabled,
+          monthlySpendingLimit: defaults.monthlySpendingLimit,
+          lowBalanceThreshold: defaults.lowBalanceThreshold,
+          autoTopUpEnabled: defaults.autoTopUpEnabled,
+          autoTopUpAmount: defaults.autoTopUpAmount,
+          smsUnitCost: defaults.smsUnitCost,
+          whatsappUnitCost: defaults.whatsappUnitCost,
+          feeReminderChannels: defaults.feeReminderChannels as any,
+          attendanceAlertChannels: defaults.attendanceAlertChannels as any,
+          resultsChannels: defaults.resultsChannels as any,
+          homeworkChannels: defaults.homeworkChannels as any,
+          emergencyChannels: defaults.emergencyChannels as any,
+          transportChannels: defaults.transportChannels as any,
+          generalNoticeChannels: defaults.generalNoticeChannels as any,
+        },
+      });
     }
 
-    // Memory Store fallback
-    let mem = this.prisma?.memoryStore?.communicationSettings?.get(tenantId);
-    if (!mem) {
-      mem = this.getDefaultSettings(tenantId);
-      this.prisma?.memoryStore?.communicationSettings?.set(tenantId, mem);
-    }
-    return mem;
+    return {
+      id: settings.id,
+      tenantId: settings.tenantId,
+      inAppEnabled: settings.inAppEnabled,
+      pushEnabled: settings.pushEnabled,
+      emailEnabled: settings.emailEnabled,
+      whatsappEnabled: settings.whatsappEnabled,
+      smsEnabled: settings.smsEnabled,
+      walletEnabled: settings.walletEnabled,
+      monthlySpendingLimit: Number(settings.monthlySpendingLimit),
+      lowBalanceThreshold: Number(settings.lowBalanceThreshold),
+      autoTopUpEnabled: settings.autoTopUpEnabled,
+      autoTopUpAmount: settings.autoTopUpAmount ? Number(settings.autoTopUpAmount) : null,
+      smsUnitCost: Number(settings.smsUnitCost),
+      whatsappUnitCost: Number(settings.whatsappUnitCost),
+      feeReminderChannels: (settings.feeReminderChannels as any) || [CampaignChannel.IN_APP, CampaignChannel.PUSH, CampaignChannel.EMAIL],
+      attendanceAlertChannels: (settings.attendanceAlertChannels as any) || [CampaignChannel.IN_APP, CampaignChannel.PUSH],
+      resultsChannels: (settings.resultsChannels as any) || [CampaignChannel.IN_APP, CampaignChannel.PUSH, CampaignChannel.EMAIL],
+      homeworkChannels: (settings.homeworkChannels as any) || [CampaignChannel.IN_APP, CampaignChannel.PUSH],
+      emergencyChannels: (settings.emergencyChannels as any) || [
+        CampaignChannel.IN_APP,
+        CampaignChannel.PUSH,
+        CampaignChannel.EMAIL,
+        CampaignChannel.WHATSAPP,
+        CampaignChannel.SMS,
+      ],
+      transportChannels: (settings.transportChannels as any) || [CampaignChannel.IN_APP, CampaignChannel.PUSH],
+      generalNoticeChannels: (settings.generalNoticeChannels as any) || [CampaignChannel.IN_APP, CampaignChannel.PUSH, CampaignChannel.EMAIL],
+      createdAt: settings.createdAt.toISOString(),
+      updatedAt: settings.updatedAt.toISOString(),
+    };
   }
 
   async updateSettings(
@@ -173,66 +156,64 @@ export class CommunicationPolicyService {
       updatedAt: now.toISOString(),
     };
 
-    if (this.prisma?.isDbConnected) {
-      try {
-        await this.prisma.communicationSettings.upsert({
-          where: { tenantId },
-          create: {
-            id: `cset_${randomUUID().replace(/-/g, '').substring(0, 16)}`,
-            tenantId,
-            inAppEnabled: updated.inAppEnabled,
-            pushEnabled: updated.pushEnabled,
-            emailEnabled: updated.emailEnabled,
-            whatsappEnabled: updated.whatsappEnabled,
-            smsEnabled: updated.smsEnabled,
-            walletEnabled: updated.walletEnabled,
-            monthlySpendingLimit: updated.monthlySpendingLimit,
-            lowBalanceThreshold: updated.lowBalanceThreshold,
-            autoTopUpEnabled: updated.autoTopUpEnabled,
-            autoTopUpAmount: updated.autoTopUpAmount,
-            smsUnitCost: updated.smsUnitCost,
-            whatsappUnitCost: updated.whatsappUnitCost,
-            feeReminderChannels: updated.feeReminderChannels as any,
-            attendanceAlertChannels: updated.attendanceAlertChannels as any,
-            resultsChannels: updated.resultsChannels as any,
-            homeworkChannels: updated.homeworkChannels as any,
-            emergencyChannels: updated.emergencyChannels as any,
-            transportChannels: updated.transportChannels as any,
-            generalNoticeChannels: updated.generalNoticeChannels as any,
-            createdAt: now,
-            updatedAt: now,
-          },
-          update: {
-            inAppEnabled: updated.inAppEnabled,
-            pushEnabled: updated.pushEnabled,
-            emailEnabled: updated.emailEnabled,
-            whatsappEnabled: updated.whatsappEnabled,
-            smsEnabled: updated.smsEnabled,
-            walletEnabled: updated.walletEnabled,
-            monthlySpendingLimit: updated.monthlySpendingLimit,
-            lowBalanceThreshold: updated.lowBalanceThreshold,
-            autoTopUpEnabled: updated.autoTopUpEnabled,
-            autoTopUpAmount: updated.autoTopUpAmount,
-            smsUnitCost: updated.smsUnitCost,
-            whatsappUnitCost: updated.whatsappUnitCost,
-            feeReminderChannels: updated.feeReminderChannels as any,
-            attendanceAlertChannels: updated.attendanceAlertChannels as any,
-            resultsChannels: updated.resultsChannels as any,
-            homeworkChannels: updated.homeworkChannels as any,
-            emergencyChannels: updated.emergencyChannels as any,
-            transportChannels: updated.transportChannels as any,
-            generalNoticeChannels: updated.generalNoticeChannels as any,
-            updatedAt: now,
-          },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not update settings in DB: ${err.message}`);
-      }
-    }
+    const saved = await this.prisma.communicationSettings.upsert({
+      where: { tenantId },
+      create: {
+        id: `cset_${randomUUID().replace(/-/g, '').substring(0, 16)}`,
+        tenantId,
+        inAppEnabled: updated.inAppEnabled,
+        pushEnabled: updated.pushEnabled,
+        emailEnabled: updated.emailEnabled,
+        whatsappEnabled: updated.whatsappEnabled,
+        smsEnabled: updated.smsEnabled,
+        walletEnabled: updated.walletEnabled,
+        monthlySpendingLimit: updated.monthlySpendingLimit,
+        lowBalanceThreshold: updated.lowBalanceThreshold,
+        autoTopUpEnabled: updated.autoTopUpEnabled,
+        autoTopUpAmount: updated.autoTopUpAmount,
+        smsUnitCost: updated.smsUnitCost,
+        whatsappUnitCost: updated.whatsappUnitCost,
+        feeReminderChannels: updated.feeReminderChannels as any,
+        attendanceAlertChannels: updated.attendanceAlertChannels as any,
+        resultsChannels: updated.resultsChannels as any,
+        homeworkChannels: updated.homeworkChannels as any,
+        emergencyChannels: updated.emergencyChannels as any,
+        transportChannels: updated.transportChannels as any,
+        generalNoticeChannels: updated.generalNoticeChannels as any,
+        createdAt: now,
+        updatedAt: now,
+      },
+      update: {
+        inAppEnabled: updated.inAppEnabled,
+        pushEnabled: updated.pushEnabled,
+        emailEnabled: updated.emailEnabled,
+        whatsappEnabled: updated.whatsappEnabled,
+        smsEnabled: updated.smsEnabled,
+        walletEnabled: updated.walletEnabled,
+        monthlySpendingLimit: updated.monthlySpendingLimit,
+        lowBalanceThreshold: updated.lowBalanceThreshold,
+        autoTopUpEnabled: updated.autoTopUpEnabled,
+        autoTopUpAmount: updated.autoTopUpAmount,
+        smsUnitCost: updated.smsUnitCost,
+        whatsappUnitCost: updated.whatsappUnitCost,
+        feeReminderChannels: updated.feeReminderChannels as any,
+        attendanceAlertChannels: updated.attendanceAlertChannels as any,
+        resultsChannels: updated.resultsChannels as any,
+        homeworkChannels: updated.homeworkChannels as any,
+        emergencyChannels: updated.emergencyChannels as any,
+        transportChannels: updated.transportChannels as any,
+        generalNoticeChannels: updated.generalNoticeChannels as any,
+        updatedAt: now,
+      },
+    });
 
-    this.prisma?.memoryStore?.communicationSettings?.set(tenantId, updated);
     this.logger.log(`Updated communication settings for tenant ${tenantId}`);
-    return updated;
+    return {
+      ...updated,
+      id: saved.id,
+      createdAt: saved.createdAt.toISOString(),
+      updatedAt: saved.updatedAt.toISOString(),
+    };
   }
 
   async resolveEffectiveChannels(

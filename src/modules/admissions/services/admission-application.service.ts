@@ -99,86 +99,71 @@ export class AdmissionApplicationService {
       status: app.status,
       displayStatus,
       rawStatus: app.status,
-      offer: offer || null,
     };
   }
 
   async createApplication(tenantId: string, dto: CreateAdmissionApplicationDto, isPublic = false) {
     // 1. Resolve Campus
     let campusId = dto.campusId;
-    if (this.prisma.isDbConnected) {
-      try {
-        if (campusId) {
-          const exists = await this.prisma.campus.findFirst({ where: { id: campusId, tenantId } });
-          if (!exists) campusId = undefined;
-        }
-        if (!campusId) {
-          const mainCampus = (await this.prisma.campus.findFirst({
-            where: { tenantId, isMain: true },
-          })) || (await this.prisma.campus.findFirst({
-            where: { tenantId },
-          }));
-          if (mainCampus) {
-            campusId = mainCampus.id;
-          } else {
-            const newCampus = await this.prisma.campus.create({
-              data: {
-                id: `cmp_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
-                tenantId,
-                name: 'Main Campus',
-                code: 'MAIN-01',
-                isMain: true,
-              },
-            });
-            campusId = newCampus.id;
-          }
-        }
-      } catch (err: any) {
-        this.logger.warn(`Could not query or create campus in DB: ${err.message}`);
-        campusId = dto.campusId || 'campus_main_01';
+    if (campusId) {
+      const exists = await this.prisma.campus.findFirst({
+        where: { id: campusId, tenantId },
+      });
+      if (!exists) campusId = undefined;
+    }
+    if (!campusId) {
+      const mainCampus = (await this.prisma.campus.findFirst({
+        where: { tenantId, isMain: true },
+      })) || (await this.prisma.campus.findFirst({
+        where: { tenantId },
+      }));
+      if (mainCampus) {
+        campusId = mainCampus.id;
+      } else {
+        const newCampus = await this.prisma.campus.create({
+          data: {
+            id: `cmp_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+            tenantId,
+            name: 'Main Campus',
+            code: 'MAIN-01',
+            isMain: true,
+          },
+        });
+        campusId = newCampus.id;
       }
-    } else {
-      campusId = dto.campusId || 'campus_main_01';
     }
 
     // 2. Resolve Academic Year
     let academicYearId = dto.academicYearId;
-    if (this.prisma.isDbConnected) {
-      try {
-        if (academicYearId) {
-          const exists = await this.prisma.academicYear.findFirst({ where: { id: academicYearId, tenantId } });
-          if (!exists) academicYearId = undefined;
-        }
-        if (!academicYearId) {
-          const activeYear = (await this.prisma.academicYear.findFirst({
-            where: { tenantId, isCurrent: true },
-          })) || (await this.prisma.academicYear.findFirst({
-            where: { tenantId },
-          }));
-          if (activeYear) {
-            academicYearId = activeYear.id;
-          } else {
-            const yr = new Date().getFullYear();
-            const newYear = await this.prisma.academicYear.create({
-              data: {
-                id: `ay_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
-                tenantId,
-                name: `${yr}/${yr + 1}`,
-                code: `AY-${yr}`,
-                startDate: new Date(`${yr}-09-01`),
-                endDate: new Date(`${yr + 1}-07-31`),
-                isCurrent: true,
-              },
-            });
-            academicYearId = newYear.id;
-          }
-        }
-      } catch (err: any) {
-        this.logger.warn(`Could not query or create academic year in DB: ${err.message}`);
-        academicYearId = dto.academicYearId || 'ay_current';
+    if (academicYearId) {
+      const exists = await this.prisma.academicYear.findFirst({
+        where: { id: academicYearId, tenantId },
+      });
+      if (!exists) academicYearId = undefined;
+    }
+    if (!academicYearId) {
+      const activeYear = (await this.prisma.academicYear.findFirst({
+        where: { tenantId, isCurrent: true },
+      })) || (await this.prisma.academicYear.findFirst({
+        where: { tenantId },
+      }));
+      if (activeYear) {
+        academicYearId = activeYear.id;
+      } else {
+        const yr = new Date().getFullYear();
+        const newYear = await this.prisma.academicYear.create({
+          data: {
+            id: `ay_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+            tenantId,
+            name: `${yr}/${yr + 1}`,
+            code: `AY-${yr}`,
+            startDate: new Date(`${yr}-09-01`),
+            endDate: new Date(`${yr + 1}-07-31`),
+            isCurrent: true,
+          },
+        });
+        academicYearId = newYear.id;
       }
-    } else {
-      academicYearId = dto.academicYearId || 'ay_current';
     }
 
     // 3. Resolve Candidate Names
@@ -211,24 +196,13 @@ export class AdmissionApplicationService {
 
     // 6. Generate Application Number
     const year = new Date().getFullYear();
-    let count = 0;
-    if (this.prisma.isDbConnected) {
-      try {
-        count = await this.prisma.admissionApplication.count({ where: { tenantId } });
-      } catch {}
-    } else {
-      count = Array.from(this.prisma.memoryStore.admissionApplications.values()).filter((a: any) => a.tenantId === tenantId).length;
-    }
+    const count = await this.prisma.admissionApplication.count({ where: { tenantId } });
     let applicationNumber = `ADM-${year}-${String(count + 1).padStart(4, '0')}`;
-    if (this.prisma.isDbConnected) {
-      try {
-        const collision = await this.prisma.admissionApplication.findUnique({
-          where: { tenantId_applicationNumber: { tenantId, applicationNumber } },
-        });
-        if (collision) {
-          applicationNumber = `${applicationNumber}-${Math.floor(100 + Math.random() * 900)}`;
-        }
-      } catch {}
+    const collision = await this.prisma.admissionApplication.findUnique({
+      where: { tenantId_applicationNumber: { tenantId, applicationNumber } },
+    });
+    if (collision) {
+      applicationNumber = `${applicationNumber}-${Math.floor(100 + Math.random() * 900)}`;
     }
 
     // 7. Resolve Initial Status
@@ -272,15 +246,7 @@ export class AdmissionApplicationService {
       updatedAt: new Date(),
     };
 
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.admissionApplication.create({ data: applicationData });
-      } catch (err: any) {
-        this.logger.warn(`Could not persist admissionApplication to PostgreSQL: ${err.message}`);
-      }
-    }
-
-    this.prisma.memoryStore.admissionApplications.set(id, applicationData);
+    await this.prisma.admissionApplication.create({ data: applicationData });
 
     // 8. Record Entrance Test score if provided
     if (dto.examScore !== undefined && dto.examScore !== null && dto.examScore !== '') {
@@ -346,158 +312,84 @@ export class AdmissionApplicationService {
   }
 
   async listApplications(tenantId: string, filter?: AdmissionApplicationFilterDto) {
-    if (this.prisma.isDbConnected) {
-      const where: any = { tenantId };
-      if (filter?.campusId) where.campusId = filter.campusId;
-      if (filter?.academicYearId) where.academicYearId = filter.academicYearId;
-      if (filter?.gradeLevel) where.gradeLevel = filter.gradeLevel;
-      if (filter?.status) {
-        const mapped = STATUS_TO_DB[filter.status] || filter.status.toUpperCase();
-        where.status = mapped;
-      }
-      if (filter?.reviewerUserId) where.reviewerUserId = filter.reviewerUserId;
-      if (filter?.search) {
-        const q = filter.search.trim();
-        where.OR = [
-          { applicationNumber: { contains: q, mode: 'insensitive' } },
-          { studentFirstName: { contains: q, mode: 'insensitive' } },
-          { studentLastName: { contains: q, mode: 'insensitive' } },
-          { parentEmail: { contains: q, mode: 'insensitive' } },
-          { parentPhone: { contains: q } },
-          { gradeLevel: { contains: q, mode: 'insensitive' } },
-        ];
-      }
-
-      const apps = await this.prisma.admissionApplication.findMany({
-        where,
-        include: {
-          documents: true,
-          screenings: true,
-          entranceTests: true,
-          interviews: true,
-          decisions: true,
-          offers: true,
-        },
-        orderBy: { createdAt: 'desc' },
-      });
-
-      return apps.map((app) => this.formatApplicationResponse(app));
-    }
-
-    // In-memory fallback
-    let list = Array.from(this.prisma.memoryStore.admissionApplications.values()).filter(
-      (app: any) => app.tenantId === tenantId,
-    );
-
-    if (filter?.campusId) list = list.filter((app: any) => app.campusId === filter.campusId);
-    if (filter?.academicYearId) list = list.filter((app: any) => app.academicYearId === filter.academicYearId);
-    if (filter?.gradeLevel) list = list.filter((app: any) => app.gradeLevel === filter.gradeLevel);
+    const where: any = { tenantId };
+    if (filter?.campusId) where.campusId = filter.campusId;
+    if (filter?.academicYearId) where.academicYearId = filter.academicYearId;
+    if (filter?.gradeLevel) where.gradeLevel = filter.gradeLevel;
     if (filter?.status) {
       const mapped = STATUS_TO_DB[filter.status] || filter.status.toUpperCase();
-      list = list.filter((app: any) => app.status === mapped);
+      where.status = mapped;
     }
-    if (filter?.reviewerUserId) list = list.filter((app: any) => app.reviewerUserId === filter.reviewerUserId);
+    if (filter?.reviewerUserId) where.reviewerUserId = filter.reviewerUserId;
     if (filter?.search) {
-      const q = filter.search.toLowerCase();
-      list = list.filter(
-        (app: any) =>
-          app.applicationNumber.toLowerCase().includes(q) ||
-          app.studentFirstName.toLowerCase().includes(q) ||
-          app.studentLastName.toLowerCase().includes(q) ||
-          app.parentEmail.toLowerCase().includes(q) ||
-          app.parentPhone.includes(q),
-      );
+      const q = filter.search.trim();
+      where.OR = [
+        { applicationNumber: { contains: q, mode: 'insensitive' } },
+        { studentFirstName: { contains: q, mode: 'insensitive' } },
+        { studentLastName: { contains: q, mode: 'insensitive' } },
+        { parentEmail: { contains: q, mode: 'insensitive' } },
+        { parentPhone: { contains: q } },
+        { gradeLevel: { contains: q, mode: 'insensitive' } },
+      ];
     }
 
-    return list
-      .map((app) => this.formatApplicationResponse(app))
-      .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const apps = await this.prisma.admissionApplication.findMany({
+      where,
+      include: {
+        documents: true,
+        screenings: true,
+        entranceTests: true,
+        interviews: true,
+        decisions: true,
+        offers: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return apps.map((app) => this.formatApplicationResponse(app));
   }
 
   async getApplicationById(tenantId: string, id: string) {
-    if (this.prisma.isDbConnected) {
-      const app = await this.prisma.admissionApplication.findFirst({
-        where: { id, tenantId },
-        include: {
-          documents: true,
-          screenings: true,
-          entranceTests: true,
-          interviews: true,
-          decisions: true,
-          offers: true,
-        },
-      });
-      if (app) {
-        return this.formatApplicationResponse(app);
-      }
-    }
-
-    const app = this.prisma.memoryStore.admissionApplications.get(id);
-    if (!app || app.tenantId !== tenantId) {
+    const app = await this.prisma.admissionApplication.findFirst({
+      where: { id, tenantId },
+      include: {
+        documents: true,
+        screenings: true,
+        entranceTests: true,
+        interviews: true,
+        decisions: true,
+        offers: true,
+      },
+    });
+    if (!app) {
       throw new NotFoundException(`Admission application ${id} not found`);
     }
 
-    const documents = Array.from(this.prisma.memoryStore.admissionApplicationDocuments.values()).filter(
-      (d: any) => d.tenantId === tenantId && d.applicationId === id,
-    );
-    const screenings = Array.from(this.prisma.memoryStore.admissionScreenings.values()).filter(
-      (s: any) => s.tenantId === tenantId && s.applicationId === id,
-    );
-    const entranceTests = Array.from(this.prisma.memoryStore.admissionEntranceTests.values()).filter(
-      (t: any) => t.tenantId === tenantId && t.applicationId === id,
-    );
-    const interviews = Array.from(this.prisma.memoryStore.admissionInterviews.values()).filter(
-      (i: any) => i.tenantId === tenantId && i.applicationId === id,
-    );
-    const decisions = Array.from(this.prisma.memoryStore.admissionDecisions.values()).filter(
-      (dec: any) => dec.tenantId === tenantId && dec.applicationId === id,
-    );
-    const offers = Array.from(this.prisma.memoryStore.admissionOffers.values()).filter(
-      (o: any) => o.tenantId === tenantId && o.applicationId === id,
-    );
-
-    return this.formatApplicationResponse({
-      ...app,
-      documents,
-      screenings,
-      entranceTests,
-      interviews,
-      decisions,
-      offers,
-    });
+    return this.formatApplicationResponse(app);
   }
 
   async getApplicationByNumber(tenantIdOrSlug: string, applicationNumber: string) {
     let tenantId = tenantIdOrSlug;
-    if (this.prisma.isDbConnected) {
-      const tenant = await this.prisma.tenant.findFirst({
-        where: { OR: [{ id: tenantIdOrSlug }, { slug: tenantIdOrSlug }] },
-      });
-      if (tenant) tenantId = tenant.id;
+    const tenant = await this.prisma.tenant.findFirst({
+      where: { OR: [{ id: tenantIdOrSlug }, { slug: tenantIdOrSlug }] },
+    });
+    if (tenant) tenantId = tenant.id;
 
-      const app = await this.prisma.admissionApplication.findFirst({
-        where: { tenantId, applicationNumber },
-        include: {
-          documents: true,
-          screenings: true,
-          entranceTests: true,
-          interviews: true,
-          decisions: true,
-          offers: true,
-        },
-      });
-      if (app) {
-        return this.formatApplicationResponse(app);
-      }
-    }
-
-    const app = Array.from(this.prisma.memoryStore.admissionApplications.values()).find(
-      (a: any) => a.tenantId === tenantId && a.applicationNumber === applicationNumber,
-    );
+    const app = await this.prisma.admissionApplication.findFirst({
+      where: { tenantId, applicationNumber },
+      include: {
+        documents: true,
+        screenings: true,
+        entranceTests: true,
+        interviews: true,
+        decisions: true,
+        offers: true,
+      },
+    });
     if (!app) {
       throw new NotFoundException(`Application ${applicationNumber} not found`);
     }
-    return this.getApplicationById(tenantId, app.id);
+    return this.formatApplicationResponse(app);
   }
 
   async updateApplication(tenantId: string, id: string, dto: UpdateAdmissionApplicationDto) {
@@ -554,86 +446,78 @@ export class AdmissionApplicationService {
       updateData.status = targetStatus;
     }
 
-    if (this.prisma.isDbConnected) {
-      await this.prisma.admissionApplication.update({
-        where: { id },
-        data: updateData,
+    await this.prisma.admissionApplication.update({
+      where: { id },
+      data: updateData,
+    });
+
+    // Update or create Entrance Test
+    if (dto.examScore !== undefined && dto.examScore !== null && dto.examScore !== '') {
+      const score = Number(dto.examScore);
+      const existingTest = await this.prisma.admissionEntranceTest.findFirst({
+        where: { applicationId: id, tenantId },
       });
-
-      // Update or create Entrance Test
-      if (dto.examScore !== undefined && dto.examScore !== null && dto.examScore !== '') {
-        const score = Number(dto.examScore);
-        const existingTest = await this.prisma.admissionEntranceTest.findFirst({
-          where: { applicationId: id, tenantId },
+      if (existingTest) {
+        await this.prisma.admissionEntranceTest.update({
+          where: { id: existingTest.id },
+          data: {
+            scoreObtained: score,
+            percentage: score,
+            outcome: score >= 50 ? 'PASSED' : 'FAILED',
+            notes: dto.decisionNotes || existingTest.notes,
+            updatedAt: new Date(),
+          },
         });
-        if (existingTest) {
-          await this.prisma.admissionEntranceTest.update({
-            where: { id: existingTest.id },
-            data: {
-              scoreObtained: score,
-              percentage: score,
-              outcome: score >= 50 ? 'PASSED' : 'FAILED',
-              notes: dto.decisionNotes || existingTest.notes,
-              updatedAt: new Date(),
-            },
-          });
-        } else {
-          await this.prisma.admissionEntranceTest.create({
-            data: {
-              id: `aet_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
-              tenantId,
-              applicationId: id,
-              subject: 'Entrance Assessment',
-              testDate: new Date(),
-              maxScore: 100,
-              scoreObtained: score,
-              percentage: score,
-              passMark: 50,
-              outcome: score >= 50 ? 'PASSED' : 'FAILED',
-              notes: dto.decisionNotes || null,
-            },
-          });
-        }
-      }
-
-      // Update or create Interview
-      if (dto.interviewScore !== undefined && dto.interviewScore !== null && dto.interviewScore !== '') {
-        const score = Number(dto.interviewScore);
-        const existingInterview = await this.prisma.admissionInterview.findFirst({
-          where: { applicationId: id, tenantId },
+      } else {
+        await this.prisma.admissionEntranceTest.create({
+          data: {
+            id: `aet_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+            tenantId,
+            applicationId: id,
+            subject: 'Entrance Assessment',
+            testDate: new Date(),
+            maxScore: 100,
+            scoreObtained: score,
+            percentage: score,
+            passMark: 50,
+            outcome: score >= 50 ? 'PASSED' : 'FAILED',
+            notes: dto.decisionNotes || null,
+          },
         });
-        if (existingInterview) {
-          await this.prisma.admissionInterview.update({
-            where: { id: existingInterview.id },
-            data: {
-              score,
-              outcome: score >= 60 ? 'RECOMMENDED' : 'PENDING',
-              evaluationNotes: dto.decisionNotes || existingInterview.evaluationNotes,
-              updatedAt: new Date(),
-            },
-          });
-        } else {
-          await this.prisma.admissionInterview.create({
-            data: {
-              id: `ai_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
-              tenantId,
-              applicationId: id,
-              interviewDate: new Date(),
-              interviewerUserId: 'admission_office',
-              score,
-              outcome: score >= 60 ? 'RECOMMENDED' : 'PENDING',
-              evaluationNotes: dto.decisionNotes || null,
-            },
-          });
-        }
       }
     }
 
-    // Keep memory store updated
-    this.prisma.memoryStore.admissionApplications.set(id, {
-      ...existing,
-      ...updateData,
-    });
+    // Update or create Interview
+    if (dto.interviewScore !== undefined && dto.interviewScore !== null && dto.interviewScore !== '') {
+      const score = Number(dto.interviewScore);
+      const existingInterview = await this.prisma.admissionInterview.findFirst({
+        where: { applicationId: id, tenantId },
+      });
+      if (existingInterview) {
+        await this.prisma.admissionInterview.update({
+          where: { id: existingInterview.id },
+          data: {
+            score,
+            outcome: score >= 60 ? 'RECOMMENDED' : 'PENDING',
+            evaluationNotes: dto.decisionNotes || existingInterview.evaluationNotes,
+            updatedAt: new Date(),
+          },
+        });
+      } else {
+        await this.prisma.admissionInterview.create({
+          data: {
+            id: `ai_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+            tenantId,
+            applicationId: id,
+            interviewDate: new Date(),
+            interviewerUserId: 'admission_office',
+            score,
+            outcome: score >= 60 ? 'RECOMMENDED' : 'PENDING',
+            evaluationNotes: dto.decisionNotes || null,
+          },
+        });
+      }
+    }
 
     // If transitioned to ENROLLED, convert candidate
     if (targetStatus === 'ENROLLED' && existing.rawStatus !== 'ENROLLED') {
@@ -669,16 +553,9 @@ export class AdmissionApplicationService {
       updatePayload.submittedAt = new Date();
     }
 
-    if (this.prisma.isDbConnected) {
-      await this.prisma.admissionApplication.update({
-        where: { id },
-        data: updatePayload,
-      });
-    }
-
-    this.prisma.memoryStore.admissionApplications.set(id, {
-      ...app,
-      ...updatePayload,
+    await this.prisma.admissionApplication.update({
+      where: { id },
+      data: updatePayload,
     });
 
     this.logger.log(`Application ${id} transitioned from ${app.rawStatus} to ${targetStatus}`);
@@ -720,22 +597,13 @@ export class AdmissionApplicationService {
     const enrollmentNote = `[ENROLLED] Student Record ID: ${student.id} (Admission No: ${student.admissionNumber || 'Assigned'}) on ${new Date().toISOString()}`;
     const newNotes = app.internalNotes ? `${app.internalNotes}\n${enrollmentNote}`.trim() : enrollmentNote;
 
-    if (this.prisma.isDbConnected) {
-      await this.prisma.admissionApplication.update({
-        where: { id },
-        data: {
-          status: 'ENROLLED',
-          internalNotes: newNotes,
-          updatedAt: new Date(),
-        },
-      });
-    }
-
-    this.prisma.memoryStore.admissionApplications.set(id, {
-      ...app,
-      status: 'ENROLLED',
-      rawStatus: 'ENROLLED',
-      internalNotes: newNotes,
+    await this.prisma.admissionApplication.update({
+      where: { id },
+      data: {
+        status: 'ENROLLED',
+        internalNotes: newNotes,
+        updatedAt: new Date(),
+      },
     });
 
     this.logger.log(`Enrolled candidate from application ${app.refNumber} as student ${student.admissionNumber} (${student.id})`);
@@ -747,13 +615,10 @@ export class AdmissionApplicationService {
   async deleteApplication(tenantId: string, id: string) {
     await this.getApplicationById(tenantId, id);
 
-    if (this.prisma.isDbConnected) {
-      await this.prisma.admissionApplication.delete({
-        where: { id },
-      });
-    }
+    await this.prisma.admissionApplication.delete({
+      where: { id },
+    });
 
-    this.prisma.memoryStore.admissionApplications.delete(id);
     this.logger.log(`Deleted admission application ${id} for tenant ${tenantId}`);
     return { success: true, message: `Application ${id} deleted successfully` };
   }
@@ -763,23 +628,14 @@ export class AdmissionApplicationService {
     const updatedNotes = dto.notes ? `${app.internalNotes || ''}\nAssigned: ${dto.notes}`.trim() : app.internalNotes;
     const targetStatus = app.rawStatus === 'SUBMITTED' ? 'UNDER_REVIEW' : app.rawStatus;
 
-    if (this.prisma.isDbConnected) {
-      await this.prisma.admissionApplication.update({
-        where: { id },
-        data: {
-          reviewerUserId: dto.reviewerUserId,
-          internalNotes: updatedNotes,
-          status: targetStatus,
-          updatedAt: new Date(),
-        },
-      });
-    }
-
-    this.prisma.memoryStore.admissionApplications.set(id, {
-      ...app,
-      reviewerUserId: dto.reviewerUserId,
-      internalNotes: updatedNotes,
-      status: targetStatus,
+    await this.prisma.admissionApplication.update({
+      where: { id },
+      data: {
+        reviewerUserId: dto.reviewerUserId,
+        internalNotes: updatedNotes,
+        status: targetStatus,
+        updatedAt: new Date(),
+      },
     });
 
     return this.getApplicationById(tenantId, id);
@@ -791,22 +647,14 @@ export class AdmissionApplicationService {
     const formattedNote = `[${timestamp}] ${note}`;
     const updatedNotes = app.internalNotes ? `${app.internalNotes}\n${formattedNote}` : formattedNote;
 
-    if (this.prisma.isDbConnected) {
-      await this.prisma.admissionApplication.update({
-        where: { id },
-        data: {
-          internalNotes: updatedNotes,
-          updatedAt: new Date(),
-        },
-      });
-    }
-
-    this.prisma.memoryStore.admissionApplications.set(id, {
-      ...app,
-      internalNotes: updatedNotes,
+    await this.prisma.admissionApplication.update({
+      where: { id },
+      data: {
+        internalNotes: updatedNotes,
+        updatedAt: new Date(),
+      },
     });
 
     return this.getApplicationById(tenantId, id);
   }
 }
-

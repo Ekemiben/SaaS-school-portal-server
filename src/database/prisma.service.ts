@@ -2,15 +2,12 @@ import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/commo
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
-import { defaultMemoryStoreData } from './default-memory-store.data.js';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
   public isDbConnected = false;
   private pool: pg.Pool | null = null;
-
-  public memoryStore = defaultMemoryStoreData();
 
   constructor() {
     const connectionString =
@@ -46,14 +43,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       this.logger.log('Successfully connected to production PostgreSQL via Prisma ORM and pg.Pool.');
     } catch (error: any) {
       this.isDbConnected = false;
-      if (process.env.NODE_ENV === 'production' || process.env.REQUIRE_DB === 'true') {
-        this.logger.error(`Critical: Unable to connect to PostgreSQL: ${error?.message}`);
-        throw new Error(
-          `Critical: Silent fallback to memory storage is strictly prohibited in production mode. Production PostgreSQL connection failure: ${error?.message}`,
-        );
-      }
-      this.logger.warn(
-        `PostgreSQL not reachable at DATABASE_URL (${error?.message}). Running in non-production fallback mode with in-memory persistence.`,
+      this.logger.error(`Critical: Unable to connect to PostgreSQL: ${error?.message}`);
+      throw new Error(
+        `Critical: Database connection is strictly required in production mode. PostgreSQL connection failure: ${error?.message}`,
       );
     }
   }
@@ -89,7 +81,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
             WHERE table_name = 'Parent' AND column_name = 'userId'
           ) THEN
             ALTER TABLE "Parent" ADD COLUMN "userId" TEXT;
-          END IF;
+          END IF; 
         END $$;
         CREATE UNIQUE INDEX IF NOT EXISTS "Parent_userId_key" ON "Parent"("userId");
         DO $$

@@ -11,7 +11,9 @@ export class BiometricAttendanceAdapter implements DeviceAdapterInterface {
   constructor(private readonly prisma: PrismaService) {}
 
   async isAvailable(tenantId: string): Promise<boolean> {
-    const config = this.prisma.memoryStore.attendanceConfigs.get(tenantId);
+    const config = await this.prisma.attendanceConfig.findUnique({
+      where: { tenantId },
+    });
     return config ? !!config.biometricEnabled : false;
   }
 
@@ -31,23 +33,37 @@ export class BiometricAttendanceAdapter implements DeviceAdapterInterface {
 
     let student: any = null;
     if (payload.studentId) {
-      student = this.prisma.memoryStore.students.get(payload.studentId);
+      student = await this.prisma.student.findFirst({
+        where: { tenantId, id: payload.studentId },
+        include: {
+          enrollments: {
+            where: { status: 'ACTIVE' },
+            take: 1,
+          },
+        },
+      });
     } else if (payload.identifier) {
-      student = Array.from(this.prisma.memoryStore.students.values()).find(
-        (s: any) => s.tenantId === tenantId && (s.biometricHash === payload.identifier || s.admissionNumber === payload.identifier),
-      );
+      student = await this.prisma.student.findFirst({
+        where: {
+          tenantId,
+          admissionNumber: payload.identifier,
+        },
+        include: {
+          enrollments: {
+            where: { status: 'ACTIVE' },
+            take: 1,
+          },
+        },
+      });
     }
 
     if (!student || student.tenantId !== tenantId) {
-      throw new NotFoundException(`No student matched for biometric identifier "${payload.identifier}".`);
+      throw new NotFoundException(`No student matched for biometric identifier "${payload.identifier || payload.studentId}".`);
     }
 
-    let classId = payload.classId;
+    const classId = payload.classId || student.enrollments?.[0]?.classId;
     if (!classId) {
-      const activeEnr = Array.from(this.prisma.memoryStore.enrollments.values()).find(
-        (e: any) => e.tenantId === tenantId && e.studentId === student.id && e.status === 'ACTIVE',
-      );
-      classId = activeEnr ? activeEnr.classId : student.classId;
+      throw new BadRequestException('Cannot determine active class for student.');
     }
 
     this.logger.log(`Biometric verification succeeded for student ${student.admissionNumber} (${student.id}) via scanner ${payload.deviceId || 'SCANNER-01'}`);

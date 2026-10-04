@@ -115,75 +115,41 @@ export class CampaignService {
     const isScheduled = dto.sendImmediately === false || (scheduledDate && scheduledDate > now);
 
     if (isScheduled) {
-      const scheduledCampaign: CampaignRecord = {
-        id: campaignId,
-        tenantId,
-        authorId,
-        templateId: dto.templateId || null,
-        title: defaultTitle,
-        content: defaultContent,
-        subject: defaultTitle,
-        channels: targetChannels,
-        audienceType: dto.audience.audienceType,
-        audienceCriteria: dto.audience as any,
-        priority: dto.priority || CampaignPriority.NORMAL,
-        status: CampaignStatus.SCHEDULED,
-        scheduledAt: scheduledDate ? scheduledDate.toISOString() : null,
-        totalRecipients: recipients.length,
-        deliveredCount: 0,
-        failedCount: 0,
-        totalCost: 0,
-        channelBreakdown: [],
-        completedAt: null,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      };
-
       let dbTemplateId: string | null = null;
-      if (this.prisma.isDbConnected && dto.templateId) {
-        try {
-          const tmplExists = await this.prisma.messageTemplate.findUnique({
-            where: { id: dto.templateId },
-          });
-          if (tmplExists) dbTemplateId = tmplExists.id;
-        } catch {}
+      if (dto.templateId) {
+        const tmplExists = await this.prisma.messageTemplate.findUnique({
+          where: { id: dto.templateId },
+        });
+        if (tmplExists) dbTemplateId = tmplExists.id;
       }
 
-      if (this.prisma.isDbConnected) {
-        try {
-          await this.prisma.communicationCampaign.create({
-            data: {
-              id: scheduledCampaign.id,
-              tenantId: scheduledCampaign.tenantId,
-              authorId: scheduledCampaign.authorId,
-              templateId: dbTemplateId,
-              title: scheduledCampaign.title,
-              content: scheduledCampaign.content,
-              subject: scheduledCampaign.subject,
-              channels: scheduledCampaign.channels as any,
-              audienceType: scheduledCampaign.audienceType,
-              audienceCriteria: scheduledCampaign.audienceCriteria,
-              priority: scheduledCampaign.priority,
-              status: scheduledCampaign.status,
-              scheduledAt: scheduledDate,
-              totalRecipients: scheduledCampaign.totalRecipients,
-              deliveredCount: 0,
-              failedCount: 0,
-              totalCost: 0,
-              channelBreakdown: scheduledCampaign.channelBreakdown as any,
-              completedAt: null,
-              createdAt: now,
-              updatedAt: now,
-            },
-          });
-        } catch (err: any) {
-          this.logger.warn(`Could not save scheduled campaign in DB: ${err.message}`);
-        }
-      }
+      await this.prisma.communicationCampaign.create({
+        data: {
+          id: campaignId,
+          tenantId,
+          authorId,
+          templateId: dbTemplateId,
+          title: defaultTitle,
+          content: defaultContent,
+          subject: defaultTitle,
+          channels: targetChannels as any,
+          audienceType: dto.audience.audienceType,
+          audienceCriteria: dto.audience as any,
+          priority: dto.priority || CampaignPriority.NORMAL,
+          status: CampaignStatus.SCHEDULED,
+          scheduledAt: scheduledDate,
+          totalRecipients: recipients.length,
+          deliveredCount: 0,
+          failedCount: 0,
+          totalCost: 0,
+          channelBreakdown: [] as any,
+          completedAt: null,
+        },
+      });
 
-      this.prisma.memoryStore.communicationCampaigns.set(campaignId, scheduledCampaign);
       this.logger.log(`Scheduled campaign ${campaignId} for tenant ${tenantId} at ${scheduledDate?.toISOString()}`);
-      return scheduledCampaign;
+      const created = await this.getCampaignById(tenantId, campaignId);
+      return created!;
     }
 
     // Immediate Execution Lifecycle
@@ -260,42 +226,21 @@ export class CampaignService {
           } else {
             for (const item of inboxBatch) {
               const id = `inb_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
-              const now = new Date();
-              const inAppRecord = {
-                id,
-                tenantId,
-                recipientUserId: item.recipientUserId,
-                title: item.title,
-                message: item.message,
-                priority: item.priority || 'NORMAL',
-                category: item.category || 'ANNOUNCEMENT',
-                actionUrl: null,
-                isRead: false,
-                readAt: null,
-                campaignId: item.campaignId || null,
-                createdAt: now.toISOString(),
-              };
-              if (this.prisma?.isDbConnected) {
-                try {
-                  await this.prisma.inAppInboxItem.create({
-                    data: {
-                      id,
-                      tenantId,
-                      recipientUserId: item.recipientUserId,
-                      title: item.title,
-                      message: item.message,
-                      priority: item.priority || 'NORMAL',
-                      category: item.category || 'ANNOUNCEMENT',
-                      actionUrl: null,
-                      isRead: false,
-                      readAt: null,
-                      campaignId: item.campaignId || null,
-                      createdAt: now,
-                    },
-                  });
-                } catch {}
-              }
-              this.prisma?.memoryStore?.inboxItems?.set(id, inAppRecord);
+              await this.prisma.inAppInboxItem.create({
+                data: {
+                  id,
+                  tenantId,
+                  recipientUserId: item.recipientUserId,
+                  title: item.title,
+                  message: item.message,
+                  priority: item.priority || 'NORMAL',
+                  category: item.category || 'ANNOUNCEMENT',
+                  actionUrl: null,
+                  isRead: false,
+                  readAt: null,
+                  campaignId: item.campaignId || null,
+                },
+              }).catch(() => {});
             }
           }
         }
@@ -608,245 +553,48 @@ export class CampaignService {
       }
     }
 
-    // Determine final status
-    let finalStatus: CampaignStatus = CampaignStatus.COMPLETED;
-    if (recipients.length === 0) {
-      finalStatus = CampaignStatus.COMPLETED;
-    } else if (totalDelivered === 0 && totalFailed > 0) {
-      finalStatus = CampaignStatus.FAILED;
-    } else if (totalFailed > 0 && totalDelivered > 0) {
-      finalStatus = CampaignStatus.PARTIALLY_FAILED;
-    } else {
-      finalStatus = CampaignStatus.COMPLETED;
+    const finalStatus =
+      totalFailed === 0
+        ? CampaignStatus.COMPLETED
+        : totalDelivered > 0
+        ? CampaignStatus.PARTIALLY_FAILED
+        : CampaignStatus.FAILED;
+
+    let dbTemplateId: string | null = null;
+    if (dto.templateId) {
+      const tmplExists = await this.prisma.messageTemplate.findUnique({
+        where: { id: dto.templateId },
+      });
+      if (tmplExists) dbTemplateId = tmplExists.id;
     }
 
-    const campaignRecord: CampaignRecord = {
-      id: campaignId,
-      tenantId,
-      authorId,
-      templateId: dto.templateId || null,
-      title: defaultTitle,
-      content: defaultContent,
-      subject: defaultTitle,
-      channels: targetChannels,
-      audienceType: dto.audience.audienceType,
-      audienceCriteria: dto.audience as any,
-      priority: dto.priority || CampaignPriority.NORMAL,
-      status: finalStatus,
-      scheduledAt: null,
-      totalRecipients: recipients.length,
-      deliveredCount: totalDelivered,
-      failedCount: totalFailed,
-      totalCost: Number(totalCost.toFixed(4)),
-      channelBreakdown,
-      completedAt: now.toISOString(),
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-    };
+    await this.prisma.communicationCampaign.create({
+      data: {
+        id: campaignId,
+        tenantId,
+        authorId,
+        templateId: dbTemplateId,
+        title: defaultTitle,
+        content: defaultContent,
+        subject: defaultTitle,
+        channels: targetChannels as any,
+        audienceType: dto.audience.audienceType,
+        audienceCriteria: dto.audience as any,
+        priority: dto.priority || CampaignPriority.NORMAL,
+        status: finalStatus,
+        scheduledAt: null,
+        totalRecipients: recipients.length,
+        deliveredCount: totalDelivered,
+        failedCount: totalFailed,
+        totalCost,
+        channelBreakdown: channelBreakdown as any,
+        completedAt: now,
+      },
+    });
 
-    // Persistence Layer
-    if (this.prisma.isDbConnected) {
-      try {
-        let dbTemplateId: string | null = null;
-        if (campaignRecord.templateId) {
-          try {
-            const tmplExists = await this.prisma.messageTemplate.findUnique({
-              where: { id: campaignRecord.templateId },
-            });
-            if (tmplExists) dbTemplateId = tmplExists.id;
-          } catch {}
-        }
-
-        await this.prisma.communicationCampaign.create({
-          data: {
-            id: campaignRecord.id,
-            tenantId: campaignRecord.tenantId,
-            authorId: campaignRecord.authorId,
-            templateId: dbTemplateId,
-            title: campaignRecord.title,
-            content: campaignRecord.content,
-            subject: campaignRecord.subject,
-            channels: campaignRecord.channels as any,
-            audienceType: campaignRecord.audienceType,
-            audienceCriteria: campaignRecord.audienceCriteria,
-            priority: campaignRecord.priority,
-            status: campaignRecord.status,
-            scheduledAt: null,
-            totalRecipients: campaignRecord.totalRecipients,
-            deliveredCount: campaignRecord.deliveredCount,
-            failedCount: campaignRecord.failedCount,
-            totalCost: campaignRecord.totalCost,
-            channelBreakdown: campaignRecord.channelBreakdown as any,
-            completedAt: now,
-            createdAt: now,
-            updatedAt: now,
-          },
-        });
-
-        if (recipientLogs.length > 0) {
-          await this.prisma.communicationRecipientLog.createMany({
-            data: recipientLogs.map((l) => ({
-              id: l.id,
-              tenantId: l.tenantId,
-              campaignId: l.campaignId,
-              recipientUserId: l.recipientUserId,
-              recipientType: l.recipientType,
-              recipientName: l.recipientName,
-              recipientPhone: l.recipientPhone,
-              recipientEmail: l.recipientEmail,
-              channel: l.channel as any,
-              messageContent: l.messageContent,
-              cost: l.cost,
-              status: l.status,
-              providerId: l.providerId,
-              failureReason: l.failureReason,
-              sentAt: l.sentAt ? new Date(l.sentAt) : null,
-              deliveredAt: l.deliveredAt ? new Date(l.deliveredAt) : null,
-              createdAt: now,
-              updatedAt: now,
-            })),
-          });
-        }
-      } catch (err: any) {
-        this.logger.warn(`Could not persist campaign & recipient logs in DB: ${err.message}`);
-      }
-    }
-
-    // Save in Memory Store
-    this.prisma.memoryStore.communicationCampaigns.set(campaignId, campaignRecord);
-    for (const log of recipientLogs) {
-      this.prisma.memoryStore.communicationRecipientLogs.set(log.id, log);
-    }
-
-    this.logger.log(
-      `Dispatched campaign ${campaignId} for tenant ${tenantId} (Status: ${finalStatus}, Delivered: ${totalDelivered}, Failed: ${totalFailed}, Cost: ₦${totalCost})`,
-    );
-    return campaignRecord;
-  }
-
-  async listCampaigns(tenantId: string, filter?: CampaignFilterDto): Promise<CampaignRecord[]> {
-    if (this.prisma.isDbConnected) {
-      try {
-        const where: any = { tenantId };
-        if (filter?.status) {
-          where.status = filter.status;
-        }
-
-        const rows = await this.prisma.communicationCampaign.findMany({
-          where,
-          orderBy: { createdAt: 'desc' },
-        });
-
-        return rows.map((r) => ({
-          id: r.id,
-          tenantId: r.tenantId,
-          authorId: r.authorId,
-          templateId: r.templateId,
-          title: r.title,
-          content: r.content,
-          subject: r.subject,
-          channels: r.channels as any,
-          audienceType: r.audienceType,
-          audienceCriteria: r.audienceCriteria,
-          priority: r.priority as any,
-          status: r.status as any,
-          scheduledAt: r.scheduledAt ? r.scheduledAt.toISOString() : null,
-          totalRecipients: r.totalRecipients,
-          deliveredCount: r.deliveredCount,
-          failedCount: r.failedCount,
-          totalCost: Number(r.totalCost),
-          channelBreakdown: r.channelBreakdown as any,
-          completedAt: r.completedAt ? r.completedAt.toISOString() : null,
-          createdAt: r.createdAt.toISOString(),
-          updatedAt: r.updatedAt.toISOString(),
-        }));
-      } catch (err: any) {
-        this.logger.warn(`Could not list campaigns from DB: ${err.message}`);
-      }
-    }
-
-    const campaigns: CampaignRecord[] = Array.from(
-      this.prisma.memoryStore.communicationCampaigns.values(),
-    ).filter((c: CampaignRecord) => c.tenantId === tenantId);
-
-    let results = campaigns;
-    if (filter?.status) {
-      results = results.filter((c) => c.status === filter.status);
-    }
-    if (filter?.channel) {
-      results = results.filter((c) => c.channels?.includes(filter.channel!));
-    }
-    return results.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }
-
-  async getCampaignById(tenantId: string, id: string): Promise<CampaignRecord | null> {
-    if (this.prisma.isDbConnected) {
-      try {
-        const r = await this.prisma.communicationCampaign.findFirst({
-          where: { tenantId, id },
-        });
-        if (r) {
-          return {
-            id: r.id,
-            tenantId: r.tenantId,
-            authorId: r.authorId,
-            templateId: r.templateId,
-            title: r.title,
-            content: r.content,
-            subject: r.subject,
-            channels: r.channels as any,
-            audienceType: r.audienceType,
-            audienceCriteria: r.audienceCriteria,
-            priority: r.priority as any,
-            status: r.status as any,
-            scheduledAt: r.scheduledAt ? r.scheduledAt.toISOString() : null,
-            totalRecipients: r.totalRecipients,
-            deliveredCount: r.deliveredCount,
-            failedCount: r.failedCount,
-            totalCost: Number(r.totalCost),
-            channelBreakdown: r.channelBreakdown as any,
-            completedAt: r.completedAt ? r.completedAt.toISOString() : null,
-            createdAt: r.createdAt.toISOString(),
-            updatedAt: r.updatedAt.toISOString(),
-          };
-        }
-      } catch (err: any) {
-        this.logger.warn(`Could not fetch campaign from DB: ${err.message}`);
-      }
-    }
-
-    const campaign = this.prisma.memoryStore.communicationCampaigns.get(id);
-    if (campaign && campaign.tenantId === tenantId) {
-      return campaign;
-    }
-    return null;
-  }
-
-  async getCampaignLogs(
-    tenantId: string,
-    campaignId: string,
-    filter?: { status?: string; channel?: string; limit?: number; offset?: number },
-  ): Promise<{ data: RecipientLogRecord[]; total: number }> {
-    const limit = filter?.limit || 50;
-    const offset = filter?.offset || 0;
-
-    if (this.prisma.isDbConnected) {
-      try {
-        const where: any = { tenantId, campaignId };
-        if (filter?.status) where.status = filter.status;
-        if (filter?.channel) where.channel = filter.channel;
-
-        const [rows, total] = await Promise.all([
-          this.prisma.communicationRecipientLog.findMany({
-            where,
-            orderBy: { createdAt: 'asc' },
-            take: limit,
-            skip: offset,
-          }),
-          this.prisma.communicationRecipientLog.count({ where }),
-        ]);
-
-        const data: RecipientLogRecord[] = rows.map((l) => ({
+    if (recipientLogs.length > 0) {
+      await this.prisma.communicationRecipientLog.createMany({
+        data: recipientLogs.map((l) => ({
           id: l.id,
           tenantId: l.tenantId,
           campaignId: l.campaignId,
@@ -857,37 +605,142 @@ export class CampaignService {
           recipientEmail: l.recipientEmail,
           channel: l.channel as any,
           messageContent: l.messageContent,
-          cost: Number(l.cost),
-          status: l.status as any,
+          cost: l.cost,
+          status: l.status,
           providerId: l.providerId,
           failureReason: l.failureReason,
-          sentAt: l.sentAt ? l.sentAt.toISOString() : null,
-          deliveredAt: l.deliveredAt ? l.deliveredAt.toISOString() : null,
-          metadata: l.metadata,
-          createdAt: l.createdAt.toISOString(),
-          updatedAt: l.updatedAt.toISOString(),
-        }));
-
-        return { data, total };
-      } catch (err: any) {
-        this.logger.warn(`Could not get campaign logs from DB: ${err.message}`);
-      }
+          sentAt: l.sentAt ? new Date(l.sentAt) : null,
+          deliveredAt: l.deliveredAt ? new Date(l.deliveredAt) : null,
+        })),
+        skipDuplicates: true,
+      });
     }
 
-    let logs: RecipientLogRecord[] = Array.from(
-      this.prisma.memoryStore.communicationRecipientLogs.values(),
-    ).filter((l: RecipientLogRecord) => l.tenantId === tenantId && l.campaignId === campaignId);
+    this.logger.log(
+      `Dispatched campaign ${campaignId} for tenant ${tenantId} (Status: ${finalStatus}, Delivered: ${totalDelivered}, Failed: ${totalFailed}, Cost: ₦${totalCost})`,
+    );
 
+    const result = await this.getCampaignById(tenantId, campaignId);
+    return result!;
+  }
+
+  async listCampaigns(tenantId: string, filter?: CampaignFilterDto): Promise<CampaignRecord[]> {
+    const where: any = { tenantId };
     if (filter?.status) {
-      logs = logs.filter((l) => l.status === filter.status);
-    }
-    if (filter?.channel) {
-      logs = logs.filter((l) => l.channel === filter.channel);
+      where.status = filter.status;
     }
 
-    const total = logs.length;
-    const paginated = logs.slice(offset, offset + limit);
-    return { data: paginated, total };
+    const rows = await this.prisma.communicationCampaign.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+    });
+
+    let results = rows.map((r) => ({
+      id: r.id,
+      tenantId: r.tenantId,
+      authorId: r.authorId,
+      templateId: r.templateId,
+      title: r.title,
+      content: r.content,
+      subject: r.subject,
+      channels: r.channels as any,
+      audienceType: r.audienceType,
+      audienceCriteria: r.audienceCriteria,
+      priority: r.priority as any,
+      status: r.status as any,
+      scheduledAt: r.scheduledAt ? r.scheduledAt.toISOString() : null,
+      totalRecipients: r.totalRecipients,
+      deliveredCount: r.deliveredCount,
+      failedCount: r.failedCount,
+      totalCost: Number(r.totalCost),
+      channelBreakdown: r.channelBreakdown as any,
+      completedAt: r.completedAt ? r.completedAt.toISOString() : null,
+      createdAt: r.createdAt.toISOString(),
+      updatedAt: r.updatedAt.toISOString(),
+    }));
+
+    if (filter?.channel) {
+      results = results.filter((c) => c.channels?.includes(filter.channel!));
+    }
+    return results;
+  }
+
+  async getCampaignById(tenantId: string, id: string): Promise<CampaignRecord | null> {
+    const r = await this.prisma.communicationCampaign.findFirst({
+      where: { tenantId, id },
+    });
+    if (!r) return null;
+
+    return {
+      id: r.id,
+      tenantId: r.tenantId,
+      authorId: r.authorId,
+      templateId: r.templateId,
+      title: r.title,
+      content: r.content,
+      subject: r.subject,
+      channels: r.channels as any,
+      audienceType: r.audienceType,
+      audienceCriteria: r.audienceCriteria,
+      priority: r.priority as any,
+      status: r.status as any,
+      scheduledAt: r.scheduledAt ? r.scheduledAt.toISOString() : null,
+      totalRecipients: r.totalRecipients,
+      deliveredCount: r.deliveredCount,
+      failedCount: r.failedCount,
+      totalCost: Number(r.totalCost),
+      channelBreakdown: r.channelBreakdown as any,
+      completedAt: r.completedAt ? r.completedAt.toISOString() : null,
+      createdAt: r.createdAt.toISOString(),
+      updatedAt: r.updatedAt.toISOString(),
+    };
+  }
+
+  async getCampaignLogs(
+    tenantId: string,
+    campaignId: string,
+    filter?: { status?: string; channel?: string; limit?: number; offset?: number },
+  ): Promise<{ data: RecipientLogRecord[]; total: number }> {
+    const limit = filter?.limit || 50;
+    const offset = filter?.offset || 0;
+
+    const where: any = { tenantId, campaignId };
+    if (filter?.status) where.status = filter.status;
+    if (filter?.channel) where.channel = filter.channel;
+
+    const [rows, total] = await Promise.all([
+      this.prisma.communicationRecipientLog.findMany({
+        where,
+        orderBy: { createdAt: 'asc' },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.communicationRecipientLog.count({ where }),
+    ]);
+
+    const data: RecipientLogRecord[] = rows.map((l) => ({
+      id: l.id,
+      tenantId: l.tenantId,
+      campaignId: l.campaignId,
+      recipientUserId: l.recipientUserId,
+      recipientType: l.recipientType,
+      recipientName: l.recipientName,
+      recipientPhone: l.recipientPhone,
+      recipientEmail: l.recipientEmail,
+      channel: l.channel as any,
+      messageContent: l.messageContent,
+      cost: Number(l.cost),
+      status: l.status as any,
+      providerId: l.providerId,
+      failureReason: l.failureReason,
+      sentAt: l.sentAt ? l.sentAt.toISOString() : null,
+      deliveredAt: l.deliveredAt ? l.deliveredAt.toISOString() : null,
+      metadata: l.metadata,
+      createdAt: l.createdAt.toISOString(),
+      updatedAt: l.updatedAt.toISOString(),
+    }));
+
+    return { data, total };
   }
 
   async cancelCampaign(tenantId: string, campaignId: string): Promise<CampaignRecord> {
@@ -901,25 +754,16 @@ export class CampaignService {
     }
 
     const now = new Date();
-    campaign.status = 'CANCELLED' as any;
-    campaign.updatedAt = now.toISOString();
+    await this.prisma.communicationCampaign.update({
+      where: { id: campaignId },
+      data: {
+        status: 'CANCELLED',
+        updatedAt: now,
+      },
+    });
 
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.communicationCampaign.update({
-          where: { id: campaignId },
-          data: {
-            status: 'CANCELLED',
-            updatedAt: now,
-          },
-        });
-      } catch (err: any) {
-        this.logger.warn(`Could not update cancelled campaign in DB: ${err.message}`);
-      }
-    }
-
-    this.prisma.memoryStore.communicationCampaigns.set(campaignId, campaign);
     this.logger.log(`Campaign ${campaignId} was cancelled for tenant ${tenantId}`);
-    return campaign;
+    const updated = await this.getCampaignById(tenantId, campaignId);
+    return updated!;
   }
 }

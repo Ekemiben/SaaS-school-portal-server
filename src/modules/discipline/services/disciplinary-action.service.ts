@@ -17,50 +17,48 @@ export class DisciplinaryActionService {
     assignerUserId: string,
     dto: CreateDisciplinaryActionDto,
   ) {
-    const incident = this.prisma.memoryStore.disciplineIncidents.get(dto.incidentId);
-    if (!incident || incident.tenantId !== tenantId) {
+    const incident = await this.prisma.disciplineIncident.findFirst({
+      where: { id: dto.incidentId, tenantId },
+    });
+    if (!incident) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Associated discipline incident not found',
       });
     }
 
-    const student = this.prisma.memoryStore.students.get(dto.studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: dto.studentId, tenantId },
+    });
+    if (!student) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Student not found in this school',
       });
     }
 
-    const id = `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const action = {
-      id,
-      tenantId,
-      incidentId: dto.incidentId,
-      studentId: dto.studentId,
-      assignedByUserId: assignerUserId,
-      sanctionType: dto.sanctionType,
-      title: dto.title,
-      description: dto.description || null,
-      startDate: dto.startDate ? new Date(dto.startDate) : new Date(),
-      endDate: dto.endDate ? new Date(dto.endDate) : null,
-      status: 'SCHEDULED',
-      completionNotes: null,
-      completedAt: null,
-      verifiedByUserId: null,
-      parentNotified: dto.parentNotified || false,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.disciplinaryActions.set(id, action);
+    const action = await this.prisma.disciplinaryAction.create({
+      data: {
+        tenantId,
+        incidentId: dto.incidentId,
+        studentId: dto.studentId,
+        assignedByUserId: assignerUserId,
+        sanctionType: dto.sanctionType,
+        title: dto.title,
+        description: dto.description || null,
+        startDate: dto.startDate ? new Date(dto.startDate) : new Date(),
+        endDate: dto.endDate ? new Date(dto.endDate) : null,
+        status: 'SCHEDULED',
+        parentNotified: dto.parentNotified || false,
+      },
+    });
 
     // Update incident status if currently REPORTED
     if (incident.status === 'REPORTED') {
-      incident.status = 'ACTION_PENDING';
-      incident.updatedAt = new Date();
-      this.prisma.memoryStore.disciplineIncidents.set(incident.id, incident);
+      await this.prisma.disciplineIncident.update({
+        where: { id: incident.id },
+        data: { status: 'ACTION_PENDING' },
+      });
     }
 
     return {
@@ -77,71 +75,77 @@ export class DisciplinaryActionService {
     verifierUserId: string,
     dto: UpdateActionStatusDto,
   ) {
-    const action = this.prisma.memoryStore.disciplinaryActions.get(actionId);
-    if (!action || action.tenantId !== tenantId) {
+    const action = await this.prisma.disciplinaryAction.findFirst({
+      where: { id: actionId, tenantId },
+    });
+    if (!action) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Disciplinary action not found',
       });
     }
 
-    action.status = dto.status;
-    if (dto.completionNotes) action.completionNotes = dto.completionNotes;
+    const completedAt = dto.status === 'COMPLETED' ? new Date() : undefined;
+    const verifiedByUserId = dto.status === 'COMPLETED' ? verifierUserId : undefined;
 
-    if (dto.status === 'COMPLETED') {
-      action.completedAt = new Date();
-      action.verifiedByUserId = verifierUserId;
-    }
-
-    action.updatedAt = new Date();
-    this.prisma.memoryStore.disciplinaryActions.set(actionId, action);
-
-    return action;
+    return this.prisma.disciplinaryAction.update({
+      where: { id: actionId },
+      data: {
+        status: dto.status,
+        ...(dto.completionNotes !== undefined ? { completionNotes: dto.completionNotes } : {}),
+        completedAt,
+        verifiedByUserId,
+      },
+    });
   }
 
   async getActions(
     tenantId: string,
     filter: { studentId?: string; incidentId?: string; status?: string },
   ) {
-    let list = Array.from(this.prisma.memoryStore.disciplinaryActions.values()).filter(
-      (a) => a.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
 
-    if (filter.studentId) list = list.filter((a) => a.studentId === filter.studentId);
-    if (filter.incidentId) list = list.filter((a) => a.incidentId === filter.incidentId);
-    if (filter.status) list = list.filter((a) => a.status === filter.status);
+    if (filter.studentId) where.studentId = filter.studentId;
+    if (filter.incidentId) where.incidentId = filter.incidentId;
+    if (filter.status) where.status = filter.status;
 
-    return list
-      .map((a) => {
-        const student = this.prisma.memoryStore.students.get(a.studentId);
-        const incident = this.prisma.memoryStore.disciplineIncidents.get(a.incidentId);
-        return {
-          ...a,
-          studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-          admissionNumber: student?.admissionNumber || '',
-          incidentTitle: incident?.title || 'Incident',
-        };
-      })
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const actions = await this.prisma.disciplinaryAction.findMany({
+      where,
+      include: {
+        student: true,
+        incident: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return actions.map((a) => ({
+      ...a,
+      studentName: a.student ? `${a.student.firstName} ${a.student.lastName}` : 'Student',
+      admissionNumber: a.student?.admissionNumber || '',
+      incidentTitle: a.incident?.title || 'Incident',
+    }));
   }
 
   async getActionById(tenantId: string, actionId: string) {
-    const action = this.prisma.memoryStore.disciplinaryActions.get(actionId);
-    if (!action || action.tenantId !== tenantId) {
+    const action = await this.prisma.disciplinaryAction.findFirst({
+      where: { id: actionId, tenantId },
+      include: {
+        student: true,
+        incident: true,
+      },
+    });
+    if (!action) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Disciplinary action not found',
       });
     }
 
-    const student = this.prisma.memoryStore.students.get(action.studentId);
-    const incident = this.prisma.memoryStore.disciplineIncidents.get(action.incidentId);
-
     return {
       ...action,
-      studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-      admissionNumber: student?.admissionNumber || '',
-      incidentTitle: incident?.title || 'Incident',
+      studentName: action.student ? `${action.student.firstName} ${action.student.lastName}` : 'Student',
+      admissionNumber: action.student?.admissionNumber || '',
+      incidentTitle: action.incident?.title || 'Incident',
     };
   }
 }

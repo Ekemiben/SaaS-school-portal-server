@@ -6,6 +6,7 @@ import {
   CompleteSyllabusTopicDto,
 } from '../dto/syllabus-topic.dto.js';
 import { ErrorCodes } from '../../../common/constants/error-codes.js';
+import { randomUUID } from 'crypto';
 
 @Injectable()
 export class SyllabusService {
@@ -18,49 +19,55 @@ export class SyllabusService {
     teacherUserId: string,
     dto: CreateSyllabusTopicDto,
   ) {
-    const classRecord = this.prisma.memoryStore.classes.get(dto.classId);
-    if (!classRecord || classRecord.tenantId !== tenantId) {
+    const classRecord = await this.prisma.class.findFirst({
+      where: { id: dto.classId, tenantId },
+    });
+    if (!classRecord) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Class not found in this school',
       });
     }
 
-    const subject = this.prisma.memoryStore.subjects.get(dto.subjectId);
-    if (!subject || subject.tenantId !== tenantId) {
+    const subject = await this.prisma.subject.findFirst({
+      where: { id: dto.subjectId, tenantId },
+    });
+    if (!subject) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Subject not found in this school',
       });
     }
 
-    const existingTopics = Array.from(this.prisma.memoryStore.syllabusTopics.values()).filter(
-      (t) => t.tenantId === tenantId && t.classId === dto.classId && t.subjectId === dto.subjectId,
-    );
+    const existingCount = await this.prisma.syllabusTopic.count({
+      where: { tenantId, classId: dto.classId, subjectId: dto.subjectId },
+    });
 
-    const id = `syl_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const topic = {
-      id,
-      tenantId,
-      classId: dto.classId,
-      subjectId: dto.subjectId,
-      academicYearId: dto.academicYearId || classRecord.academicYearId || null,
-      termId: dto.termId || null,
-      unitNumber: dto.unitNumber || 1,
-      topicTitle: dto.topicTitle,
-      description: dto.description || null,
-      learningObjectives: dto.learningObjectives || [],
-      estimatedHours: dto.estimatedHours || null,
-      weekNumber: dto.weekNumber || null,
-      orderIndex: dto.orderIndex ?? existingTopics.length,
-      status: dto.status || 'PLANNED',
-      completedAt: null,
-      completedByUserId: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.syllabusTopics.set(id, topic);
+    const id = `syl_${Date.now()}_${randomUUID().substring(0, 5)}`;
+    const topic = await this.prisma.syllabusTopic.create({
+      data: {
+        id,
+        tenantId,
+        classId: dto.classId,
+        subjectId: dto.subjectId,
+        academicYearId: dto.academicYearId || classRecord.academicYearId || null,
+        termId: dto.termId || null,
+        unitNumber: dto.unitNumber || 1,
+        topicTitle: dto.topicTitle,
+        description: dto.description || null,
+        learningObjectives: (dto.learningObjectives as any) || [],
+        estimatedHours: dto.estimatedHours || null,
+        weekNumber: dto.weekNumber || null,
+        orderIndex: dto.orderIndex ?? existingCount,
+        status: dto.status || 'PLANNED',
+        completedAt: null,
+        completedByUserId: null,
+      },
+      include: {
+        class: true,
+        subject: true,
+      },
+    });
 
     return {
       ...topic,
@@ -70,28 +77,33 @@ export class SyllabusService {
   }
 
   async getSyllabusTopics(tenantId: string, classId: string, subjectId: string) {
-    const classRecord = this.prisma.memoryStore.classes.get(classId);
-    if (!classRecord || classRecord.tenantId !== tenantId) {
+    const classRecord = await this.prisma.class.findFirst({
+      where: { id: classId, tenantId },
+    });
+    if (!classRecord) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Class not found in this school',
       });
     }
 
-    const subject = this.prisma.memoryStore.subjects.get(subjectId);
-    if (!subject || subject.tenantId !== tenantId) {
+    const subject = await this.prisma.subject.findFirst({
+      where: { id: subjectId, tenantId },
+    });
+    if (!subject) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Subject not found in this school',
       });
     }
 
-    const topics = Array.from(this.prisma.memoryStore.syllabusTopics.values())
-      .filter((t) => t.tenantId === tenantId && t.classId === classId && t.subjectId === subjectId)
-      .sort((a, b) => {
-        if (a.unitNumber !== b.unitNumber) return a.unitNumber - b.unitNumber;
-        return a.orderIndex - b.orderIndex;
-      });
+    const topics = await this.prisma.syllabusTopic.findMany({
+      where: { tenantId, classId, subjectId },
+      orderBy: [
+        { unitNumber: 'asc' },
+        { orderIndex: 'asc' },
+      ],
+    });
 
     const totalTopics = topics.length;
     const completedTopics = topics.filter((t) => t.status === 'COMPLETED').length;
@@ -112,39 +124,62 @@ export class SyllabusService {
   }
 
   async getSyllabusTopicById(tenantId: string, id: string) {
-    const topic = this.prisma.memoryStore.syllabusTopics.get(id);
-    if (!topic || topic.tenantId !== tenantId) {
+    const topic = await this.prisma.syllabusTopic.findFirst({
+      where: { id, tenantId },
+      include: {
+        class: true,
+        subject: true,
+      },
+    });
+
+    if (!topic) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Syllabus topic not found',
       });
     }
 
-    const cls = this.prisma.memoryStore.classes.get(topic.classId);
-    const sub = this.prisma.memoryStore.subjects.get(topic.subjectId);
-
     return {
       ...topic,
-      className: cls?.name || 'Class',
-      subjectName: sub?.name || 'Subject',
+      className: topic.class?.name || 'Class',
+      subjectName: topic.subject?.name || 'Subject',
     };
   }
 
   async updateSyllabusTopic(tenantId: string, id: string, dto: UpdateSyllabusTopicDto) {
-    const topic = await this.getSyllabusTopicById(tenantId, id);
+    const existing = await this.prisma.syllabusTopic.findFirst({
+      where: { id, tenantId },
+    });
 
-    if (dto.topicTitle !== undefined) topic.topicTitle = dto.topicTitle;
-    if (dto.description !== undefined) topic.description = dto.description;
-    if (dto.learningObjectives !== undefined) topic.learningObjectives = dto.learningObjectives;
-    if (dto.estimatedHours !== undefined) topic.estimatedHours = dto.estimatedHours;
-    if (dto.weekNumber !== undefined) topic.weekNumber = dto.weekNumber;
-    if (dto.orderIndex !== undefined) topic.orderIndex = dto.orderIndex;
-    if (dto.status !== undefined) topic.status = dto.status;
+    if (!existing) {
+      throw new NotFoundException({
+        errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
+        message: 'Syllabus topic not found',
+      });
+    }
 
-    topic.updatedAt = new Date();
-    this.prisma.memoryStore.syllabusTopics.set(id, topic);
+    const updated = await this.prisma.syllabusTopic.update({
+      where: { id },
+      data: {
+        ...(dto.topicTitle !== undefined ? { topicTitle: dto.topicTitle } : {}),
+        ...(dto.description !== undefined ? { description: dto.description } : {}),
+        ...(dto.learningObjectives !== undefined ? { learningObjectives: dto.learningObjectives as any } : {}),
+        ...(dto.estimatedHours !== undefined ? { estimatedHours: dto.estimatedHours } : {}),
+        ...(dto.weekNumber !== undefined ? { weekNumber: dto.weekNumber } : {}),
+        ...(dto.orderIndex !== undefined ? { orderIndex: dto.orderIndex } : {}),
+        ...(dto.status !== undefined ? { status: dto.status } : {}),
+      },
+      include: {
+        class: true,
+        subject: true,
+      },
+    });
 
-    return topic;
+    return {
+      ...updated,
+      className: updated.class?.name || 'Class',
+      subjectName: updated.subject?.name || 'Subject',
+    };
   }
 
   async completeSyllabusTopic(
@@ -153,23 +188,59 @@ export class SyllabusService {
     teacherUserId: string,
     dto: CompleteSyllabusTopicDto,
   ) {
-    const topic = await this.getSyllabusTopicById(tenantId, id);
+    const existing = await this.prisma.syllabusTopic.findFirst({
+      where: { id, tenantId },
+    });
 
-    topic.status = 'COMPLETED';
-    topic.completedAt = new Date();
-    topic.completedByUserId = teacherUserId;
-    if (dto.notes) {
-      topic.description = topic.description ? `${topic.description} | Note: ${dto.notes}` : dto.notes;
+    if (!existing) {
+      throw new NotFoundException({
+        errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
+        message: 'Syllabus topic not found',
+      });
     }
-    topic.updatedAt = new Date();
 
-    this.prisma.memoryStore.syllabusTopics.set(id, topic);
-    return topic;
+    let description = existing.description;
+    if (dto.notes) {
+      description = description ? `${description} | Note: ${dto.notes}` : dto.notes;
+    }
+
+    const updated = await this.prisma.syllabusTopic.update({
+      where: { id },
+      data: {
+        status: 'COMPLETED',
+        completedAt: new Date(),
+        completedByUserId: teacherUserId,
+        ...(dto.notes ? { description } : {}),
+      },
+      include: {
+        class: true,
+        subject: true,
+      },
+    });
+
+    return {
+      ...updated,
+      className: updated.class?.name || 'Class',
+      subjectName: updated.subject?.name || 'Subject',
+    };
   }
 
   async deleteSyllabusTopic(tenantId: string, id: string) {
-    await this.getSyllabusTopicById(tenantId, id);
-    this.prisma.memoryStore.syllabusTopics.delete(id);
+    const existing = await this.prisma.syllabusTopic.findFirst({
+      where: { id, tenantId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException({
+        errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
+        message: 'Syllabus topic not found',
+      });
+    }
+
+    await this.prisma.syllabusTopic.delete({
+      where: { id },
+    });
+
     return { success: true, message: 'Syllabus topic deleted successfully' };
   }
 }

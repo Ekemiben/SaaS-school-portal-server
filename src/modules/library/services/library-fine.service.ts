@@ -19,67 +19,80 @@ export class LibraryFineService {
 
   async calculateOverdueFines(tenantId: string) {
     const now = new Date();
-    const activeIssues = Array.from(this.prisma.memoryStore.bookIssues.values()).filter(
-      (i) => i.tenantId === tenantId && (i.status === 'ACTIVE' || i.status === 'OVERDUE') && new Date(i.dueDate) < now,
-    );
+    const activeIssues = await this.prisma.bookIssue.findMany({
+      where: {
+        tenantId,
+        status: { in: ['ACTIVE', 'OVERDUE'] },
+        dueDate: { lt: now },
+      },
+    });
 
     const updatedFines = [];
     const fineRate = 100.0;
 
     for (const issue of activeIssues) {
-      issue.status = 'OVERDUE';
       const overdueDays = Math.max(1, Math.ceil((now.getTime() - new Date(issue.dueDate).getTime()) / (1000 * 3600 * 24)));
       const fineAmount = overdueDays * fineRate;
 
-      issue.overdueDays = overdueDays;
-      issue.fineAmount = fineAmount;
-      issue.updatedAt = now;
-      this.prisma.memoryStore.bookIssues.set(issue.id, issue);
-
-      let fine = Array.from(this.prisma.memoryStore.libraryFines.values()).find(
-        (f) => f.tenantId === tenantId && f.issueId === issue.id,
-      );
-
-      if (!fine) {
-        const fineId = `fin_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-        fine = {
-          id: fineId,
-          tenantId,
-          campusId: issue.campusId,
-          issueId: issue.id,
-          studentId: issue.studentId,
-          staffUserId: issue.staffUserId,
+      await this.prisma.bookIssue.update({
+        where: { id: issue.id },
+        data: {
+          status: 'OVERDUE',
           overdueDays,
-          ratePerDay: fineRate,
-          totalAmount: fineAmount,
-          paidAmount: 0,
-          balanceDue: fineAmount,
-          status: 'UNPAID',
-          waivedByUserId: null,
-          waiveReason: null,
-          paymentReference: null,
-          paidAt: null,
-          createdAt: now,
-          updatedAt: now,
-        };
-        this.prisma.memoryStore.libraryFines.set(fineId, fine);
-      } else if (fine.status !== 'PAID' && fine.status !== 'WAIVED') {
-        fine.overdueDays = overdueDays;
-        fine.totalAmount = fineAmount;
-        fine.balanceDue = Math.max(0, fineAmount - fine.paidAmount);
-        fine.updatedAt = now;
-        this.prisma.memoryStore.libraryFines.set(fine.id, fine);
+          fineAmount,
+        },
+      });
+
+      const existingFine = await this.prisma.libraryFine.findFirst({
+        where: { tenantId, issueId: issue.id },
+      });
+
+      let fineRecord;
+      if (!existingFine) {
+        fineRecord = await this.prisma.libraryFine.create({
+          data: {
+            tenantId,
+            campusId: issue.campusId,
+            issueId: issue.id,
+            studentId: issue.studentId,
+            staffUserId: issue.staffUserId,
+            overdueDays,
+            ratePerDay: fineRate,
+            totalAmount: fineAmount,
+            paidAmount: 0,
+            balanceDue: fineAmount,
+            status: 'UNPAID',
+            waivedByUserId: null,
+            waiveReason: null,
+            paymentReference: null,
+            paidAt: null,
+          },
+        });
+      } else if (existingFine.status !== 'PAID' && existingFine.status !== 'WAIVED') {
+        const balanceDue = Math.max(0, fineAmount - existingFine.paidAmount);
+        fineRecord = await this.prisma.libraryFine.update({
+          where: { id: existingFine.id },
+          data: {
+            overdueDays,
+            totalAmount: fineAmount,
+            balanceDue,
+          },
+        });
+      } else {
+        fineRecord = existingFine;
       }
 
-      updatedFines.push(fine);
+      updatedFines.push(fineRecord);
     }
 
     return updatedFines;
   }
 
   async payFine(tenantId: string, fineId: string, dto: PayLibraryFineDto) {
-    const fine = this.prisma.memoryStore.libraryFines.get(fineId);
-    if (!fine || fine.tenantId !== tenantId) {
+    const fine = await this.prisma.libraryFine.findFirst({
+      where: { id: fineId, tenantId },
+    });
+    if (!fine) {
       throw new NotFoundException(`Fine with ID ${fineId} not found`);
     }
 
@@ -89,25 +102,26 @@ export class LibraryFineService {
 
     const newPaidAmount = fine.paidAmount + dto.amount;
     const newBalance = Math.max(0, fine.totalAmount - newPaidAmount);
+    const newStatus = newBalance === 0 ? 'PAID' : 'PARTIALLY_PAID';
 
-    fine.paidAmount = newPaidAmount;
-    fine.balanceDue = newBalance;
-    fine.status = newBalance === 0 ? 'PAID' : 'PARTIALLY_PAID';
-    if (dto.paymentReference) fine.paymentReference = dto.paymentReference;
-    if (newBalance === 0) fine.paidAt = new Date();
-    fine.updatedAt = new Date();
-
-    this.prisma.memoryStore.libraryFines.set(fineId, fine);
+    const updatedFine = await this.prisma.libraryFine.update({
+      where: { id: fineId },
+      data: {
+        paidAmount: newPaidAmount,
+        balanceDue: newBalance,
+        status: newStatus,
+        paymentReference: dto.paymentReference || fine.paymentReference,
+        paidAt: newBalance === 0 ? new Date() : fine.paidAt,
+      },
+    });
 
     // Update issue fine status
-    const issue = this.prisma.memoryStore.bookIssues.get(fine.issueId);
-    if (issue) {
-      issue.finePaidStatus = fine.status;
-      issue.updatedAt = new Date();
-      this.prisma.memoryStore.bookIssues.set(issue.id, issue);
-    }
+    await this.prisma.bookIssue.update({
+      where: { id: fine.issueId },
+      data: { finePaidStatus: newStatus },
+    });
 
-    return fine;
+    return updatedFine;
   }
 
   async waiveFine(
@@ -116,69 +130,77 @@ export class LibraryFineService {
     waivedByUserId: string,
     dto: WaiveLibraryFineDto,
   ) {
-    const fine = this.prisma.memoryStore.libraryFines.get(fineId);
-    if (!fine || fine.tenantId !== tenantId) {
+    const fine = await this.prisma.libraryFine.findFirst({
+      where: { id: fineId, tenantId },
+    });
+    if (!fine) {
       throw new NotFoundException(`Fine with ID ${fineId} not found`);
     }
 
-    fine.status = 'WAIVED';
-    fine.balanceDue = 0;
-    fine.waivedByUserId = waivedByUserId;
-    fine.waiveReason = dto.waiveReason;
-    fine.updatedAt = new Date();
+    const updatedFine = await this.prisma.libraryFine.update({
+      where: { id: fineId },
+      data: {
+        status: 'WAIVED',
+        balanceDue: 0,
+        waivedByUserId,
+        waiveReason: dto.waiveReason,
+      },
+    });
 
-    this.prisma.memoryStore.libraryFines.set(fineId, fine);
+    await this.prisma.bookIssue.update({
+      where: { id: fine.issueId },
+      data: { finePaidStatus: 'WAIVED' },
+    });
 
-    const issue = this.prisma.memoryStore.bookIssues.get(fine.issueId);
-    if (issue) {
-      issue.finePaidStatus = 'WAIVED';
-      issue.updatedAt = new Date();
-      this.prisma.memoryStore.bookIssues.set(issue.id, issue);
-    }
-
-    return fine;
+    return updatedFine;
   }
 
   async listFines(tenantId: string, filter?: FineFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.libraryFines.values()).filter(
-      (f) => f.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
+    if (filter?.studentId) where.studentId = filter.studentId;
+    if (filter?.staffUserId) where.staffUserId = filter.staffUserId;
+    if (filter?.status) where.status = filter.status;
+    if (filter?.issueId) where.issueId = filter.issueId;
+    if (filter?.campusId) where.campusId = filter.campusId;
 
-    if (filter?.studentId) list = list.filter((f) => f.studentId === filter.studentId);
-    if (filter?.staffUserId) list = list.filter((f) => f.staffUserId === filter.staffUserId);
-    if (filter?.status) list = list.filter((f) => f.status === filter.status);
-    if (filter?.issueId) list = list.filter((f) => f.issueId === filter.issueId);
-    if (filter?.campusId) list = list.filter((f) => f.campusId === filter.campusId);
-
-    return list.map((f) => {
-      const student = f.studentId ? this.prisma.memoryStore.students.get(f.studentId) : null;
-      const issue = this.prisma.memoryStore.bookIssues.get(f.issueId);
-      const book = issue ? this.prisma.memoryStore.books.get(issue.bookId) : null;
-
-      return {
-        ...f,
-        studentName: student ? `${student.firstName} ${student.lastName}` : 'Patron',
-        admissionNumber: student?.admissionNumber || '',
-        bookTitle: book?.title || 'Book',
-      };
+    const list = await this.prisma.libraryFine.findMany({
+      where,
+      include: {
+        student: true,
+        issue: {
+          include: { book: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
     });
+
+    return list.map((f) => ({
+      ...f,
+      studentName: f.student ? `${f.student.firstName} ${f.student.lastName}` : 'Patron',
+      admissionNumber: f.student?.admissionNumber || '',
+      bookTitle: f.issue?.book?.title || 'Book',
+    }));
   }
 
   async getFineById(tenantId: string, fineId: string) {
-    const fine = this.prisma.memoryStore.libraryFines.get(fineId);
-    if (!fine || fine.tenantId !== tenantId) {
+    const fine = await this.prisma.libraryFine.findFirst({
+      where: { id: fineId, tenantId },
+      include: {
+        student: true,
+        issue: {
+          include: { book: true },
+        },
+      },
+    });
+    if (!fine) {
       throw new NotFoundException(`Fine with ID ${fineId} not found`);
     }
 
-    const student = fine.studentId ? this.prisma.memoryStore.students.get(fine.studentId) : null;
-    const issue = this.prisma.memoryStore.bookIssues.get(fine.issueId);
-    const book = issue ? this.prisma.memoryStore.books.get(issue.bookId) : null;
-
     return {
       ...fine,
-      studentName: student ? `${student.firstName} ${student.lastName}` : 'Patron',
-      admissionNumber: student?.admissionNumber || '',
-      bookTitle: book?.title || 'Book',
+      studentName: fine.student ? `${fine.student.firstName} ${fine.student.lastName}` : 'Patron',
+      admissionNumber: fine.student?.admissionNumber || '',
+      bookTitle: fine.issue?.book?.title || 'Book',
     };
   }
 }

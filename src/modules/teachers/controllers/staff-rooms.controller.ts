@@ -5,7 +5,7 @@ import type { TenantContext } from '../../../common/types/tenant-context.interfa
 import { RequirePermissions } from '../../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../../common/constants/permissions.js';
 
-@Controller('api/v1/teachers/staff-rooms')
+@Controller(['api/v1/teachers/staff-rooms', 'api/v1/academics/staff-rooms', 'teachers/staff-rooms', 'academics/staff-rooms'])
 export class StaffRoomsController {
   constructor(private readonly masterDataService: StaffMasterDataService) {}
 

@@ -31,14 +31,12 @@ export class ParentsService {
       password?: string;
     },
   ): Promise<string | null> {
-    if (!this.prisma.isDbConnected) return null;
     const cleanEmail = params.email ? params.email.toLowerCase().trim() : null;
     const cleanPhone = params.phone ? params.phone.replace(/\s+/g, '').trim() : null;
 
     if (!cleanEmail && !cleanPhone) return null;
 
     try {
-      // 1. Resolve role
       let role = await this.prisma.role.findFirst({
         where: { tenantId, name: 'PARENT' },
       });
@@ -54,7 +52,6 @@ export class ParentsService {
         });
       }
 
-      // 2. Check if user already exists in this tenant
       const existingUser = await this.prisma.user.findFirst({
         where: {
           tenantId,
@@ -66,7 +63,6 @@ export class ParentsService {
       });
 
       if (existingUser) {
-        // Ensure PARENT role exists
         await this.prisma.userRole.upsert({
           where: {
             userId_roleId: {
@@ -84,7 +80,6 @@ export class ParentsService {
         return existingUser.id;
       }
 
-      // 3. User does not exist, provision a new User
       const passwordToHash = params.password || randomBytes(16).toString('hex');
       const passwordHash = await bcrypt.hash(passwordToHash, 10);
       const newUserId = `usr_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
@@ -117,581 +112,445 @@ export class ParentsService {
   }
 
   async findAll(tenantId: string) {
-    if (this.prisma.isDbConnected) {
-      try {
-        const parents = await this.prisma.parent.findMany({
-          where: { tenantId },
+    const parents = await this.prisma.parent.findMany({
+      where: { tenantId },
+      include: {
+        students: {
           include: {
-            students: {
+            student: {
               include: {
-                student: {
-                  include: {
-                    campus: true,
-                    enrollments: {
-                      where: { status: 'ACTIVE' },
-                      include: { class: true },
-                      take: 1,
-                    },
-                  },
+                campus: true,
+                enrollments: {
+                  where: { status: 'ACTIVE' },
+                  include: { class: true },
+                  take: 1,
                 },
               },
             },
           },
-          orderBy: { createdAt: 'desc' },
-        });
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
 
-        return parents.map((p) => ({
-          id: p.id,
-          userId: p.userId,
-          tenantId: p.tenantId,
-          firstName: p.firstName,
-          lastName: p.lastName,
-          fullName: `${p.firstName} ${p.lastName}`.trim(),
-          email: p.email,
-          phone: p.phone,
-          relationship: p.relationship,
-          occupation: p.occupation,
-          address: p.address,
-          linkedWards: (p.students || []).map((sp) => ({
-            id: sp.student.id,
-            studentId: sp.student.id,
-            name: `${sp.student.firstName} ${sp.student.lastName}`.trim(),
-            admissionNumber: sp.student.admissionNumber,
-            className: sp.student.enrollments?.[0]?.class?.name || 'Unassigned',
-            classLevel: sp.student.enrollments?.[0]?.class?.name || 'Unassigned',
-            isPrimaryContact: sp.isPrimaryContact,
-          })),
-          createdAt: p.createdAt,
-          updatedAt: p.updatedAt,
-        }));
-      } catch {}
-    }
-
-    return Array.from(this.prisma.memoryStore.parents.values()).filter(
-      (p) => p.tenantId === tenantId,
-    );
+    return parents.map((p) => ({
+      id: p.id,
+      userId: p.userId,
+      tenantId: p.tenantId,
+      firstName: p.firstName,
+      lastName: p.lastName,
+      fullName: `${p.firstName} ${p.lastName}`.trim(),
+      email: p.email,
+      phone: p.phone,
+      relationship: p.relationship,
+      occupation: p.occupation,
+      address: p.address,
+      linkedWards: (p.students || []).map((sp) => ({
+        id: sp.student.id,
+        studentId: sp.student.id,
+        name: `${sp.student.firstName} ${sp.student.lastName}`.trim(),
+        admissionNumber: sp.student.admissionNumber,
+        className: sp.student.enrollments?.[0]?.class?.name || 'Unassigned',
+        classLevel: sp.student.enrollments?.[0]?.class?.name || 'Unassigned',
+        isPrimaryContact: sp.isPrimaryContact,
+      })),
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt,
+    }));
   }
 
   async findById(tenantId: string, parentId: string) {
-    if (this.prisma.isDbConnected) {
-      try {
-        const p = await this.prisma.parent.findFirst({
-          where: { id: parentId, tenantId },
+    const p = await this.prisma.parent.findFirst({
+      where: { id: parentId, tenantId },
+      include: {
+        students: {
           include: {
-            students: {
+            student: {
               include: {
-                student: {
-                  include: {
-                    campus: true,
-                    enrollments: {
-                      where: { status: 'ACTIVE' },
-                      include: { class: true },
-                      take: 1,
-                    },
-                  },
+                campus: true,
+                enrollments: {
+                  where: { status: 'ACTIVE' },
+                  include: { class: true },
+                  take: 1,
                 },
               },
             },
           },
-        });
+        },
+      },
+    });
 
-        if (!p) throw new NotFoundException('Parent record not found in this school');
+    if (!p) throw new NotFoundException('Parent record not found in this school');
 
-        return {
-          id: p.id,
-          userId: p.userId,
-          tenantId: p.tenantId,
-          firstName: p.firstName,
-          lastName: p.lastName,
-          fullName: `${p.firstName} ${p.lastName}`.trim(),
-          email: p.email,
-          phone: p.phone,
-          relationship: p.relationship,
-          occupation: p.occupation,
-          address: p.address,
-          linkedWards: (p.students || []).map((sp) => ({
-            id: sp.student.id,
-            studentId: sp.student.id,
-            name: `${sp.student.firstName} ${sp.student.lastName}`.trim(),
-            admissionNumber: sp.student.admissionNumber,
-            className: sp.student.enrollments?.[0]?.class?.name || 'Unassigned',
-            classLevel: sp.student.enrollments?.[0]?.class?.name || 'Unassigned',
-            isPrimaryContact: sp.isPrimaryContact,
-          })),
-          createdAt: p.createdAt,
-          updatedAt: p.updatedAt,
-        };
-      } catch (err: any) {
-        if (err instanceof NotFoundException) throw err;
-      }
-    }
-
-    const parent = this.prisma.memoryStore.parents.get(parentId);
-    if (!parent || parent.tenantId !== tenantId) {
-      throw new NotFoundException('Parent record not found');
-    }
-    return parent;
+    return {
+      id: p.id,
+      userId: p.userId,
+      tenantId: p.tenantId,
+      firstName: p.firstName,
+      lastName: p.lastName,
+      fullName: `${p.firstName} ${p.lastName}`.trim(),
+      email: p.email,
+      phone: p.phone,
+      relationship: p.relationship,
+      occupation: p.occupation,
+      address: p.address,
+      linkedWards: (p.students || []).map((sp) => ({
+        id: sp.student.id,
+        studentId: sp.student.id,
+        name: `${sp.student.firstName} ${sp.student.lastName}`.trim(),
+        admissionNumber: sp.student.admissionNumber,
+        className: sp.student.enrollments?.[0]?.class?.name || 'Unassigned',
+        classLevel: sp.student.enrollments?.[0]?.class?.name || 'Unassigned',
+        isPrimaryContact: sp.isPrimaryContact,
+      })),
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt,
+    };
   }
 
   async create(tenantId: string, data: any) {
     const id = `par_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
     const firstName = data.firstName || data.fullName?.split(' ')[0] || 'Parent';
     const lastName = data.lastName || data.fullName?.split(' ').slice(1).join(' ') || '';
-    const fullName = data.fullName || `${firstName} ${lastName}`.trim();
 
-    // Resolve target student IDs to link
     const candidateStudentIds: string[] = [];
     if (Array.isArray(data.studentIds)) {
       candidateStudentIds.push(...data.studentIds);
     } else if (Array.isArray(data.linkedWards)) {
       candidateStudentIds.push(
-        ...data.linkedWards.map((w: any) => (typeof w === 'string' ? w : w.studentId || w.id)).filter(Boolean)
+        ...data.linkedWards.map((w: any) => (typeof w === 'string' ? w : w.studentId || w.id)).filter(Boolean),
       );
     }
 
-    if (this.prisma.isDbConnected) {
-      try {
-        // Authoritative user account provisioning/linking
-        const userId = await this.provisionOrLinkParentUser(tenantId, {
-          firstName,
-          lastName,
-          email: data.email,
-          phone: data.phone,
-          password: data.password,
+    const userId = await this.provisionOrLinkParentUser(tenantId, {
+      firstName,
+      lastName,
+      email: data.email,
+      phone: data.phone,
+      password: data.password,
+    });
+
+    await this.prisma.parent.create({
+      data: {
+        id,
+        tenantId,
+        userId: userId || undefined,
+        firstName,
+        lastName,
+        email: data.email ? data.email.toLowerCase().trim() : null,
+        phone: data.phone ? data.phone.trim() : null,
+        relationship: data.relationship || 'Parent',
+        occupation: data.occupation || null,
+        address: data.address || null,
+      },
+    });
+
+    if (candidateStudentIds.length > 0) {
+      const validStudents = await this.prisma.student.findMany({
+        where: { tenantId, id: { in: candidateStudentIds } },
+        select: { id: true },
+      });
+
+      if (validStudents.length > 0) {
+        await this.prisma.studentParent.createMany({
+          data: validStudents.map((s, idx) => ({
+            id: `sp_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+            parentId: id,
+            studentId: s.id,
+            isPrimaryContact: idx === 0 ? (data.isPrimaryContact ?? true) : false,
+          })),
+          skipDuplicates: true,
         });
-
-        await this.prisma.parent.create({
-          data: {
-            id,
-            tenantId,
-            userId: userId || undefined,
-            firstName,
-            lastName,
-            email: data.email ? data.email.toLowerCase().trim() : null,
-            phone: data.phone ? data.phone.trim() : null,
-            relationship: data.relationship || 'Parent',
-            occupation: data.occupation || null,
-            address: data.address || null,
-          },
-        });
-
-        // Link valid students strictly in this tenant
-        if (candidateStudentIds.length > 0) {
-          const validStudents = await this.prisma.student.findMany({
-            where: { tenantId, id: { in: candidateStudentIds } },
-            select: { id: true },
-          });
-
-          if (validStudents.length > 0) {
-            await this.prisma.studentParent.createMany({
-              data: validStudents.map((s, idx) => ({
-                id: `sp_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
-                parentId: id,
-                studentId: s.id,
-                isPrimaryContact: idx === 0 ? (data.isPrimaryContact ?? true) : false,
-              })),
-              skipDuplicates: true,
-            });
-          }
-        }
-
-        return this.findById(tenantId, id);
-      } catch (err: any) {
-        this.logger.warn(`Failed DB parent create: ${err.message}`);
       }
     }
 
-    const parent = {
-      ...data,
-      id,
-      tenantId,
-      firstName,
-      lastName,
-      fullName,
-      email: data.email || null,
-      phone: data.phone,
-      relationship: data.relationship || 'Father',
-      occupation: data.occupation || null,
-      address: data.address || null,
-      portalAccess: data.portalAccess || 'Active',
-      linkedWards: (data.linkedWards || []).map((w: any) => ({
-        id: w.id || w.studentId || `std_${randomUUID().slice(0, 8)}`,
-        studentId: w.studentId || w.id || `std_${randomUUID().slice(0, 8)}`,
-        name: w.name || `${w.firstName || ''} ${w.lastName || ''}`.trim() || 'Student',
-        className: w.className || w.classLevel || 'General',
-        classLevel: w.classLevel || w.className || 'General',
-        admissionNumber: w.admissionNumber || 'SCH/2026/001',
-        isPrimaryContact: true,
-      })),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    this.prisma.memoryStore.parents.set(id, parent);
-    return parent;
+    return this.findById(tenantId, id);
   }
 
   async update(tenantId: string, parentId: string, data: any) {
-    // Resolve target student IDs if provided
     const hasStudentUpdates = data.studentIds !== undefined || data.linkedWards !== undefined;
     const candidateStudentIds: string[] = [];
     if (Array.isArray(data.studentIds)) {
       candidateStudentIds.push(...data.studentIds);
     } else if (Array.isArray(data.linkedWards)) {
       candidateStudentIds.push(
-        ...data.linkedWards.map((w: any) => (typeof w === 'string' ? w : w.studentId || w.id)).filter(Boolean)
+        ...data.linkedWards.map((w: any) => (typeof w === 'string' ? w : w.studentId || w.id)).filter(Boolean),
       );
     }
 
-    if (this.prisma.isDbConnected) {
-      try {
-        const existingParent = await this.prisma.parent.findFirst({
-          where: { id: parentId, tenantId },
-        });
+    const existingParent = await this.prisma.parent.findFirst({
+      where: { id: parentId, tenantId },
+    });
 
-        if (existingParent) {
-          let userId = existingParent.userId;
-          if (!userId && (data.email || data.phone || existingParent.email || existingParent.phone)) {
-            userId = await this.provisionOrLinkParentUser(tenantId, {
-              firstName: data.firstName || existingParent.firstName,
-              lastName: data.lastName || existingParent.lastName,
-              email: data.email || existingParent.email,
-              phone: data.phone || existingParent.phone,
-              password: data.password,
-            });
-          } else if (userId) {
-            // Synchronize User record
-            const userUpdates: any = {};
-            if (data.firstName) userUpdates.firstName = data.firstName;
-            if (data.lastName) userUpdates.lastName = data.lastName;
-            if (data.email) userUpdates.email = data.email.toLowerCase().trim();
-            if (data.phone) userUpdates.phone = data.phone.trim();
-            if (data.password) {
-              userUpdates.passwordHash = await bcrypt.hash(data.password, 10);
-            }
-            if (Object.keys(userUpdates).length > 0) {
-              await this.prisma.user.update({
-                where: { id: userId },
-                data: userUpdates,
-              }).catch(() => {});
-            }
-          }
+    if (!existingParent) {
+      throw new NotFoundException('Parent record not found in this school');
+    }
 
-          await this.prisma.parent.update({
-            where: { id: parentId },
-            data: {
-              ...(userId ? { userId } : {}),
-              ...(data.firstName ? { firstName: data.firstName } : {}),
-              ...(data.lastName ? { lastName: data.lastName } : {}),
-              ...(data.email ? { email: data.email.toLowerCase().trim() } : {}),
-              ...(data.phone ? { phone: data.phone } : {}),
-              ...(data.relationship ? { relationship: data.relationship } : {}),
-              ...(data.occupation ? { occupation: data.occupation } : {}),
-              ...(data.address ? { address: data.address } : {}),
-            },
-          });
-        }
-
-        if (hasStudentUpdates) {
-          const validStudents = await this.prisma.student.findMany({
-            where: { tenantId, id: { in: candidateStudentIds } },
-            select: { id: true },
-          });
-          const validIds = validStudents.map((s) => s.id);
-
-          // Remove any links no longer in target list
-          await this.prisma.studentParent.deleteMany({
-            where: {
-              parentId,
-              studentId: { notIn: validIds },
-            },
-          });
-
-          // Identify existing links
-          const existingLinks = await this.prisma.studentParent.findMany({
-            where: { parentId },
-            select: { studentId: true },
-          });
-          const existingIds = new Set(existingLinks.map((sp) => sp.studentId));
-
-          // Insert newly linked students
-          const toAdd = validIds.filter((sid) => !existingIds.has(sid));
-          if (toAdd.length > 0) {
-            await this.prisma.studentParent.createMany({
-              data: toAdd.map((sid, idx) => ({
-                id: `sp_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
-                parentId,
-                studentId: sid,
-                isPrimaryContact: existingIds.size === 0 && idx === 0,
-              })),
-              skipDuplicates: true,
-            });
-          }
-        }
-
-        return this.findById(tenantId, parentId);
-      } catch (err: any) {
-        // Fallback to memoryStore
+    let userId = existingParent.userId;
+    if (!userId && (data.email || data.phone || existingParent.email || existingParent.phone)) {
+      userId = await this.provisionOrLinkParentUser(tenantId, {
+        firstName: data.firstName || existingParent.firstName,
+        lastName: data.lastName || existingParent.lastName,
+        email: data.email || existingParent.email,
+        phone: data.phone || existingParent.phone,
+        password: data.password,
+      });
+    } else if (userId) {
+      const userUpdates: any = {};
+      if (data.firstName) userUpdates.firstName = data.firstName;
+      if (data.lastName) userUpdates.lastName = data.lastName;
+      if (data.email) userUpdates.email = data.email.toLowerCase().trim();
+      if (data.phone) userUpdates.phone = data.phone.trim();
+      if (data.password) {
+        userUpdates.passwordHash = await bcrypt.hash(data.password, 10);
+      }
+      if (Object.keys(userUpdates).length > 0) {
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: userUpdates,
+        }).catch(() => {});
       }
     }
 
-    const parent = await this.findById(tenantId, parentId);
-    Object.assign(parent, data, { updatedAt: new Date() });
-    if (data.firstName || data.lastName) {
-      parent.fullName = `${parent.firstName || ''} ${parent.lastName || ''}`.trim();
-    }
+    await this.prisma.parent.update({
+      where: { id: parentId },
+      data: {
+        ...(userId ? { userId } : {}),
+        ...(data.firstName ? { firstName: data.firstName } : {}),
+        ...(data.lastName ? { lastName: data.lastName } : {}),
+        ...(data.email ? { email: data.email.toLowerCase().trim() } : {}),
+        ...(data.phone ? { phone: data.phone } : {}),
+        ...(data.relationship ? { relationship: data.relationship } : {}),
+        ...(data.occupation ? { occupation: data.occupation } : {}),
+        ...(data.address ? { address: data.address } : {}),
+      },
+    });
+
     if (hasStudentUpdates) {
-      parent.linkedWards = candidateStudentIds.map((sid) => ({
-        id: sid,
-        studentId: sid,
-        name: 'Student',
-        className: 'General',
-        classLevel: 'General',
-        admissionNumber: 'SCH/2026/001',
-        isPrimaryContact: true,
-      }));
+      const validStudents = await this.prisma.student.findMany({
+        where: { tenantId, id: { in: candidateStudentIds } },
+        select: { id: true },
+      });
+      const validIds = validStudents.map((s) => s.id);
+
+      await this.prisma.studentParent.deleteMany({
+        where: {
+          parentId,
+          studentId: { notIn: validIds },
+        },
+      });
+
+      const existingLinks = await this.prisma.studentParent.findMany({
+        where: { parentId },
+        select: { studentId: true },
+      });
+      const existingIds = new Set(existingLinks.map((sp) => sp.studentId));
+
+      const toAdd = validIds.filter((sid) => !existingIds.has(sid));
+      if (toAdd.length > 0) {
+        await this.prisma.studentParent.createMany({
+          data: toAdd.map((sid, idx) => ({
+            id: `sp_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+            parentId,
+            studentId: sid,
+            isPrimaryContact: existingIds.size === 0 && idx === 0,
+          })),
+          skipDuplicates: true,
+        });
+      }
     }
-    this.prisma.memoryStore.parents.set(parentId, parent);
-    return parent;
+
+    return this.findById(tenantId, parentId);
   }
 
   async delete(tenantId: string, parentId: string) {
-    if (this.prisma.isDbConnected) {
-      try {
-        await this.prisma.parent.deleteMany({
-          where: { id: parentId, tenantId },
-        });
-        return { success: true, message: 'Parent record removed successfully' };
-      } catch {}
-    }
-
-    await this.findById(tenantId, parentId);
-    this.prisma.memoryStore.parents.delete(parentId);
+    await this.prisma.parent.deleteMany({
+      where: { id: parentId, tenantId },
+    });
     return { success: true, message: 'Parent record removed successfully' };
   }
 
   async getPortalProfile(tenantId: string, userId: string) {
-    if (this.prisma.isDbConnected) {
-      const user = await this.prisma.user.findUnique({
-        where: { id: userId },
-      });
-      if (!user) throw new NotFoundException('User account not found');
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+    if (!user) throw new NotFoundException('User account not found');
 
-      const parent = await this.prisma.parent.findFirst({
-        where: {
-          tenantId,
-          OR: [
-            { userId: user.id },
-            ...(user.email ? [{ email: user.email.toLowerCase().trim() }] : []),
-            ...(user.phone ? [{ phone: user.phone.trim() }] : []),
-          ],
-        },
-        include: {
-          students: {
-            include: {
-              student: {
-                include: {
-                  campus: true,
-                  enrollments: {
-                    where: { status: 'ACTIVE' },
-                    include: { class: true, academicYear: true },
-                    orderBy: { enrolledAt: 'desc' },
-                    take: 1,
-                  },
-                  attendance: {
-                    take: 50,
-                    orderBy: { date: 'desc' },
-                  },
-                  invoices: {
-                    orderBy: { dueDate: 'desc' },
-                  },
+    const parent = await this.prisma.parent.findFirst({
+      where: {
+        tenantId,
+        OR: [
+          { userId: user.id },
+          ...(user.email ? [{ email: user.email.toLowerCase().trim() }] : []),
+          ...(user.phone ? [{ phone: user.phone.trim() }] : []),
+        ],
+      },
+      include: {
+        students: {
+          include: {
+            student: {
+              include: {
+                campus: true,
+                enrollments: {
+                  where: { status: 'ACTIVE' },
+                  include: { class: true, academicYear: true },
+                  orderBy: { enrolledAt: 'desc' },
+                  take: 1,
+                },
+                attendance: {
+                  take: 50,
+                  orderBy: { date: 'desc' },
+                },
+                invoices: {
+                  orderBy: { dueDate: 'desc' },
                 },
               },
             },
           },
         },
-      });
+      },
+    });
 
-      if (!parent) {
-        throw new NotFoundException('Parent profile not found for this account.');
-      }
+    if (!parent) {
+      throw new NotFoundException('Parent profile not found for this account.');
+    }
 
-      // Self-heal parent.userId link if missing
-      if (!parent.userId) {
-        try {
-          await this.prisma.parent.update({
-            where: { id: parent.id },
-            data: { userId: user.id },
-          });
-        } catch {}
-      }
+    if (!parent.userId) {
+      await this.prisma.parent.update({
+        where: { id: parent.id },
+        data: { userId: user.id },
+      }).catch(() => {});
+    }
 
-      const wards = parent.students.map((sp) => {
-        const s = sp.student;
-        const totalAttendance = s.attendance.length;
-        const presentCount = s.attendance.filter((a) => a.status === 'PRESENT' || a.status === 'LATE').length;
-        const attendancePercentage =
-          totalAttendance > 0 ? Math.round((presentCount / totalAttendance) * 100) : 100;
+    const wards = parent.students.map((sp) => {
+      const s = sp.student;
+      const totalAttendance = s.attendance.length;
+      const presentCount = s.attendance.filter((a) => a.status === 'PRESENT' || a.status === 'LATE').length;
+      const attendancePercentage =
+        totalAttendance > 0 ? Math.round((presentCount / totalAttendance) * 100) : 100;
 
-        const totalInvoiced = s.invoices.reduce((sum, inv) => sum + (inv.totalAmount || 0), 0);
-        const totalPaid = s.invoices.reduce((sum, inv) => sum + (inv.paidAmount || 0), 0);
-        const balanceDue = s.invoices.reduce((sum, inv) => sum + (inv.balanceAmount || 0), 0);
-
-        return {
-          id: s.id,
-          studentId: s.id,
-          admissionNumber: s.admissionNumber,
-          firstName: s.firstName,
-          lastName: s.lastName,
-          fullName: `${s.firstName} ${s.lastName}`.trim(),
-          photoUrl: s.photoUrl,
-          campus: s.campus?.name || 'Main Campus',
-          className: s.enrollments?.[0]?.class?.name || 'Unassigned',
-          classLevel: s.enrollments?.[0]?.class?.name || 'Unassigned',
-          attendance: {
-            totalDays: totalAttendance,
-            presentDays: presentCount,
-            percentage: attendancePercentage,
-          },
-          fees: {
-            totalInvoiced,
-            totalPaid,
-            balanceDue,
-            isSettled: balanceDue <= 0,
-            invoicesCount: s.invoices.length,
-            invoices: s.invoices.map((inv) => ({
-              id: inv.id,
-              invoiceNumber: inv.invoiceNumber,
-              totalAmount: inv.totalAmount,
-              paidAmount: inv.paidAmount,
-              balanceAmount: inv.balanceAmount,
-              status: inv.status,
-              dueDate: inv.dueDate,
-            })),
-          },
-        };
-      });
-
-      const totalOutstanding = wards.reduce((sum, w) => sum + w.fees.balanceDue, 0);
-
-      const tenant = await this.prisma.tenant.findUnique({
-        where: { id: tenantId },
-        select: { name: true, currency: true, features: true, logoUrl: true },
-      });
-      const paymentConfig = (tenant?.features as any)?.paymentConfig || {};
+      const totalInvoiced = s.invoices.reduce((sum, inv) => sum + (inv.totalAmount || 0), 0);
+      const totalPaid = s.invoices.reduce((sum, inv) => sum + (inv.paidAmount || 0), 0);
+      const balanceDue = s.invoices.reduce((sum, inv) => sum + (inv.balanceAmount || 0), 0);
 
       return {
-        parent: {
-          id: parent.id,
-          userId: parent.userId || user.id,
-          firstName: parent.firstName,
-          lastName: parent.lastName,
-          fullName: `${parent.firstName} ${parent.lastName}`.trim(),
-          phone: parent.phone,
-          email: parent.email,
-          relationship: parent.relationship,
-          address: parent.address,
+        id: s.id,
+        studentId: s.id,
+        admissionNumber: s.admissionNumber,
+        firstName: s.firstName,
+        lastName: s.lastName,
+        fullName: `${s.firstName} ${s.lastName}`.trim(),
+        photoUrl: s.photoUrl,
+        campus: s.campus?.name || 'Main Campus',
+        className: s.enrollments?.[0]?.class?.name || 'Unassigned',
+        classLevel: s.enrollments?.[0]?.class?.name || 'Unassigned',
+        attendance: {
+          totalDays: totalAttendance,
+          presentDays: presentCount,
+          percentage: attendancePercentage,
         },
-        wards,
-        linkedWards: wards,
-        summary: {
-          totalWards: wards.length,
-          totalOutstanding,
-          isAllSettled: totalOutstanding <= 0,
-        },
-        school: {
-          name: tenant?.name || 'School Portal',
-          currency: tenant?.currency || 'NGN',
-          logoUrl: tenant?.logoUrl || null,
-          bankDetails: {
-            bankName: paymentConfig.bankName || null,
-            accountNumber: paymentConfig.accountNumber || null,
-            accountName: paymentConfig.accountName || null,
-            paymentInstructions: paymentConfig.paymentInstructions || 'Please include your student admission number as transfer narration.',
-          },
-          paymentGateway: {
-            defaultProvider: paymentConfig.defaultProvider || 'PAYSTACK',
-            enableCardPayments: paymentConfig.enableCardPayments ?? true,
-            enableBankTransfer: paymentConfig.enableBankTransfer ?? true,
-            enableVirtualAccounts: paymentConfig.enableVirtualAccounts ?? true,
-          },
+        fees: {
+          totalInvoiced,
+          totalPaid,
+          balanceDue,
+          isSettled: balanceDue <= 0,
+          invoicesCount: s.invoices.length,
+          invoices: s.invoices.map((inv) => ({
+            id: inv.id,
+            invoiceNumber: inv.invoiceNumber,
+            totalAmount: inv.totalAmount,
+            paidAmount: inv.paidAmount,
+            balanceAmount: inv.balanceAmount,
+            status: inv.status,
+            dueDate: inv.dueDate,
+          })),
         },
       };
-    }
+    });
 
-    const memoryParent = Array.from(this.prisma.memoryStore.parents.values()).find(
-      (p: any) => p.tenantId === tenantId && (p.userId === userId || p.email === userId),
-    );
+    const totalOutstanding = wards.reduce((sum, w) => sum + w.fees.balanceDue, 0);
 
-    if (!memoryParent) {
-      throw new NotFoundException('Parent profile not found.');
-    }
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { name: true, currency: true, features: true, logoUrl: true },
+    });
+    const paymentConfig = (tenant?.features as any)?.paymentConfig || {};
 
     return {
-      parent: memoryParent,
-      wards: memoryParent.linkedWards || [],
-      linkedWards: memoryParent.linkedWards || [],
+      parent: {
+        id: parent.id,
+        userId: parent.userId || user.id,
+        firstName: parent.firstName,
+        lastName: parent.lastName,
+        fullName: `${parent.firstName} ${parent.lastName}`.trim(),
+        phone: parent.phone,
+        email: parent.email,
+        relationship: parent.relationship,
+        address: parent.address,
+      },
+      wards,
+      linkedWards: wards,
       summary: {
-        totalWards: (memoryParent.linkedWards || []).length,
-        totalOutstanding: 0,
-        isAllSettled: true,
+        totalWards: wards.length,
+        totalOutstanding,
+        isAllSettled: totalOutstanding <= 0,
+      },
+      school: {
+        name: tenant?.name || 'School Portal',
+        currency: tenant?.currency || 'NGN',
+        logoUrl: tenant?.logoUrl || null,
+        bankDetails: {
+          bankName: paymentConfig.bankName || null,
+          accountNumber: paymentConfig.accountNumber || null,
+          accountName: paymentConfig.accountName || null,
+          paymentInstructions: paymentConfig.paymentInstructions || 'Please include your student admission number as transfer narration.',
+        },
+        paymentGateway: {
+          defaultProvider: paymentConfig.defaultProvider || 'PAYSTACK',
+          enableCardPayments: paymentConfig.enableCardPayments ?? true,
+          enableBankTransfer: paymentConfig.enableBankTransfer ?? true,
+          enableVirtualAccounts: paymentConfig.enableVirtualAccounts ?? true,
+        },
       },
     };
   }
 
   async validateParentWardAccess(tenantId: string, userId: string, studentId: string) {
-    let parent: any = null;
-    let student: any = null;
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const parent = await this.prisma.parent.findFirst({
+      where: {
+        tenantId,
+        OR: [
+          { userId: userId },
+          ...(user?.email ? [{ email: user.email.toLowerCase().trim() }] : []),
+          ...(user?.phone ? [{ phone: user.phone.trim() }] : []),
+        ],
+      },
+    });
 
-    if (this.prisma.isDbConnected) {
-      const user = await this.prisma.user.findUnique({ where: { id: userId } });
-      parent = await this.prisma.parent.findFirst({
-        where: {
-          tenantId,
-          OR: [
-            { userId: userId },
-            ...(user?.email ? [{ email: user.email.toLowerCase().trim() }] : []),
-            ...(user?.phone ? [{ phone: user.phone.trim() }] : []),
-          ],
-        },
-      });
-
-      if (!parent) {
-        throw new NotFoundException('Parent profile not found for this user account.');
-      }
-
-      const link = await this.prisma.studentParent.findFirst({
-        where: { parentId: parent.id, studentId },
-      });
-
-      if (!link) {
-        throw new ForbiddenException('You are not authorized to access records for this student.');
-      }
-
-      student = await this.prisma.student.findFirst({
-        where: { id: studentId, tenantId },
-        include: {
-          campus: true,
-          enrollments: {
-            where: { status: 'ACTIVE' },
-            include: { class: true },
-            take: 1,
-          },
-        },
-      });
-    } else {
-      parent = Array.from(this.prisma.memoryStore.parents.values()).find(
-        (p: any) => p.tenantId === tenantId && (p.userId === userId || p.email === userId),
-      );
-      if (!parent) {
-        throw new NotFoundException('Parent profile not found.');
-      }
-      const linkedWards = parent.linkedWards || [];
-      const isLinked = linkedWards.some((w: any) => w.id === studentId || w.studentId === studentId);
-      if (!isLinked) {
-        throw new ForbiddenException('You are not authorized to access records for this student.');
-      }
-      student = this.prisma.memoryStore.students.get(studentId);
+    if (!parent) {
+      throw new NotFoundException('Parent profile not found for this user account.');
     }
+
+    const link = await this.prisma.studentParent.findFirst({
+      where: { parentId: parent.id, studentId },
+    });
+
+    if (!link) {
+      throw new ForbiddenException('You are not authorized to access records for this student.');
+    }
+
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+      include: {
+        campus: true,
+        enrollments: {
+          where: { status: 'ACTIVE' },
+          include: { class: true },
+          take: 1,
+        },
+      },
+    });
 
     if (!student) {
       throw new NotFoundException('Student record not found.');
@@ -702,22 +561,11 @@ export class ParentsService {
 
   async getWardAttendance(tenantId: string, userId: string, studentId: string, query?: any) {
     const { student } = await this.validateParentWardAccess(tenantId, userId, studentId);
-    let records: any[] = [];
-    if (this.prisma.isDbConnected) {
-      try {
-        records = await this.prisma.attendance.findMany({
-          where: { tenantId, studentId },
-          orderBy: { date: 'desc' },
-          take: 100,
-        });
-      } catch {}
-    }
-    if (records.length === 0) {
-      records = Array.from(this.prisma.memoryStore.attendance.values()).filter(
-        (a: any) => a.tenantId === tenantId && a.studentId === studentId,
-      );
-      records.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    }
+    const records = await this.prisma.attendance.findMany({
+      where: { tenantId, studentId },
+      orderBy: { date: 'desc' },
+      take: 100,
+    });
 
     const totalDays = records.length;
     const presentDays = records.filter((r) => r.status === 'PRESENT' || r.status === 'LATE').length;
@@ -750,31 +598,15 @@ export class ParentsService {
 
   async getWardResults(tenantId: string, userId: string, studentId: string) {
     const { student } = await this.validateParentWardAccess(tenantId, userId, studentId);
-    let exams: any[] = [];
-    let results: any[] = [];
-
-    if (this.prisma.isDbConnected) {
-      try {
-        exams = await this.prisma.examination.findMany({
-          where: { tenantId, isPublished: true },
-          orderBy: { startDate: 'desc' },
-        });
-        const examIds = exams.map((e) => e.id);
-        results = await this.prisma.result.findMany({
-          where: { tenantId, studentId, examinationId: { in: examIds } },
-          include: { subject: true, examination: true },
-        });
-      } catch {}
-    }
-    if (exams.length === 0) {
-      exams = Array.from(this.prisma.memoryStore.examinations.values()).filter(
-        (e: any) => e.tenantId === tenantId && (e.isPublished || e.status === 'PUBLISHED'),
-      );
-      const examIds = new Set(exams.map((e) => e.id));
-      results = Array.from(this.prisma.memoryStore.results.values()).filter(
-        (r: any) => r.tenantId === tenantId && r.studentId === studentId && examIds.has(r.examinationId),
-      );
-    }
+    const exams = await this.prisma.examination.findMany({
+      where: { tenantId, isPublished: true },
+      orderBy: { startDate: 'desc' },
+    });
+    const examIds = exams.map((e) => e.id);
+    const results = await this.prisma.result.findMany({
+      where: { tenantId, studentId, examinationId: { in: examIds } },
+      include: { subject: true, examination: true },
+    });
 
     return {
       student: {
@@ -790,23 +622,19 @@ export class ParentsService {
         startDate: e.startDate,
         endDate: e.endDate,
       })),
-      results: results.map((r) => {
-        const subject = r.subject || this.prisma.memoryStore.subjects?.get(r.subjectId);
-        const exam = r.examination || this.prisma.memoryStore.examinations?.get(r.examinationId);
-        return {
-          id: r.id,
-          examinationId: r.examinationId,
-          examinationName: exam?.name || 'Term Exam',
-          subjectId: r.subjectId,
-          subjectName: subject?.name || 'Subject',
-          marksObtained: r.marksObtained,
-          maxMarks: r.maxMarks || 100,
-          percentage: Number(((r.marksObtained / (r.maxMarks || 100)) * 100).toFixed(1)),
-          grade: r.grade || 'N/A',
-          remarks: r.remarks || 'Satisfactory',
-          componentScores: r.componentScores || null,
-        };
-      }),
+      results: results.map((r) => ({
+        id: r.id,
+        examinationId: r.examinationId,
+        examinationName: r.examination?.name || 'Term Exam',
+        subjectId: r.subjectId,
+        subjectName: r.subject?.name || 'Subject',
+        marksObtained: r.marksObtained,
+        maxMarks: r.maxMarks || 100,
+        percentage: Number(((r.marksObtained / (r.maxMarks || 100)) * 100).toFixed(1)),
+        grade: r.grade || 'N/A',
+        remarks: r.remarks || 'Satisfactory',
+        componentScores: r.componentScores || null,
+      })),
     };
   }
 
@@ -820,26 +648,17 @@ export class ParentsService {
 
   async getWardTimetable(tenantId: string, userId: string, studentId: string) {
     const { student } = await this.validateParentWardAccess(tenantId, userId, studentId);
-    const classId = student.currentClassId || student.enrollments?.[0]?.classId || student.classId;
+    const classId = student.enrollments?.[0]?.classId || (student as any).classId || (student as any).currentClassId;
     let entries: any[] = [];
     if (classId) {
-      if (this.prisma.isDbConnected) {
-        try {
-          entries = await this.prisma.timetableEntry.findMany({
-            where: { timetable: { tenantId, classId } },
-            include: { subject: true, teacher: true },
-            orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }],
-          });
-        } catch {}
-      }
-      if (entries.length === 0) {
-        entries = Array.from(this.prisma.memoryStore.timetableEntries.values()).filter(
-          (t: any) => t.tenantId === tenantId && t.classId === classId,
-        );
-      }
+      entries = await this.prisma.timetableEntry.findMany({
+        where: { timetable: { tenantId, classId } },
+        include: { subject: true, teacher: true },
+        orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }],
+      });
     }
 
-    const cls = this.prisma.memoryStore.classes?.get(classId) || student.enrollments?.[0]?.class;
+    const cls = student.enrollments?.[0]?.class || (classId ? await this.prisma.class.findUnique({ where: { id: classId } }) : null);
 
     return {
       student: {
@@ -851,30 +670,38 @@ export class ParentsService {
         id: classId,
         name: cls?.name || 'Class',
       },
-      schedule: entries.map((entry) => {
-        const subject = entry.subject || this.prisma.memoryStore.subjects?.get(entry.subjectId);
-        return {
-          id: entry.id,
-          dayOfWeek: entry.dayOfWeek,
-          periodNumber: entry.periodNumber,
-          startTime: entry.startTime,
-          endTime: entry.endTime,
-          subjectName: subject?.name || 'General',
-          teacherName: entry.teacherName || `${entry.teacher?.firstName || ''} ${entry.teacher?.lastName || ''}`.trim() || 'Teacher',
-          room: entry.room || entry.roomName || 'Main Hall',
-        };
-      }),
+      schedule: entries.map((entry) => ({
+        id: entry.id,
+        dayOfWeek: entry.dayOfWeek,
+        periodNumber: entry.periodNumber,
+        startTime: entry.startTime,
+        endTime: entry.endTime,
+        subjectName: entry.subject?.name || 'General',
+        teacherName: `${entry.teacher?.firstName || ''} ${entry.teacher?.lastName || ''}`.trim() || 'Teacher',
+        room: entry.room || 'Main Hall',
+      })),
     };
   }
 
   async getWardHomework(tenantId: string, userId: string, studentId: string) {
     const { student } = await this.validateParentWardAccess(tenantId, userId, studentId);
-    const classId = student.currentClassId || student.enrollments?.[0]?.classId || student.classId;
+    const classId = student.enrollments?.[0]?.classId || (student as any).classId || (student as any).currentClassId;
     let assignments: any[] = [];
     if (classId) {
-      assignments = Array.from(this.prisma.memoryStore.homework.values()).filter(
-        (h: any) => h.tenantId === tenantId && h.classId === classId && (h.status === 'PUBLISHED' || !h.status),
-      );
+      assignments = await this.prisma.homework.findMany({
+        where: {
+          tenantId,
+          classId,
+          status: 'PUBLISHED',
+        },
+        include: {
+          subject: true,
+          submissions: {
+            where: { studentId },
+          },
+        },
+        orderBy: { dueDate: 'desc' },
+      });
     }
 
     return {
@@ -884,15 +711,12 @@ export class ParentsService {
         admissionNumber: student.admissionNumber,
       },
       assignments: assignments.map((h) => {
-        const subject = this.prisma.memoryStore.subjects?.get(h.subjectId);
-        const submission = Array.from(this.prisma.memoryStore.homeworkSubmissions.values()).find(
-          (s: any) => s.tenantId === tenantId && s.homeworkId === h.id && s.studentId === studentId,
-        );
+        const submission = h.submissions?.[0] || null;
         return {
           id: h.id,
           title: h.title,
           description: h.description,
-          subjectName: subject?.name || 'Subject',
+          subjectName: h.subject?.name || 'Subject',
           dueDate: h.dueDate,
           maxMarks: h.maxMarks,
           attachments: h.attachments || [],
@@ -913,22 +737,19 @@ export class ParentsService {
 
   async getWardMedical(tenantId: string, userId: string, studentId: string) {
     const { student } = await this.validateParentWardAccess(tenantId, userId, studentId);
-    const memory = this.prisma.memoryStore as any;
-    const studentVisits = Array.from(memory.clinicVisits?.values() || []).filter(
-      (v: any) => v.tenantId === tenantId && (v.patientId === student.id || v.studentId === student.admissionNumber),
-    );
 
+    const studentMed = student as any;
     const profile = {
-      bloodGroup: student.bloodGroup || 'O+',
-      genotype: student.genotype || 'AA',
-      allergies: student.allergies ? [student.allergies] : ['None Reported'],
+      bloodGroup: studentMed.bloodGroup || 'O+',
+      genotype: studentMed.genotype || 'AA',
+      allergies: studentMed.allergies ? [studentMed.allergies] : ['None Reported'],
       chronicConditions: [],
       emergencyContact: {
-        name: student.emergencyContactName || `${student.firstName}'s Parent`,
-        phone: student.emergencyContactPhone || student.phone || 'On File',
+        name: studentMed.emergencyContactName || `${student.firstName}'s Parent`,
+        phone: studentMed.emergencyContactPhone || student.phone || 'On File',
         relationship: 'Parent',
       },
-      recentVisits: studentVisits.slice(-5),
+      recentVisits: [],
     };
 
     return {
@@ -962,112 +783,65 @@ export class ParentsService {
 
   async getWardTeachers(tenantId: string, userId: string, studentId: string) {
     const { student } = await this.validateParentWardAccess(tenantId, userId, studentId);
-    if (!student.classId) {
+    const activeEnrollment = student.enrollments?.find((e: any) => e.status === 'ACTIVE') || student.enrollments?.[0];
+    const classId = (student as any).classId || activeEnrollment?.classId;
+    if (!classId) {
       return { teachers: [] };
     }
 
     const teacherMap = new Map<string, any>();
 
-    if (this.prisma.isDbConnected) {
-      try {
-        const classObj = await this.prisma.class.findFirst({
-          where: { tenantId, id: student.classId },
-          include: {
-            classTeacher: {
-              include: { user: true },
-            },
-          },
-        });
+    const classObj = await this.prisma.class.findFirst({
+      where: { tenantId, id: classId },
+      include: {
+        classTeacher: {
+          include: { user: true },
+        },
+      },
+    });
 
-        if (classObj?.classTeacher) {
-          const ct = classObj.classTeacher;
-          teacherMap.set(ct.id, {
-            id: ct.id,
-            userId: ct.userId || ct.user?.id || null,
-            name: `${ct.firstName} ${ct.lastName}`.trim(),
-            role: 'Class Teacher',
-            isClassTeacher: true,
-            subject: 'Class Teacher',
-            email: ct.email || ct.user?.email || '',
-            phone: ct.phone || '',
+    if (classObj?.classTeacher) {
+      const ct = classObj.classTeacher;
+      teacherMap.set(ct.id, {
+        id: ct.id,
+        userId: ct.userId || ct.user?.id || null,
+        name: `${ct.firstName} ${ct.lastName}`.trim(),
+        role: 'Class Teacher',
+        isClassTeacher: true,
+        subject: 'Class Teacher',
+        email: ct.email || ct.user?.email || '',
+        phone: ct.phone || '',
+      });
+    }
+
+    const classSubjects = await this.prisma.classSubject.findMany({
+      where: { tenantId, classId },
+      include: {
+        subject: true,
+        teacher: {
+          include: { user: true },
+        },
+      },
+    });
+
+    for (const cs of classSubjects) {
+      if (cs.teacher) {
+        const t = cs.teacher;
+        const existing = teacherMap.get(t.id);
+        const subjectName = cs.subject?.name || 'Subject';
+        if (existing) {
+          existing.subject = `${existing.subject}, ${subjectName}`;
+        } else {
+          teacherMap.set(t.id, {
+            id: t.id,
+            userId: t.userId || t.user?.id || null,
+            name: `${t.firstName} ${t.lastName}`.trim(),
+            role: 'Subject Teacher',
+            isClassTeacher: false,
+            subject: subjectName,
+            email: t.email || t.user?.email || '',
+            phone: t.phone || '',
           });
-        }
-
-        const classSubjects = await this.prisma.classSubject.findMany({
-          where: { tenantId, classId: student.classId },
-          include: {
-            subject: true,
-            teacher: {
-              include: { user: true },
-            },
-          },
-        });
-
-        for (const cs of classSubjects) {
-          if (cs.teacher) {
-            const t = cs.teacher;
-            const existing = teacherMap.get(t.id);
-            const subjectName = cs.subject?.name || 'Subject';
-            if (existing) {
-              existing.subject = `${existing.subject}, ${subjectName}`;
-            } else {
-              teacherMap.set(t.id, {
-                id: t.id,
-                userId: t.userId || t.user?.id || null,
-                name: `${t.firstName} ${t.lastName}`.trim(),
-                role: 'Subject Teacher',
-                isClassTeacher: false,
-                subject: subjectName,
-                email: t.email || t.user?.email || '',
-                phone: t.phone || '',
-              });
-            }
-          }
-        }
-      } catch (err: any) {
-        this.logger.warn(`Failed to fetch ward teachers from DB: ${err.message}`);
-      }
-    } else {
-      const cls = this.prisma.memoryStore.classes?.get(student.classId);
-      if (cls?.classTeacherId) {
-        const ct = this.prisma.memoryStore.teachers?.get(cls.classTeacherId);
-        if (ct) {
-          teacherMap.set(ct.id, {
-            id: ct.id,
-            userId: ct.userId || `usr_${ct.id}`,
-            name: `${ct.firstName} ${ct.lastName}`.trim(),
-            role: 'Class Teacher',
-            isClassTeacher: true,
-            subject: 'Class Teacher',
-            email: ct.email || '',
-            phone: ct.phone || '',
-          });
-        }
-      }
-
-      const allClassSubjects = Array.from(this.prisma.memoryStore.classSubjects?.values() || []);
-      for (const cs of allClassSubjects as any[]) {
-        if (cs.tenantId === tenantId && cs.classId === student.classId && cs.teacherId) {
-          const t = this.prisma.memoryStore.teachers?.get(cs.teacherId);
-          const subj = this.prisma.memoryStore.subjects?.get(cs.subjectId);
-          if (t) {
-            const existing = teacherMap.get(t.id);
-            const subjectName = subj?.name || 'Subject';
-            if (existing) {
-              existing.subject = `${existing.subject}, ${subjectName}`;
-            } else {
-              teacherMap.set(t.id, {
-                id: t.id,
-                userId: t.userId || `usr_${t.id}`,
-                name: `${t.firstName} ${t.lastName}`.trim(),
-                role: 'Subject Teacher',
-                isClassTeacher: false,
-                subject: subjectName,
-                email: t.email || '',
-                phone: t.phone || '',
-              });
-            }
-          }
         }
       }
     }
@@ -1076,96 +850,47 @@ export class ParentsService {
       student: {
         id: student.id,
         fullName: `${student.firstName} ${student.lastName}`.trim(),
-        className: student.class?.name || student.assignedClass || '',
+        className: (classObj as any)?.name || '',
       },
       teachers: Array.from(teacherMap.values()),
     };
   }
 
   async getParentThreads(tenantId: string, userId: string) {
-    if (this.prisma.isDbConnected) {
-      try {
-        const threads = await this.prisma.communicationThread.findMany({
-          where: {
-            tenantId,
-            OR: [
-              { createdById: userId },
-              { participantIds: { array_contains: userId } },
-            ],
-          },
-          include: {
-            messages: {
-              orderBy: { createdAt: 'asc' },
-            },
-          },
-          orderBy: { lastMessageAt: 'desc' },
-        });
-
-        if (threads.length > 0) {
-          return threads.map((th) => ({
-            id: th.id,
-            subject: th.subject,
-            createdById: th.createdById,
-            participantIds: th.participantIds,
-            lastMessageAt: th.lastMessageAt,
-            createdAt: th.createdAt,
-            messages: th.messages.map((m) => ({
-              id: m.id,
-              senderId: m.senderId,
-              senderType: m.senderType,
-              content: m.content,
-              attachments: m.attachments,
-              readBy: m.readBy,
-              createdAt: m.createdAt,
-              isOwn: m.senderId === userId,
-            })),
-          }));
-        }
-      } catch (err: any) {
-        this.logger.warn(`Failed to query threads from DB: ${err.message}`);
-      }
-    }
-
-    const allThreads = Array.from(this.prisma.memoryStore.communicationThreads?.values() || []);
-    const matching = allThreads.filter(
-      (th: any) =>
-        th.tenantId === tenantId &&
-        (th.createdById === userId ||
-          (Array.isArray(th.participantIds) && th.participantIds.includes(userId))),
-    );
-
-    matching.sort(
-      (a: any, b: any) =>
-        new Date(b.lastMessageAt || b.createdAt).getTime() -
-        new Date(a.lastMessageAt || a.createdAt).getTime(),
-    );
-
-    const allMessages = Array.from(this.prisma.memoryStore.communicationMessages?.values() || []);
-
-    return matching.map((th: any) => {
-      const msgs = allMessages
-        .filter((m: any) => m.threadId === th.id)
-        .sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-
-      return {
-        id: th.id,
-        subject: th.subject,
-        createdById: th.createdById,
-        participantIds: th.participantIds,
-        lastMessageAt: th.lastMessageAt,
-        createdAt: th.createdAt,
-        messages: msgs.map((m: any) => ({
-          id: m.id,
-          senderId: m.senderId,
-          senderType: m.senderType,
-          content: m.content,
-          attachments: m.attachments || [],
-          readBy: m.readBy || [],
-          createdAt: m.createdAt,
-          isOwn: m.senderId === userId,
-        })),
-      };
+    const threads = await this.prisma.communicationThread.findMany({
+      where: {
+        tenantId,
+        OR: [
+          { createdById: userId },
+          { participantIds: { array_contains: userId } },
+        ],
+      },
+      include: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+      orderBy: { lastMessageAt: 'desc' },
     });
+
+    return threads.map((th) => ({
+      id: th.id,
+      subject: th.subject,
+      createdById: th.createdById,
+      participantIds: th.participantIds,
+      lastMessageAt: th.lastMessageAt,
+      createdAt: th.createdAt,
+      messages: th.messages.map((m) => ({
+        id: m.id,
+        senderId: m.senderId,
+        senderType: m.senderType,
+        content: m.content,
+        attachments: m.attachments,
+        readBy: m.readBy,
+        createdAt: m.createdAt,
+        isOwn: m.senderId === userId,
+      })),
+    }));
   }
 
   async createParentThread(
@@ -1194,187 +919,101 @@ export class ParentsService {
     let studentName: string | null = null;
     let className: string | null = null;
 
-    // 1. Resolve Class Teacher / Subject Teacher recipient if requested
     if (recipientMode === 'CLASS_TEACHER' || recipientMode === 'BOTH' || recipientMode === 'TEACHER') {
       if (dto.teacherId) {
-        if (this.prisma.isDbConnected) {
-          const teacher = await this.prisma.teacher.findFirst({
-            where: { tenantId, id: dto.teacherId },
-          });
-          if (teacher?.userId) targetUserIds.add(teacher.userId);
-          else if (teacher?.id) targetUserIds.add(teacher.id);
-        } else {
-          const teacher = this.prisma.memoryStore.teachers?.get(dto.teacherId);
-          if (teacher?.userId) targetUserIds.add(teacher.userId);
-          else if (teacher?.id) targetUserIds.add(teacher.id);
-        }
+        const teacher = await this.prisma.teacher.findFirst({
+          where: { tenantId, id: dto.teacherId },
+        });
+        if (teacher?.userId) targetUserIds.add(teacher.userId);
+        else if (teacher?.id) targetUserIds.add(teacher.id);
       } else if (dto.studentId) {
-        // Find assigned class teacher for this student
-        if (this.prisma.isDbConnected) {
-          try {
-            const student = await this.prisma.student.findFirst({
-              where: { tenantId, id: dto.studentId },
-              include: {
-                enrollments: {
-                  where: { status: 'ACTIVE' },
-                  include: { class: { include: { classTeacher: true } } },
-                  take: 1,
-                },
-              },
-            });
-            if (student) {
-              studentName = `${student.firstName} ${student.lastName}`.trim();
-              className = student.enrollments?.[0]?.class?.name || (student as any).currentClass || null;
-            }
-            const ct =
-              student?.enrollments?.[0]?.class?.classTeacher ||
-              (student as any)?.class?.classTeacher;
-            if (ct?.userId) targetUserIds.add(ct.userId);
-            else if (ct?.id) targetUserIds.add(ct.id);
-          } catch (err: any) {
-            this.logger.warn(`Could not resolve student teacher from DB: ${err.message}`);
-          }
+        const student = await this.prisma.student.findFirst({
+          where: { tenantId, id: dto.studentId },
+          include: {
+            enrollments: {
+              where: { status: 'ACTIVE' },
+              include: { class: { include: { classTeacher: true } } },
+              take: 1,
+            },
+          },
+        });
+        if (student) {
+          studentName = `${student.firstName} ${student.lastName}`.trim();
+          className = student.enrollments?.[0]?.class?.name || null;
         }
-
-        if (targetUserIds.size === 0) {
-          const student = this.prisma.memoryStore.students?.get(dto.studentId);
-          if (student) {
-            studentName = `${student.firstName || ''} ${student.lastName || ''}`.trim() || student.name || 'Student';
-            const cls = student.classId ? this.prisma.memoryStore.classes?.get(student.classId) : null;
-            className = cls?.name || student.currentClass || student.className || 'Class';
-          }
-          if (student?.classId) {
-            const cls = this.prisma.memoryStore.classes?.get(student.classId);
-            if (cls?.classTeacherId) {
-              const ct = this.prisma.memoryStore.teachers?.get(cls.classTeacherId);
-              if (ct?.userId) targetUserIds.add(ct.userId);
-              else if (ct?.id) targetUserIds.add(ct.id);
-            }
-          } else if ((student as any)?.class?.classTeacher) {
-            const ct = (student as any).class.classTeacher;
-            if (ct?.userId) targetUserIds.add(ct.userId);
-            else if (ct?.id) targetUserIds.add(ct.id);
-          }
-        }
+        const ct = student?.enrollments?.[0]?.class?.classTeacher;
+        if (ct?.userId) targetUserIds.add(ct.userId);
+        else if (ct?.id) targetUserIds.add(ct.id);
       }
     }
 
     if (!studentName && dto.studentId) {
-      if (this.prisma.isDbConnected) {
-        try {
-          const student = await this.prisma.student.findFirst({
-            where: { tenantId, id: dto.studentId },
-            include: {
-              enrollments: {
-                where: { status: 'ACTIVE' },
-                include: { class: true },
-                take: 1,
-              },
-            },
-          });
-          if (student) {
-            studentName = `${student.firstName} ${student.lastName}`.trim();
-            className = student.enrollments?.[0]?.class?.name || (student as any).currentClass || null;
-          }
-        } catch {}
-      }
-      if (!studentName) {
-        const memStudent = this.prisma.memoryStore.students?.get(dto.studentId);
-        if (memStudent) {
-          studentName = `${memStudent.firstName || ''} ${memStudent.lastName || ''}`.trim() || memStudent.name || 'Student';
-          const memClass = memStudent.classId ? this.prisma.memoryStore.classes?.get(memStudent.classId) : null;
-          className = memClass?.name || memStudent.currentClass || memStudent.className || null;
-        }
+      const student = await this.prisma.student.findFirst({
+        where: { tenantId, id: dto.studentId },
+        include: {
+          enrollments: {
+            where: { status: 'ACTIVE' },
+            include: { class: true },
+            take: 1,
+          },
+        },
+      });
+      if (student) {
+        studentName = `${student.firstName} ${student.lastName}`.trim();
+        className = student.enrollments?.[0]?.class?.name || null;
       }
     }
 
-    // 2. Resolve Admin recipient if requested
     if (recipientMode === 'ADMIN' || recipientMode === 'BOTH') {
-      const initialSize = targetUserIds.size;
-      if (this.prisma.isDbConnected) {
-        try {
-          const admins = await this.prisma.user.findMany({
-            where: {
-              tenantId,
-              OR: [
-                {
-                  userRoles: {
-                    some: {
-                      role: {
-                        name: {
-                          in: [
-                            'Admin',
-                            'ADMIN',
-                            'School Admin',
-                            'SCHOOL_ADMIN',
-                            'School Owner',
-                            'SCHOOL_OWNER',
-                            'Administrator',
-                            'Tenant Admin',
-                            'TENANT_ADMIN',
-                            'Super Admin',
-                            'SUPER_ADMIN',
-                            'Principal',
-                            'PRINCIPAL',
-                            'Owner',
-                            'OWNER',
-                            'Proprietor',
-                            'PROPRIETOR',
-                            'Head of School',
-                            'Campus Admin',
-                            'CAMPUS_ADMIN',
-                          ],
-                        },
-                      },
-                    },
-                  },
-                },
-                { isPlatformAdmin: true },
-              ],
-            },
-            take: 20,
-          });
-          for (const a of admins) {
-            targetUserIds.add(a.id);
-          }
-
-          // Fallback: If no explicit role matches found, resolve any tenant user that is not a student or parent
-          if (targetUserIds.size === initialSize) {
-            const tenantStaff = await this.prisma.user.findMany({
-              where: {
-                tenantId,
-                NOT: {
-                  userRoles: {
-                    some: {
-                      role: {
-                        name: { in: ['STUDENT', 'PARENT', 'Student', 'Parent'] },
-                      },
+      const admins = await this.prisma.user.findMany({
+        where: {
+          tenantId,
+          OR: [
+            {
+              userRoles: {
+                some: {
+                  role: {
+                    name: {
+                      in: [
+                        'Admin', 'ADMIN', 'School Admin', 'SCHOOL_ADMIN',
+                        'School Owner', 'SCHOOL_OWNER', 'Administrator',
+                        'Tenant Admin', 'TENANT_ADMIN', 'Super Admin',
+                        'SUPER_ADMIN', 'Principal', 'PRINCIPAL', 'Owner',
+                        'OWNER', 'Proprietor', 'PROPRIETOR', 'Head of School',
+                        'Campus Admin', 'CAMPUS_ADMIN',
+                      ],
                     },
                   },
                 },
               },
-              take: 10,
-            });
-            for (const s of tenantStaff) {
-              targetUserIds.add(s.id);
-            }
-          }
-        } catch (err: any) {
-          this.logger.warn(`Could not resolve admin users in DB: ${err.message}`);
-        }
+            },
+            { isPlatformAdmin: true },
+          ],
+        },
+        take: 20,
+      });
+      for (const a of admins) {
+        targetUserIds.add(a.id);
       }
 
-      if (targetUserIds.size === initialSize) {
-        const adminUsers = Array.from(this.prisma.memoryStore.users?.values() || []).filter(
-          (u: any) =>
-            u.tenantId === tenantId &&
-            u.role !== 'STUDENT' &&
-            u.role !== 'PARENT' &&
-            u.role !== 'Student' &&
-            u.role !== 'Parent',
-        );
-        for (const a of adminUsers as any[]) {
-          targetUserIds.add(a.id);
+      if (targetUserIds.size === 0) {
+        const tenantStaff = await this.prisma.user.findMany({
+          where: {
+            tenantId,
+            NOT: {
+              userRoles: {
+                some: {
+                  role: {
+                    name: { in: ['STUDENT', 'PARENT', 'Student', 'Parent'] },
+                  },
+                },
+              },
+            },
+          },
+          take: 10,
+        });
+        for (const s of tenantStaff) {
+          targetUserIds.add(s.id);
         }
       }
     }
@@ -1390,118 +1029,50 @@ export class ParentsService {
     const messageId = `msg_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
     const now = new Date();
 
-    let parentUser: any = null;
-    if (this.prisma.isDbConnected) {
-      try {
-        parentUser = await this.prisma.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true } });
-      } catch {}
-    }
-    if (!parentUser) {
-      parentUser = this.prisma.memoryStore.users?.get(userId);
-    }
-    const parentName = parentUser ? `${parentUser.firstName || ''} ${parentUser.lastName || ''}`.trim() : 'Parent';
-
     const notifTitle = `New Parent Message: ${dto.subject}${studentName ? ` [Ward: ${studentName}${className ? ` • ${className}` : ''}]` : ''}`;
 
-    if (this.prisma.isDbConnected) {
-      try {
-        const thread = await this.prisma.communicationThread.create({
-          data: {
-            id: threadId,
-            tenantId,
-            subject: dto.subject,
-            createdById: userId,
-            participantIds: participants,
-            lastMessageAt: now,
-            messages: {
-              create: {
-                id: messageId,
-                senderId: userId,
-                senderType: 'PARENT',
-                content: dto.message,
-                readBy: [userId],
-                createdAt: now,
-              },
-            },
+    const thread = await this.prisma.communicationThread.create({
+      data: {
+        id: threadId,
+        tenantId,
+        subject: dto.subject,
+        createdById: userId,
+        participantIds: participants,
+        lastMessageAt: now,
+        messages: {
+          create: {
+            id: messageId,
+            senderId: userId,
+            senderType: 'PARENT',
+            content: dto.message,
+            readBy: [userId],
+            createdAt: now,
           },
-          include: { messages: true },
-        });
-
-        for (const rId of targetUserIds) {
-          try {
-            await this.prisma.inAppInboxItem.create({
-              data: {
-                id: `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
-                tenantId,
-                recipientUserId: rId,
-                category: 'DIRECT_MESSAGE',
-                priority: 'HIGH',
-                title: notifTitle,
-                message: dto.message.length > 100 ? dto.message.slice(0, 97) + '...' : dto.message,
-                actionUrl: '/communications',
-                isRead: false,
-              },
-            });
-          } catch {}
-        }
-
-        return {
-          ...thread,
-          studentName,
-          className,
-        };
-      } catch (err: any) {
-        this.logger.warn(`Failed to create thread in DB: ${err.message}`);
-      }
-    }
-
-    const threadData = {
-      id: threadId,
-      tenantId,
-      subject: dto.subject,
-      createdById: userId,
-      participantIds: participants,
-      studentName,
-      className,
-      lastMessageAt: now,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const messageData = {
-      id: messageId,
-      threadId,
-      senderId: userId,
-      senderType: 'PARENT',
-      content: dto.message,
-      attachments: [],
-      readBy: [userId],
-      createdAt: now,
-    };
-
-    this.prisma.memoryStore.communicationThreads?.set(threadId, threadData);
-    this.prisma.memoryStore.communicationMessages?.set(messageId, messageData);
+        },
+      },
+      include: { messages: true },
+    });
 
     for (const rId of targetUserIds) {
-      const inboxId = `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-      this.prisma.memoryStore.inboxItems?.set(inboxId, {
-        id: inboxId,
-        tenantId,
-        recipientUserId: rId,
-        category: 'DIRECT_MESSAGE',
-        priority: 'HIGH',
-        title: notifTitle,
-        message: dto.message.length > 100 ? dto.message.slice(0, 97) + '...' : dto.message,
-        actionUrl: '/communications',
-        isRead: false,
-        createdAt: now,
-      });
+      await this.prisma.inAppInboxItem.create({
+        data: {
+          id: `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+          tenantId,
+          recipientUserId: rId,
+          category: 'DIRECT_MESSAGE',
+          priority: 'HIGH',
+          title: notifTitle,
+          message: dto.message.length > 100 ? dto.message.slice(0, 97) + '...' : dto.message,
+          actionUrl: '/communications',
+          isRead: false,
+        },
+      }).catch(() => {});
     }
 
     return {
-      ...threadData,
+      ...thread,
       studentName,
       className,
-      messages: [messageData],
     };
   }
 
@@ -1518,163 +1089,74 @@ export class ParentsService {
     const now = new Date();
     const messageId = `msg_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
 
-    if (this.prisma.isDbConnected) {
-      try {
-        const thread = await this.prisma.communicationThread.findFirst({
-          where: { id: threadId, tenantId },
-        });
-        if (!thread) {
-          throw new NotFoundException('Conversation thread not found.');
-        }
-
-        const participants = Array.isArray(thread.participantIds)
-          ? (thread.participantIds as string[])
-          : [];
-        if (thread.createdById !== userId && !participants.includes(userId)) {
-          throw new ForbiddenException('You are not a participant in this conversation.');
-        }
-
-        const message = await this.prisma.communicationMessage.create({
-          data: {
-            id: messageId,
-            threadId,
-            senderId: userId,
-            senderType: 'PARENT',
-            content: dto.content,
-            readBy: [userId],
-            createdAt: now,
-          },
-        });
-
-        await this.prisma.communicationThread.update({
-          where: { id: threadId },
-          data: { lastMessageAt: now },
-        });
-
-        for (const pId of participants) {
-          if (pId !== userId) {
-            try {
-              await this.prisma.inAppInboxItem.create({
-                data: {
-                  id: `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
-                  tenantId,
-                  recipientUserId: pId,
-                  category: 'DIRECT_MESSAGE',
-                  priority: 'HIGH',
-                  title: `Reply in: ${thread.subject}`,
-                  message: dto.content.length > 100 ? dto.content.slice(0, 97) + '...' : dto.content,
-                  actionUrl: '/parent',
-                  isRead: false,
-                },
-              });
-            } catch {}
-          }
-        }
-
-        return message;
-      } catch (err: any) {
-        if (err instanceof NotFoundException || err instanceof ForbiddenException) throw err;
-        this.logger.warn(`Failed to post message reply in DB: ${err.message}`);
-      }
-    }
-
-    const thread = this.prisma.memoryStore.communicationThreads?.get(threadId);
-    if (!thread || thread.tenantId !== tenantId) {
+    const thread = await this.prisma.communicationThread.findFirst({
+      where: { id: threadId, tenantId },
+    });
+    if (!thread) {
       throw new NotFoundException('Conversation thread not found.');
     }
 
-    const participants = Array.isArray(thread.participantIds) ? thread.participantIds : [];
+    const participants = Array.isArray(thread.participantIds)
+      ? (thread.participantIds as string[])
+      : [];
     if (thread.createdById !== userId && !participants.includes(userId)) {
       throw new ForbiddenException('You are not a participant in this conversation.');
     }
 
-    const messageData = {
-      id: messageId,
-      threadId,
-      senderId: userId,
-      senderType: 'PARENT',
-      content: dto.content,
-      attachments: [],
-      readBy: [userId],
-      createdAt: now,
-    };
+    const message = await this.prisma.communicationMessage.create({
+      data: {
+        id: messageId,
+        threadId,
+        senderId: userId,
+        senderType: 'PARENT',
+        content: dto.content,
+        readBy: [userId],
+        createdAt: now,
+      },
+    });
 
-    this.prisma.memoryStore.communicationMessages?.set(messageId, messageData);
-    thread.lastMessageAt = now;
-    this.prisma.memoryStore.communicationThreads?.set(threadId, thread);
+    await this.prisma.communicationThread.update({
+      where: { id: threadId },
+      data: { lastMessageAt: now },
+    });
 
     for (const pId of participants) {
       if (pId !== userId) {
-        const inbId = `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-        this.prisma.memoryStore.inboxItems?.set(inbId, {
-          id: inbId,
-          tenantId,
-          recipientUserId: pId,
-          category: 'DIRECT_MESSAGE',
-          priority: 'HIGH',
-          title: `Reply in: ${thread.subject}`,
-          message: dto.content.length > 100 ? dto.content.slice(0, 97) + '...' : dto.content,
-          actionUrl: '/parent',
-          isRead: false,
-          createdAt: now,
-        });
+        await this.prisma.inAppInboxItem.create({
+          data: {
+            id: `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+            tenantId,
+            recipientUserId: pId,
+            category: 'DIRECT_MESSAGE',
+            priority: 'HIGH',
+            title: `Reply in: ${thread.subject}`,
+            message: dto.content.length > 100 ? dto.content.slice(0, 97) + '...' : dto.content,
+            actionUrl: '/parent',
+            isRead: false,
+          },
+        }).catch(() => {});
       }
     }
 
-    return messageData;
+    return message;
   }
 
   async getPortalAnnouncements(tenantId: string, userId: string) {
-    if (this.prisma.isDbConnected) {
-      try {
-        const notifications = await this.prisma.notification.findMany({
-          where: { tenantId },
-          orderBy: { createdAt: 'desc' },
-        });
+    const notifications = await this.prisma.notification.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+    });
 
-        if (notifications.length > 0) {
-          return notifications.map((n) => ({
-            id: n.id,
-            tenantId: n.tenantId,
-            title: n.title,
-            message: n.message,
-            content: n.message,
-            channel: n.channel || 'Portal Noticeboard',
-            priority: 'NORMAL',
-            status: n.status === 'SENT' ? 'Delivered' : n.status,
-            createdAt: n.createdAt,
-          }));
-        }
-      } catch (err: any) {
-        this.logger.warn(`Could not load portal announcements from DB: ${err.message}`);
-      }
-    }
-
-    const items = Array.from(this.prisma.memoryStore.communications?.values() || [])
-      .filter(
-        (c: any) =>
-          c.tenantId === tenantId &&
-          (!c.audience ||
-            c.audience === 'ALL' ||
-            c.audience === 'GENERAL' ||
-            c.audience.toUpperCase().includes('PARENT') ||
-            c.recipientGroup?.toUpperCase().includes('PARENT')),
-      )
-      .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-    return items.map((c: any) => ({
-      id: c.id,
-      tenantId: c.tenantId,
-      title: c.title,
-      message: c.message || c.content,
-      content: c.content || c.message,
-      channel: c.channel || 'Portal Noticeboard',
-      priority: c.priority || 'NORMAL',
-      status: c.status || 'Delivered',
-      createdAt: c.createdAt,
+    return notifications.map((n) => ({
+      id: n.id,
+      tenantId: n.tenantId,
+      title: n.title,
+      message: n.message,
+      content: n.message,
+      channel: n.channel || 'Portal Noticeboard',
+      priority: 'NORMAL',
+      status: n.status === 'SENT' ? 'Delivered' : n.status,
+      createdAt: n.createdAt,
     }));
   }
 }
-
-
-

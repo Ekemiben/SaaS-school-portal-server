@@ -40,10 +40,12 @@ export class DataImportService {
     const mode = (dto.mode || 'DRY_RUN').toUpperCase() as 'DRY_RUN' | 'COMMIT';
     const { rows } = this.csvParser.parse(dto.csvContent);
 
+    const existingStudents = await this.prisma.student.findMany({
+      where: { tenantId },
+      select: { admissionNumber: true },
+    });
     const existingAdmissionNumbers = new Set(
-      Array.from(this.prisma.memoryStore.students.values())
-        .filter((s: any) => s.tenantId === tenantId)
-        .map((s: any) => (s.admissionNumber || '').toLowerCase()),
+      existingStudents.map((s) => (s.admissionNumber || '').toLowerCase()),
     );
 
     const { errors, validRowsData } = validateStudentRows(rows, existingAdmissionNumbers);
@@ -52,45 +54,45 @@ export class DataImportService {
     let jobId: string | undefined = undefined;
 
     if (mode === 'COMMIT' && errors.length === 0) {
+      let targetCampusId = campusId;
+      if (!targetCampusId) {
+        const defaultCampus = await this.prisma.campus.findFirst({ where: { tenantId } });
+        targetCampusId = defaultCampus?.id || 'campus_main_01';
+      }
+
       for (const data of validRowsData) {
-        const studentId = `std_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-        const targetCampusId = campusId || 'campus_main_01';
-
-        const student = {
-          id: studentId,
-          tenantId,
-          campusId: targetCampusId,
-          admissionNumber: data.admissionNumber,
-          firstName: data.firstName,
-          lastName: data.lastName,
-          middleName: data.middleName,
-          gender: data.gender,
-          dateOfBirth: data.dateOfBirth,
-          bloodGroup: data.bloodGroup,
-          status: 'ACTIVE',
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-
-        this.prisma.memoryStore.students.set(studentId, student);
+        await this.prisma.student.create({
+          data: {
+            tenantId,
+            campusId: targetCampusId,
+            admissionNumber: data.admissionNumber,
+            firstName: data.firstName,
+            lastName: data.lastName,
+            middleName: data.middleName,
+            gender: data.gender,
+            dateOfBirth: data.dateOfBirth,
+            bloodGroup: data.bloodGroup,
+            status: 'ACTIVE',
+          },
+        });
         createdCount++;
       }
 
-      jobId = `impjob_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-      this.prisma.memoryStore.dataImportJobs.set(jobId, {
-        id: jobId,
-        tenantId,
-        campusId,
-        type: 'STUDENTS',
-        fileName: 'students_import.csv',
-        totalRows: rows.length,
-        processedRows: rows.length,
-        successfulRows: createdCount,
-        failedRows: errors.length,
-        status: 'COMPLETED',
-        performedByUserId: userId,
-        createdAt: new Date(),
+      const createdJob = await this.prisma.dataImportJob.create({
+        data: {
+          tenantId,
+          campusId,
+          type: 'STUDENTS',
+          fileName: 'students_import.csv',
+          totalRows: rows.length,
+          processedRows: rows.length,
+          successfulRows: createdCount,
+          failedRows: errors.length,
+          status: 'COMPLETED',
+          performedByUserId: userId,
+        },
       });
+      jobId = createdJob.id;
 
       await this.auditService.log({
         tenantId,
@@ -128,112 +130,113 @@ export class DataImportService {
     let createdCount = 0;
     if (mode === 'COMMIT' && errors.length === 0) {
       for (const d of validRowsData) {
-        const parentId = `par_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
         const cleanEmail = d.email ? d.email.toLowerCase().trim() : null;
         const cleanPhone = d.phone ? d.phone.replace(/\s+/g, '').trim() : null;
 
-        if (this.prisma.isDbConnected) {
-          try {
-            // Check if user exists or provision new
-            let parentUserId: string | null = null;
-            if (cleanEmail || cleanPhone) {
-              const existingUser = await this.prisma.user.findFirst({
-                where: {
+        try {
+          let parentUserId: string | null = null;
+          if (cleanEmail || cleanPhone) {
+            const existingUser = await this.prisma.user.findFirst({
+              where: {
+                tenantId,
+                OR: [
+                  ...(cleanEmail ? [{ email: cleanEmail }] : []),
+                  ...(cleanPhone ? [{ phone: cleanPhone }] : []),
+                ],
+              },
+            });
+
+            let role = await this.prisma.role.findFirst({
+              where: { tenantId, name: 'PARENT' },
+            });
+            if (!role) {
+              role = await this.prisma.role.create({
+                data: {
                   tenantId,
-                  OR: [
-                    ...(cleanEmail ? [{ email: cleanEmail }] : []),
-                    ...(cleanPhone ? [{ phone: cleanPhone }] : []),
-                  ],
+                  name: 'PARENT',
+                  description: 'Parent or Guardian with student ward portal access',
+                  isSystem: true,
                 },
               });
+            }
 
-              let role = await this.prisma.role.findFirst({
-                where: { tenantId, name: 'PARENT' },
-              });
-              if (!role) {
-                role = await this.prisma.role.create({
-                  data: {
-                    id: `role_parent_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
-                    tenantId,
-                    name: 'PARENT',
-                    description: 'Parent or Guardian with student ward portal access',
-                    isSystem: true,
-                  },
-                });
-              }
-
-              if (existingUser) {
-                parentUserId = existingUser.id;
-                await this.prisma.userRole.upsert({
-                  where: {
-                    userId_roleId: {
-                      userId: existingUser.id,
-                      roleId: role.id,
-                    },
-                  },
-                  create: {
-                    id: `ur_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+            if (existingUser) {
+              parentUserId = existingUser.id;
+              await this.prisma.userRole.upsert({
+                where: {
+                  userId_roleId: {
                     userId: existingUser.id,
                     roleId: role.id,
                   },
-                  update: {},
-                });
-              } else {
-                const passwordHash = await bcrypt.hash(randomUUID(), 10);
-                const newUserId = `usr_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-                const userEmail = cleanEmail || `${cleanPhone || randomUUID().substring(0, 8)}@parent.portal`;
-                const createdUser = await this.prisma.user.create({
-                  data: {
-                    id: newUserId,
-                    tenantId,
-                    email: userEmail,
-                    phone: cleanPhone,
-                    firstName: d.firstName,
-                    lastName: d.lastName,
-                    passwordHash,
-                    isActive: true,
-                    userRoles: {
-                      create: {
-                        id: `ur_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
-                        roleId: role.id,
-                      },
+                },
+                create: {
+                  userId: existingUser.id,
+                  roleId: role.id,
+                },
+                update: {},
+              });
+            } else {
+              const passwordHash = await bcrypt.hash(randomUUID(), 10);
+              const userEmail = cleanEmail || `${cleanPhone || randomUUID().substring(0, 8)}@parent.portal`;
+              const createdUser = await this.prisma.user.create({
+                data: {
+                  tenantId,
+                  email: userEmail,
+                  phone: cleanPhone,
+                  firstName: d.firstName,
+                  lastName: d.lastName,
+                  passwordHash,
+                  isActive: true,
+                  userRoles: {
+                    create: {
+                      roleId: role.id,
                     },
                   },
-                });
-                parentUserId = createdUser.id;
-              }
+                },
+              });
+              parentUserId = createdUser.id;
             }
-
-            await this.prisma.parent.create({
-              data: {
-                id: parentId,
-                tenantId,
-                userId: parentUserId || undefined,
-                firstName: d.firstName,
-                lastName: d.lastName,
-                email: cleanEmail,
-                phone: cleanPhone,
-                relationship: d.relationship || 'Parent',
-              },
-            });
-            createdCount++;
-            continue;
-          } catch (err: any) {
-            this.logger.warn(`Failed DB import for parent ${d.email || d.phone}: ${err.message}`);
           }
-        }
 
-        this.prisma.memoryStore.parents.set(parentId, {
-          id: parentId,
-          tenantId,
-          firstName: d.firstName,
-          lastName: d.lastName,
-          email: d.email,
-          phone: d.phone,
-          relationship: d.relationship,
-          createdAt: new Date(),
-        });
-        createdCount++;
+          const createdParent = await this.prisma.parent.create({
+            data: {
+              tenantId,
+              userId: parentUserId || undefined,
+              firstName: d.firstName,
+              lastName: d.lastName,
+              email: cleanEmail,
+              phone: cleanPhone || '',
+              relationship: d.relationship || 'Parent',
+            },
+          });
+
+          // Link to student ward if studentadmissionnumber is provided
+          if (d.admNum) {
+            const student = await this.prisma.student.findFirst({
+              where: { tenantId, admissionNumber: d.admNum },
+            });
+            if (student) {
+              await this.prisma.studentParent.upsert({
+                where: {
+                  studentId_parentId: {
+                    studentId: student.id,
+                    parentId: createdParent.id,
+                  },
+                },
+                create: {
+                  studentId: student.id,
+                  parentId: createdParent.id,
+                  isPrimaryContact: true,
+                },
+                update: {},
+              });
+            }
+          }
+
+          createdCount++;
+        } catch (err: any) {
+          this.logger.warn(`Failed DB import for parent ${d.email || d.phone}: ${err.message}`);
+        }
       }
     }
 
@@ -256,22 +259,30 @@ export class DataImportService {
 
     let createdCount = 0;
     if (mode === 'COMMIT' && errors.length === 0) {
+      let targetCampusId = campusId;
+      if (!targetCampusId) {
+        const defaultCampus = await this.prisma.campus.findFirst({ where: { tenantId } });
+        targetCampusId = defaultCampus?.id || 'campus_main_01';
+      }
+
       for (const d of validRowsData) {
-        const teacherId = `tch_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-        this.prisma.memoryStore.teachers.set(teacherId, {
-          id: teacherId,
-          tenantId,
-          campusId: campusId || 'campus_main_01',
-          employeeNumber: d.staffNumber,
-          firstName: d.firstName,
-          lastName: d.lastName,
-          email: d.email,
-          designation: d.designation,
-          department: d.department,
-          status: 'ACTIVE',
-          createdAt: new Date(),
-        });
-        createdCount++;
+        try {
+          await this.prisma.teacher.create({
+            data: {
+              tenantId,
+              campusId: targetCampusId,
+              employeeNumber: d.staffNumber,
+              firstName: d.firstName,
+              lastName: d.lastName,
+              email: d.email,
+              specialization: d.designation || 'Teacher',
+              isActive: true,
+            },
+          });
+          createdCount++;
+        } catch (err: any) {
+          this.logger.warn(`Failed staff import for ${d.email}: ${err.message}`);
+        }
       }
     }
 
@@ -295,20 +306,73 @@ export class DataImportService {
     let createdCount = 0;
     if (mode === 'COMMIT' && errors.length === 0) {
       for (const d of validRowsData) {
-        const resultId = `res_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-        this.prisma.memoryStore.results.set(resultId, {
-          id: resultId,
-          tenantId,
-          campusId: campusId || 'campus_main_01',
-          subjectId: d.subjectCode,
-          caScore: d.ca1 + d.ca2,
-          examScore: d.exam,
-          totalScore: d.total,
-          grade: d.grade,
-          status: 'PUBLISHED',
-          createdAt: new Date(),
-        });
-        createdCount++;
+        try {
+          const student = await this.prisma.student.findFirst({
+            where: { tenantId, admissionNumber: d.admNum },
+          });
+          const subject = await this.prisma.subject.findFirst({
+            where: { tenantId, code: d.subjectCode },
+          });
+
+          if (student && subject) {
+            let exam = await this.prisma.examination.findFirst({ where: { tenantId } });
+            if (!exam) {
+              let academicYear = await this.prisma.academicYear.findFirst({ where: { tenantId } });
+              if (!academicYear) {
+                academicYear = await this.prisma.academicYear.create({
+                  data: {
+                    tenantId,
+                    name: `${new Date().getFullYear()}/${new Date().getFullYear() + 1}`,
+                    startDate: new Date(),
+                    endDate: new Date(Date.now() + 365 * 24 * 3600 * 1000),
+                  },
+                });
+              }
+              let term = await this.prisma.term.findFirst({ where: { tenantId, academicYearId: academicYear.id } });
+              if (!term) {
+                term = await this.prisma.term.create({
+                  data: {
+                    tenantId,
+                    academicYearId: academicYear.id,
+                    name: 'First Term',
+                    startDate: new Date(),
+                    endDate: new Date(Date.now() + 90 * 24 * 3600 * 1000),
+                  },
+                });
+              }
+              exam = await this.prisma.examination.create({
+                data: {
+                  tenantId,
+                  campusId: student.campusId,
+                  academicYearId: academicYear.id,
+                  termId: term.id,
+                  name: 'General Assessment Term',
+                  examType: 'TERM_EXAM',
+                  startDate: new Date(),
+                  endDate: new Date(),
+                },
+              });
+            }
+
+            await this.prisma.result.create({
+              data: {
+                tenantId,
+                examinationId: exam.id,
+                studentId: student.id,
+                subjectId: subject.id,
+                marksObtained: d.total,
+                maxMarks: 100,
+                grade: d.grade,
+                isPublished: true,
+                publishedAt: new Date(),
+                componentScores: { ca1: d.ca1, ca2: d.ca2, exam: d.exam },
+              },
+            });
+            createdCount++;
+          }
+        } catch (err: any) {
+          this.logger.warn(`Failed grade import for student ${d.admNum}: ${err.message}`);
+        }
       }
     }
 
@@ -325,8 +389,9 @@ export class DataImportService {
   }
 
   async getImportJobs(tenantId: string) {
-    return Array.from(this.prisma.memoryStore.dataImportJobs.values())
-      .filter((j: any) => j.tenantId === tenantId)
-      .sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
+    return this.prisma.dataImportJob.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 }

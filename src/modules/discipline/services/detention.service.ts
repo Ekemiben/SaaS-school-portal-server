@@ -24,33 +24,31 @@ export class DetentionService {
     supervisorUserId: string,
     dto: CreateDetentionSessionDto,
   ) {
-    const campus = this.prisma.memoryStore.campuses.get(dto.campusId);
-    if (!campus || campus.tenantId !== tenantId) {
+    const campus = await this.prisma.campus.findFirst({
+      where: { id: dto.campusId, tenantId },
+    });
+    if (!campus) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Campus not found in this school',
       });
     }
 
-    const id = `det_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const session = {
-      id,
-      tenantId,
-      campusId: dto.campusId,
-      title: dto.title,
-      date: new Date(dto.date),
-      startTime: dto.startTime,
-      endTime: dto.endTime,
-      location: dto.location,
-      supervisorUserId: dto.supervisorUserId || supervisorUserId,
-      maxCapacity: dto.maxCapacity || 30,
-      status: 'SCHEDULED',
-      notes: dto.notes || null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.detentionSessions.set(id, session);
+    const session = await this.prisma.detentionSession.create({
+      data: {
+        tenantId,
+        campusId: dto.campusId,
+        title: dto.title,
+        date: new Date(dto.date),
+        startTime: dto.startTime,
+        endTime: dto.endTime,
+        location: dto.location,
+        supervisorUserId: dto.supervisorUserId || supervisorUserId,
+        maxCapacity: dto.maxCapacity || 30,
+        status: 'SCHEDULED',
+        notes: dto.notes || null,
+      },
+    });
 
     return {
       ...session,
@@ -63,8 +61,13 @@ export class DetentionService {
     assignerUserId: string,
     dto: AssignStudentDetentionDto,
   ) {
-    const session = this.prisma.memoryStore.detentionSessions.get(dto.sessionId);
-    if (!session || session.tenantId !== tenantId) {
+    const session = await this.prisma.detentionSession.findFirst({
+      where: { id: dto.sessionId, tenantId },
+      include: {
+        assignments: true,
+      },
+    });
+    if (!session) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Detention session not found',
@@ -78,49 +81,49 @@ export class DetentionService {
       });
     }
 
-    const student = this.prisma.memoryStore.students.get(dto.studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: dto.studentId, tenantId },
+    });
+    if (!student) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Student not found in this school',
       });
     }
 
-    const existingAssignments = Array.from(this.prisma.memoryStore.detentionAssignments.values()).filter(
-      (a) => a.tenantId === tenantId && a.sessionId === dto.sessionId,
-    );
+    const existingAssignment = await this.prisma.detentionAssignment.findFirst({
+      where: {
+        tenantId,
+        sessionId: dto.sessionId,
+        studentId: dto.studentId,
+      },
+    });
 
-    if (existingAssignments.some((a) => a.studentId === dto.studentId)) {
+    if (existingAssignment) {
       throw new ConflictException({
         errorCode: ErrorCodes.CONFLICT,
         message: 'Student is already assigned to this detention session',
       });
     }
 
-    if (existingAssignments.length >= session.maxCapacity) {
+    if (session.assignments.length >= session.maxCapacity) {
       throw new BadRequestException({
         errorCode: ErrorCodes.VALIDATION_FAILED,
         message: `Detention session is at full capacity (${session.maxCapacity} students)`,
       });
     }
 
-    const id = `deta_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const assignment = {
-      id,
-      tenantId,
-      sessionId: dto.sessionId,
-      incidentId: dto.incidentId || null,
-      studentId: dto.studentId,
-      assignedByUserId: assignerUserId,
-      attendanceStatus: 'ASSIGNED',
-      reflectionNotes: dto.reflectionNotes || null,
-      markedAt: null,
-      markedByUserId: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.detentionAssignments.set(id, assignment);
+    const assignment = await this.prisma.detentionAssignment.create({
+      data: {
+        tenantId,
+        sessionId: dto.sessionId,
+        incidentId: dto.incidentId || null,
+        studentId: dto.studentId,
+        assignedByUserId: assignerUserId,
+        attendanceStatus: 'ASSIGNED',
+        reflectionNotes: dto.reflectionNotes || null,
+      },
+    });
 
     return {
       ...assignment,
@@ -136,72 +139,77 @@ export class DetentionService {
     supervisorUserId: string,
     dto: RecordDetentionAttendanceDto,
   ) {
-    const assignment = this.prisma.memoryStore.detentionAssignments.get(assignmentId);
-    if (!assignment || assignment.tenantId !== tenantId) {
+    const assignment = await this.prisma.detentionAssignment.findFirst({
+      where: { id: assignmentId, tenantId },
+    });
+    if (!assignment) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Detention assignment not found',
       });
     }
 
-    assignment.attendanceStatus = dto.attendanceStatus;
-    if (dto.reflectionNotes) assignment.reflectionNotes = dto.reflectionNotes;
-    assignment.markedAt = new Date();
-    assignment.markedByUserId = supervisorUserId;
-    assignment.updatedAt = new Date();
-
-    this.prisma.memoryStore.detentionAssignments.set(assignmentId, assignment);
-
-    return assignment;
+    return this.prisma.detentionAssignment.update({
+      where: { id: assignmentId },
+      data: {
+        attendanceStatus: dto.attendanceStatus,
+        ...(dto.reflectionNotes !== undefined ? { reflectionNotes: dto.reflectionNotes } : {}),
+        markedAt: new Date(),
+        markedByUserId: supervisorUserId,
+      },
+    });
   }
 
   async getSessions(tenantId: string, campusId?: string) {
-    let list = Array.from(this.prisma.memoryStore.detentionSessions.values()).filter(
-      (s) => s.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
+    if (campusId) where.campusId = campusId;
 
-    if (campusId) list = list.filter((s) => s.campusId === campusId);
+    const sessions = await this.prisma.detentionSession.findMany({
+      where,
+      include: {
+        campus: true,
+        _count: {
+          select: { assignments: true },
+        },
+      },
+      orderBy: { date: 'desc' },
+    });
 
-    return list
-      .map((s) => {
-        const campus = this.prisma.memoryStore.campuses.get(s.campusId);
-        const assignedCount = Array.from(this.prisma.memoryStore.detentionAssignments.values()).filter(
-          (a) => a.tenantId === tenantId && a.sessionId === s.id,
-        ).length;
-
-        return {
-          ...s,
-          campusName: campus?.name || 'Campus',
-          assignedCount,
-        };
-      })
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    return sessions.map((s) => ({
+      ...s,
+      campusName: s.campus?.name || 'Campus',
+      assignedCount: s._count?.assignments || 0,
+    }));
   }
 
   async getSessionById(tenantId: string, sessionId: string) {
-    const session = this.prisma.memoryStore.detentionSessions.get(sessionId);
-    if (!session || session.tenantId !== tenantId) {
+    const session = await this.prisma.detentionSession.findFirst({
+      where: { id: sessionId, tenantId },
+      include: {
+        campus: true,
+        assignments: {
+          include: {
+            student: true,
+          },
+        },
+      },
+    });
+    if (!session) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Detention session not found',
       });
     }
 
-    const campus = this.prisma.memoryStore.campuses.get(session.campusId);
-    const roster = Array.from(this.prisma.memoryStore.detentionAssignments.values())
-      .filter((a) => a.tenantId === tenantId && a.sessionId === sessionId)
-      .map((a) => {
-        const student = this.prisma.memoryStore.students.get(a.studentId);
-        return {
-          ...a,
-          studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-          admissionNumber: student?.admissionNumber || '',
-        };
-      });
+    const roster = session.assignments.map((a) => ({
+      ...a,
+      studentName: a.student ? `${a.student.firstName} ${a.student.lastName}` : 'Student',
+      admissionNumber: a.student?.admissionNumber || '',
+    }));
 
     return {
       ...session,
-      campusName: campus?.name || 'Campus',
+      campusName: session.campus?.name || 'Campus',
       assignedCount: roster.length,
       roster,
     };

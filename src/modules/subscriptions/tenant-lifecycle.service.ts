@@ -9,7 +9,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
-import { SubscriptionsService, SAAS_PLANS } from './subscriptions.service.js';
+import { SubscriptionsService } from './subscriptions.service.js';
 import { PgBossService } from '../../infrastructure/queues/pg-boss/pg-boss.service.js';
 
 @Injectable()
@@ -80,127 +80,70 @@ export class TenantLifecycleService implements OnModuleInit, OnModuleDestroy {
       pastDueSubscriptions: [] as any[],
     };
 
-    if (this.prisma.isDbConnected) {
-      try {
-        const expiringSubs = await this.prisma.subscription.findMany({
-          where: {
-            status: 'ACTIVE',
-            currentPeriodEnd: { lte: new Date(now.getTime() + 3 * 86400000) },
-          },
-          include: { plan: true, tenant: true },
-        });
+    const expiringSubs = await this.prisma.subscription.findMany({
+      where: {
+        status: 'ACTIVE',
+        currentPeriodEnd: { lte: new Date(now.getTime() + 3 * 86400000) },
+      },
+      include: { plan: true, tenant: true },
+    });
 
-        for (const sub of expiringSubs) {
-          results.processedCount++;
-          const plan = sub.plan;
-          const isAnnual = sub.billingCycle === 'ANNUAL';
-          const price = isAnnual
-            ? Number(plan?.annualPrice || 987000)
-            : Number(plan?.termlyPrice || 350000);
-
-          const existingInvoice = await this.prisma.billingInvoice.findFirst({
-            where: {
-              tenantId: sub.tenantId,
-              subscriptionId: sub.id,
-              status: 'PENDING',
-            },
-          });
-
-          if (!existingInvoice) {
-            const invoiceNumber = `SUB-RENEW-${now.getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-            const invoice = await this.prisma.billingInvoice.create({
-              data: {
-                id: `binv_renew_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                tenantId: sub.tenantId,
-                subscriptionId: sub.id,
-                invoiceNumber,
-                amount: price,
-                currency: sub.currency || 'NGN',
-                status: 'PENDING',
-                dueDate: new Date(now.getTime() + 7 * 86400000), // 7 days grace period
-                paymentMethod: 'Automatic Subscription Billing',
-                lineItems: [
-                  {
-                    description: `Subscription Renewal: ${plan?.name || sub.planTier} (${sub.billingCycle})`,
-                    amount: price,
-                    quantity: 1,
-                  },
-                ],
-              },
-            });
-            results.invoicedCount++;
-
-            // If subscription period has passed end date without payment, transition to PAST_DUE
-            if (sub.currentPeriodEnd && new Date(sub.currentPeriodEnd) <= now) {
-              await this.prisma.subscription.update({
-                where: { id: sub.id },
-                data: { status: 'PAST_DUE', updatedAt: now },
-              });
-
-              results.pastDueCount++;
-              results.pastDueSubscriptions.push({
-                tenantId: sub.tenantId,
-                tenantName: sub.tenant?.name,
-                subscriptionId: sub.id,
-                invoiceId: invoice.id,
-              });
-            }
-          }
-        }
-      } catch (err: any) {
-        this.logger.error(`Error processing database renewals: ${err?.message}`);
-      }
-    }
-
-    // Process In-Memory Subscriptions (supports unit tests and memory fallback)
-    const memSubs = Array.from(this.prisma.memoryStore.subscriptions.values()).filter(
-      (s: any) => s.status === 'ACTIVE' && s.currentPeriodEnd && new Date(s.currentPeriodEnd) <= now,
-    );
-
-    for (const sub of memSubs) {
-      if (results.pastDueSubscriptions.some((p: any) => p.subscriptionId === sub.id || p.id === sub.id)) {
-        continue;
-      }
+    for (const sub of expiringSubs) {
       results.processedCount++;
+      const plan = sub.plan;
+      const isAnnual = sub.billingCycle === 'ANNUAL';
+      const price = isAnnual
+        ? Number(plan?.annualPrice || 987000)
+        : Number(plan?.termlyPrice || 350000);
 
-      const planKey = (sub.tier || 'starter').toLowerCase();
-      const plan = (SAAS_PLANS as any)[planKey] || SAAS_PLANS.starter;
-      const isAnnual = sub.billingCycle === 'ANNUALLY' || sub.billingCycle === 'ANNUAL';
-      const price = isAnnual ? plan.annualPrice : plan.monthlyPrice;
-
-      const existingInvoices = Array.from(this.prisma.memoryStore.billingInvoices.values()).filter(
-        (inv: any) => inv.tenantId === sub.tenantId && inv.status === 'PENDING',
-      );
-
-      if (existingInvoices.length === 0) {
-        const invoiceId = `binv_renew_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-        const invoice = {
-          id: invoiceId,
+      const existingInvoice = await this.prisma.billingInvoice.findFirst({
+        where: {
           tenantId: sub.tenantId,
           subscriptionId: sub.id,
-          invoiceNumber: `INV-RENEW-${Date.now()}`,
-          amount: price,
-          currency: 'USD',
           status: 'PENDING',
-          dueDate: new Date(now.getTime() + 7 * 86400000),
-          createdAt: now,
-          lineItems: [
-            {
-              description: `Subscription Renewal - ${plan.name} (${sub.billingCycle})`,
-              amount: price,
-              quantity: 1,
-            },
-          ],
-        };
-        this.prisma.memoryStore.billingInvoices.set(invoiceId, invoice);
-        results.invoicedCount++;
-      }
+        },
+      });
 
-      sub.status = 'PAST_DUE';
-      sub.updatedAt = now;
-      this.prisma.memoryStore.subscriptions.set(sub.id, sub);
-      results.pastDueSubscriptions.push(sub);
-      results.pastDueCount++;
+      if (!existingInvoice) {
+        const invoiceNumber = `SUB-RENEW-${now.getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+        const invoice = await this.prisma.billingInvoice.create({
+          data: {
+            id: `binv_renew_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            tenantId: sub.tenantId,
+            subscriptionId: sub.id,
+            invoiceNumber,
+            amount: price,
+            currency: sub.currency || 'NGN',
+            status: 'PENDING',
+            dueDate: new Date(now.getTime() + 7 * 86400000), // 7 days grace period
+            paymentMethod: 'Automatic Subscription Billing',
+            lineItems: [
+              {
+                description: `Subscription Renewal: ${plan?.name || sub.planTier} (${sub.billingCycle})`,
+                amount: price,
+                quantity: 1,
+              },
+            ],
+          },
+        });
+        results.invoicedCount++;
+
+        // If subscription period has passed end date without payment, transition to PAST_DUE
+        if (sub.currentPeriodEnd && new Date(sub.currentPeriodEnd) <= now) {
+          await this.prisma.subscription.update({
+            where: { id: sub.id },
+            data: { status: 'PAST_DUE', updatedAt: now },
+          });
+
+          results.pastDueCount++;
+          results.pastDueSubscriptions.push({
+            tenantId: sub.tenantId,
+            tenantName: sub.tenant?.name,
+            subscriptionId: sub.id,
+            invoiceId: invoice.id,
+          });
+        }
+      }
     }
 
     return results;
@@ -222,217 +165,128 @@ export class TenantLifecycleService implements OnModuleInit, OnModuleDestroy {
       expiredIncentives: [] as any[],
     };
 
-    if (this.prisma.isDbConnected) {
-      try {
-        // 1. Check Expired 2-Month Trials (TRIAL status with trialEndsAt < now)
-        const expiredTrials = await this.prisma.subscription.findMany({
-          where: {
-            status: 'TRIAL',
-            trialEndsAt: { lt: now },
-          },
-          include: { tenant: true },
-        });
+    // 1. Check Expired 2-Month Trials (TRIAL status with trialEndsAt < now)
+    const expiredTrials = await this.prisma.subscription.findMany({
+      where: {
+        status: 'TRIAL',
+        trialEndsAt: { lt: now },
+      },
+      include: { tenant: true },
+    });
 
-        for (const sub of expiredTrials) {
-          await this.prisma.$transaction([
-            this.prisma.subscription.update({
-              where: { id: sub.id },
-              data: { status: 'EXPIRED', updatedAt: now },
-            }),
-            this.prisma.tenant.update({
-              where: { id: sub.tenantId },
-              data: { status: 'SUSPENDED', updatedAt: now },
-            }),
-            this.prisma.auditLog.create({
-              data: {
-                id: `aud_trial_exp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                tenantId: sub.tenantId,
-                action: 'TRIAL_SUBSCRIPTION_EXPIRED',
-                resourceType: 'Subscription',
-                resourceId: sub.id,
-                afterData: {
-                  status: 'EXPIRED',
-                  tenantStatus: 'SUSPENDED',
-                  trialEndsAt: sub.trialEndsAt,
-                },
-              },
-            }),
-          ]);
-
-          // Sync Memory Store
-          const memSub = this.prisma.memoryStore.subscriptions.get(sub.id);
-          if (memSub) {
-            memSub.status = 'EXPIRED';
-            memSub.updatedAt = now;
-          }
-          const memTenant = this.prisma.memoryStore.tenants.get(sub.tenantId);
-          if (memTenant) {
-            memTenant.status = 'SUSPENDED';
-            memTenant.updatedAt = now;
-          }
-
-          results.expiredTrials.push({
+    for (const sub of expiredTrials) {
+      await this.prisma.$transaction([
+        this.prisma.subscription.update({
+          where: { id: sub.id },
+          data: { status: 'EXPIRED', updatedAt: now },
+        }),
+        this.prisma.tenant.update({
+          where: { id: sub.tenantId },
+          data: { status: 'SUSPENDED', updatedAt: now },
+        }),
+        this.prisma.auditLog.create({
+          data: {
+            id: `aud_trial_exp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
             tenantId: sub.tenantId,
-            tenantName: sub.tenant?.name,
-            subscriptionId: sub.id,
-            trialEndsAt: sub.trialEndsAt,
-          });
-        }
-
-        // 2. Check Overdue Subscriptions Past Grace Period (7 days after period end)
-        const graceCutoff = new Date(now.getTime() - 7 * 86400000);
-        const overdueSubs = await this.prisma.subscription.findMany({
-          where: {
-            status: { in: ['ACTIVE', 'PAST_DUE'] },
-            currentPeriodEnd: { lt: graceCutoff },
+            action: 'TRIAL_SUBSCRIPTION_EXPIRED',
+            resourceType: 'Subscription',
+            resourceId: sub.id,
+            afterData: {
+              status: 'EXPIRED',
+              tenantStatus: 'SUSPENDED',
+              trialEndsAt: sub.trialEndsAt,
+            },
           },
-          include: { tenant: true },
-        });
+        }),
+      ]);
 
-        for (const sub of overdueSubs) {
-          await this.prisma.$transaction([
-            this.prisma.subscription.update({
-              where: { id: sub.id },
-              data: { status: 'SUSPENDED', updatedAt: now },
-            }),
-            this.prisma.tenant.update({
-              where: { id: sub.tenantId },
-              data: { status: 'SUSPENDED', updatedAt: now },
-            }),
-            this.prisma.auditLog.create({
-              data: {
-                id: `aud_overdue_susp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                tenantId: sub.tenantId,
-                action: 'SUBSCRIPTION_GRACE_PERIOD_EXCEEDED_SUSPENDED',
-                resourceType: 'Subscription',
-                resourceId: sub.id,
-                afterData: {
-                  status: 'SUSPENDED',
-                  tenantStatus: 'SUSPENDED',
-                  currentPeriodEnd: sub.currentPeriodEnd,
-                },
-              },
-            }),
-          ]);
+      results.expiredTrials.push({
+        tenantId: sub.tenantId,
+        tenantName: sub.tenant?.name,
+        subscriptionId: sub.id,
+        trialEndsAt: sub.trialEndsAt,
+      });
+    }
 
-          // Sync Memory Store
-          const memSub = this.prisma.memoryStore.subscriptions.get(sub.id);
-          if (memSub) {
-            memSub.status = 'SUSPENDED';
-            memSub.updatedAt = now;
-          }
-          const memTenant = this.prisma.memoryStore.tenants.get(sub.tenantId);
-          if (memTenant) {
-            memTenant.status = 'SUSPENDED';
-            memTenant.updatedAt = now;
-          }
+    // 2. Check Overdue Subscriptions Past Grace Period (7 days after period end)
+    const graceCutoff = new Date(now.getTime() - 7 * 86400000);
+    const overdueSubs = await this.prisma.subscription.findMany({
+      where: {
+        status: { in: ['ACTIVE', 'PAST_DUE'] },
+        currentPeriodEnd: { lt: graceCutoff },
+      },
+      include: { tenant: true },
+    });
 
-          results.suspendedOverdue.push({
+    for (const sub of overdueSubs) {
+      await this.prisma.$transaction([
+        this.prisma.subscription.update({
+          where: { id: sub.id },
+          data: { status: 'SUSPENDED', updatedAt: now },
+        }),
+        this.prisma.tenant.update({
+          where: { id: sub.tenantId },
+          data: { status: 'SUSPENDED', updatedAt: now },
+        }),
+        this.prisma.auditLog.create({
+          data: {
+            id: `aud_overdue_susp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
             tenantId: sub.tenantId,
-            tenantName: sub.tenant?.name,
-            subscriptionId: sub.id,
-            currentPeriodEnd: sub.currentPeriodEnd,
-          });
-        }
-
-        // 3. Check Expired Promotional Feature Overrides (isEnabled = true and expiresAt < now)
-        const expiredIncentives = await this.prisma.subscriptionFeatureOverride.findMany({
-          where: {
-            isEnabled: true,
-            expiresAt: { lt: now },
+            action: 'SUBSCRIPTION_GRACE_PERIOD_EXCEEDED_SUSPENDED',
+            resourceType: 'Subscription',
+            resourceId: sub.id,
+            afterData: {
+              status: 'SUSPENDED',
+              tenantStatus: 'SUSPENDED',
+              currentPeriodEnd: sub.currentPeriodEnd,
+            },
           },
-        });
+        }),
+      ]);
 
-        for (const ov of expiredIncentives) {
-          await this.prisma.$transaction([
-            this.prisma.subscriptionFeatureOverride.update({
-              where: { id: ov.id },
-              data: { isEnabled: false, updatedAt: now },
-            }),
-            this.prisma.auditLog.create({
-              data: {
-                id: `aud_inc_exp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-                tenantId: ov.tenantId,
-                action: 'PROMOTIONAL_INCENTIVE_EXPIRED',
-                resourceType: 'SubscriptionFeatureOverride',
-                resourceId: ov.id,
-                afterData: {
-                  featureKey: ov.featureKey,
-                  isEnabled: false,
-                  expiresAt: ov.expiresAt,
-                },
-              },
-            }),
-          ]);
+      results.suspendedOverdue.push({
+        tenantId: sub.tenantId,
+        tenantName: sub.tenant?.name,
+        subscriptionId: sub.id,
+        currentPeriodEnd: sub.currentPeriodEnd,
+      });
+    }
 
-          results.expiredIncentives.push({
+    // 3. Check Expired Promotional Feature Overrides (isEnabled = true and expiresAt < now)
+    const expiredIncentives = await this.prisma.subscriptionFeatureOverride.findMany({
+      where: {
+        isEnabled: true,
+        expiresAt: { lt: now },
+      },
+    });
+
+    for (const ov of expiredIncentives) {
+      await this.prisma.$transaction([
+        this.prisma.subscriptionFeatureOverride.update({
+          where: { id: ov.id },
+          data: { isEnabled: false, updatedAt: now },
+        }),
+        this.prisma.auditLog.create({
+          data: {
+            id: `aud_inc_exp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
             tenantId: ov.tenantId,
-            featureKey: ov.featureKey,
-            expiresAt: ov.expiresAt,
-          });
-        }
-      } catch (err: any) {
-        this.logger.error(`Error enforcing database lifecycles: ${err?.message}`);
-      }
-    }
+            action: 'PROMOTIONAL_INCENTIVE_EXPIRED',
+            resourceType: 'SubscriptionFeatureOverride',
+            resourceId: ov.id,
+            afterData: {
+              featureKey: ov.featureKey,
+              isEnabled: false,
+              expiresAt: ov.expiresAt,
+            },
+          },
+        }),
+      ]);
 
-    // In-Memory Fallback & Unit Test Processing
-    const tenants = Array.from(this.prisma.memoryStore.tenants.values());
-    for (const tenant of tenants) {
-      const sub = Array.from(this.prisma.memoryStore.subscriptions.values()).find(
-        (s: any) => s.tenantId === tenant.id,
-      );
-      if (!sub) continue;
-
-      // 1. Expired Trial in memory
-      if (sub.status === 'TRIAL' && sub.trialEndsAt && new Date(sub.trialEndsAt) < now) {
-        if (!results.expiredTrials.some((t: any) => t.tenantId === tenant.id)) {
-          tenant.status = 'SUSPENDED';
-          sub.status = 'EXPIRED';
-          this.prisma.memoryStore.tenants.set(tenant.id, tenant);
-          this.prisma.memoryStore.subscriptions.set(sub.id, sub);
-          results.expiredTrials.push({ tenantId: tenant.id, subscriptionId: sub.id });
-        }
-      }
-    }
-
-    // 2. Overdue Invoices past grace period in memory
-    const overdueInvoices = Array.from(this.prisma.memoryStore.billingInvoices.values()).filter(
-      (inv: any) => inv.status === 'PENDING' && inv.dueDate && new Date(inv.dueDate) < now,
-    );
-    for (const inv of overdueInvoices) {
-      const tenant = this.prisma.memoryStore.tenants.get(inv.tenantId);
-      const sub = Array.from(this.prisma.memoryStore.subscriptions.values()).find(
-        (s: any) => s.tenantId === inv.tenantId,
-      );
-      if (tenant && tenant.status !== 'SUSPENDED') {
-        tenant.status = 'SUSPENDED';
-        this.prisma.memoryStore.tenants.set(tenant.id, tenant);
-        if (sub) {
-          sub.status = 'SUSPENDED';
-          this.prisma.memoryStore.subscriptions.set(sub.id, sub);
-        }
-        if (!results.suspendedOverdue.some((s: any) => s.tenantId === inv.tenantId)) {
-          results.suspendedOverdue.push({ tenantId: inv.tenantId, invoiceId: inv.id });
-        }
-      }
-    }
-
-    // 3. Expired Promotional Feature Overrides in memory
-    const memoryOverrides = Array.from(((this.prisma.memoryStore as any).featureOverrides?.values?.() || []) as any[]);
-    for (const ov of memoryOverrides) {
-      if (ov.isEnabled && ov.expiresAt && new Date(ov.expiresAt) < now) {
-        ov.isEnabled = false;
-        ov.updatedAt = now;
-        (this.prisma.memoryStore as any).featureOverrides.set(`${ov.subscriptionId}_${ov.featureKey}`, ov);
-        if (!results.expiredIncentives.some((i: any) => i.tenantId === ov.tenantId && i.featureKey === ov.featureKey)) {
-          results.expiredIncentives.push({
-            tenantId: ov.tenantId,
-            featureKey: ov.featureKey,
-            expiresAt: ov.expiresAt,
-          });
-        }
-      }
+      results.expiredIncentives.push({
+        tenantId: ov.tenantId,
+        featureKey: ov.featureKey,
+        expiresAt: ov.expiresAt,
+      });
     }
 
     results.enforcedCount =
@@ -468,152 +322,91 @@ export class TenantLifecycleService implements OnModuleInit, OnModuleDestroy {
     const duration = options?.durationDays || (isAnnual ? 365 : 90);
     const periodEnd = new Date(now.getTime() + duration * 86400000);
 
-    if (this.prisma.isDbConnected) {
-      try {
-        let sub = await this.prisma.subscription.findFirst({
-          where: { tenantId },
-          include: { plan: true },
-        });
+    const sub = await this.prisma.subscription.findFirst({
+      where: { tenantId },
+      include: { plan: true },
+    });
 
-        const targetTier = (options?.planTier || sub?.planTier || 'STANDARD').toUpperCase();
-        let plan = await this.prisma.subscriptionPlan.findUnique({
-          where: { tier: targetTier },
-        });
-        if (!plan) {
-          plan = await this.prisma.subscriptionPlan.findFirst();
-        }
-
-        const price =
-          options?.amount ??
-          (isAnnual ? Number(plan?.annualPrice || 987000) : Number(plan?.termlyPrice || 350000));
-
-        const subId = sub?.id || `sub_${tenantId.replace(/[^a-zA-Z0-9]/g, '_')}`;
-
-        const updatedSub = await this.prisma.subscription.upsert({
-          where: { id: subId },
-          create: {
-            id: subId,
-            tenantId,
-            planId: plan?.id,
-            planTier: targetTier,
-            status: 'ACTIVE',
-            billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
-            priceAtPurchase: price,
-            currency: plan?.currency || 'NGN',
-            trialEndsAt: null,
-            currentPeriodStart: now,
-            currentPeriodEnd: periodEnd,
-            maxStudents: plan?.maxStudents || 1500,
-            maxCampuses: plan?.maxCampuses || 3,
-            maxStaff: plan?.maxStaff || 100,
-            storageLimitMb: plan?.storageLimitMb || 25600,
-            autoRenew: true,
-          },
-          update: {
-            planId: plan?.id,
-            planTier: targetTier,
-            status: 'ACTIVE',
-            billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
-            priceAtPurchase: price,
-            trialEndsAt: null,
-            currentPeriodStart: now,
-            currentPeriodEnd: periodEnd,
-            maxStudents: plan?.maxStudents,
-            maxCampuses: plan?.maxCampuses,
-            maxStaff: plan?.maxStaff,
-            storageLimitMb: plan?.storageLimitMb,
-            updatedAt: now,
-          },
-        });
-
-        await this.prisma.tenant.update({
-          where: { id: tenantId },
-          data: {
-            status: 'ACTIVE',
-            plan: targetTier.toLowerCase(),
-            updatedAt: now,
-          },
-        });
-
-        await this.prisma.auditLog.create({
-          data: {
-            id: `aud_act_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-            tenantId,
-            action: 'SUBSCRIPTION_ACTIVATED',
-            resourceType: 'Subscription',
-            resourceId: updatedSub.id,
-            afterData: {
-              status: 'ACTIVE',
-              planTier: targetTier,
-              billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
-              currentPeriodEnd: periodEnd,
-              activatedBy: options?.adminEmail || 'Platform Super Admin',
-            },
-          },
-        });
-
-        // Sync Memory Store
-        this.prisma.memoryStore.subscriptions.set(updatedSub.id, {
-          ...updatedSub,
-          tier: targetTier.toLowerCase(),
-        });
-        const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
-        if (memTenant) {
-          memTenant.status = 'ACTIVE';
-          memTenant.plan = targetTier.toLowerCase();
-        }
-
-        return {
-          success: true,
-          subscription: updatedSub,
-          message: `Subscription successfully activated on ${targetTier} plan.`,
-        };
-      } catch (err: any) {
-        this.logger.warn(`Error activating subscription in DB: ${err?.message}. Falling back to memory store.`);
-      }
+    const targetTier = (options?.planTier || sub?.planTier || 'STANDARD').toUpperCase();
+    let plan = await this.prisma.subscriptionPlan.findUnique({
+      where: { tier: targetTier },
+    });
+    if (!plan) {
+      plan = await this.prisma.subscriptionPlan.findFirst();
     }
-    const targetTier = (options?.planTier || 'STANDARD').toUpperCase();
-    const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
-    if (memTenant) {
-      memTenant.status = 'ACTIVE';
-      memTenant.plan = targetTier.toLowerCase();
-      this.prisma.memoryStore.tenants.set(tenantId, memTenant);
-    }
-    let memSub: any = Array.from(this.prisma.memoryStore.subscriptions.values()).find(
-      (s: any) => s.tenantId === tenantId,
-    );
-    const subId = memSub?.id || `sub_${tenantId.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    if (!memSub) {
-      memSub = {
+
+    const price =
+      options?.amount ??
+      (isAnnual ? Number(plan?.annualPrice || 987000) : Number(plan?.termlyPrice || 350000));
+
+    const subId = sub?.id || `sub_${tenantId.replace(/[^a-zA-Z0-9]/g, '_')}`;
+
+    const updatedSub = await this.prisma.subscription.upsert({
+      where: { id: subId },
+      create: {
         id: subId,
         tenantId,
-        planId: `plan-${targetTier.toLowerCase()}`,
+        planId: plan?.id,
         planTier: targetTier,
-        tier: targetTier.toLowerCase(),
         status: 'ACTIVE',
-        billingCycle: cycle,
-        priceAtPurchase: options?.amount || (isAnnual ? 987000 : 350000),
-        currency: 'NGN',
+        billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
+        priceAtPurchase: price,
+        currency: plan?.currency || 'NGN',
         trialEndsAt: null,
         currentPeriodStart: now,
         currentPeriodEnd: periodEnd,
-        maxStudents: 1500,
-        maxCampuses: 3,
-        maxStaff: 100,
-        storageLimitMb: 25600,
+        maxStudents: plan?.maxStudents || 1500,
+        maxCampuses: plan?.maxCampuses || 3,
+        maxStaff: plan?.maxStaff || 100,
+        storageLimitMb: plan?.storageLimitMb || 25600,
         autoRenew: true,
-      };
-    } else {
-      memSub.status = 'ACTIVE';
-      memSub.planTier = targetTier;
-      memSub.tier = targetTier.toLowerCase();
-      memSub.trialEndsAt = null;
-      memSub.currentPeriodEnd = periodEnd;
-    }
-    this.prisma.memoryStore.subscriptions.set(subId, memSub);
+      },
+      update: {
+        planId: plan?.id,
+        planTier: targetTier,
+        status: 'ACTIVE',
+        billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
+        priceAtPurchase: price,
+        trialEndsAt: null,
+        currentPeriodStart: now,
+        currentPeriodEnd: periodEnd,
+        maxStudents: plan?.maxStudents,
+        maxCampuses: plan?.maxCampuses,
+        maxStaff: plan?.maxStaff,
+        storageLimitMb: plan?.storageLimitMb,
+        updatedAt: now,
+      },
+    });
+
+    await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: {
+        status: 'ACTIVE',
+        plan: targetTier.toLowerCase(),
+        updatedAt: now,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        id: `aud_act_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        tenantId,
+        action: 'SUBSCRIPTION_ACTIVATED',
+        resourceType: 'Subscription',
+        resourceId: updatedSub.id,
+        afterData: {
+          status: 'ACTIVE',
+          planTier: targetTier,
+          billingCycle: isAnnual ? 'ANNUAL' : 'TERMLY',
+          currentPeriodEnd: periodEnd,
+          activatedBy: options?.adminEmail || 'Platform Super Admin',
+        },
+      },
+    });
+
     return {
       success: true,
-      subscription: memSub,
+      subscription: updatedSub,
       message: `Subscription successfully activated on ${targetTier} plan.`,
     };
   }
@@ -623,63 +416,36 @@ export class TenantLifecycleService implements OnModuleInit, OnModuleDestroy {
    */
   async suspendSubscription(tenantId: string, reason?: string) {
     const now = new Date();
-    if (this.prisma.isDbConnected) {
-      try {
-        const sub = await this.prisma.subscription.findFirst({
-          where: { tenantId },
-        });
+    const sub = await this.prisma.subscription.findFirst({
+      where: { tenantId },
+    });
 
-        if (sub) {
-          await this.prisma.subscription.update({
-            where: { id: sub.id },
-            data: { status: 'SUSPENDED', updatedAt: now },
-          });
-        }
-
-        await this.prisma.tenant.update({
-          where: { id: tenantId },
-          data: { status: 'SUSPENDED', updatedAt: now },
-        });
-
-        await this.prisma.auditLog.create({
-          data: {
-            id: `aud_susp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-            tenantId,
-            action: 'SUBSCRIPTION_MANUALLY_SUSPENDED',
-            resourceType: 'Subscription',
-            resourceId: sub?.id || tenantId,
-            afterData: {
-              status: 'SUSPENDED',
-              tenantStatus: 'SUSPENDED',
-              reason: reason || 'Administrative suspension',
-            },
-          },
-        });
-
-        // Sync Memory Store
-        if (sub) {
-          const memSub = this.prisma.memoryStore.subscriptions.get(sub.id);
-          if (memSub) memSub.status = 'SUSPENDED';
-        }
-        const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
-        if (memTenant) memTenant.status = 'SUSPENDED';
-
-        return {
-          success: true,
-          status: 'SUSPENDED',
-          message: `School tenant and subscription successfully suspended.`,
-        };
-      } catch (err: any) {
-        this.logger.error(`Error suspending subscription: ${err?.message}`);
-        throw err;
-      }
+    if (sub) {
+      await this.prisma.subscription.update({
+        where: { id: sub.id },
+        data: { status: 'SUSPENDED', updatedAt: now },
+      });
     }
-    const memSub = Array.from(this.prisma.memoryStore.subscriptions.values()).find(
-      (s: any) => s.tenantId === tenantId,
-    );
-    if (memSub) memSub.status = 'SUSPENDED';
-    const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
-    if (memTenant) memTenant.status = 'SUSPENDED';
+
+    await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: { status: 'SUSPENDED', updatedAt: now },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        id: `aud_susp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        tenantId,
+        action: 'SUBSCRIPTION_MANUALLY_SUSPENDED',
+        resourceType: 'Subscription',
+        resourceId: sub?.id || tenantId,
+        afterData: {
+          status: 'SUSPENDED',
+          tenantStatus: 'SUSPENDED',
+          reason: reason || 'Administrative suspension',
+        },
+      },
+    });
 
     return {
       success: true,
@@ -693,81 +459,44 @@ export class TenantLifecycleService implements OnModuleInit, OnModuleDestroy {
    */
   async reactivateSubscription(tenantId: string) {
     const now = new Date();
-    if (this.prisma.isDbConnected) {
-      try {
-        const sub = await this.prisma.subscription.findFirst({
-          where: { tenantId },
-        });
+    const sub = await this.prisma.subscription.findFirst({
+      where: { tenantId },
+    });
 
-        const periodEnd =
-          sub?.currentPeriodEnd && new Date(sub.currentPeriodEnd) > now
-            ? sub.currentPeriodEnd
-            : new Date(now.getTime() + 30 * 86400000);
+    const periodEnd =
+      sub?.currentPeriodEnd && new Date(sub.currentPeriodEnd) > now
+        ? sub.currentPeriodEnd
+        : new Date(now.getTime() + 30 * 86400000);
 
-        if (sub) {
-          await this.prisma.subscription.update({
-            where: { id: sub.id },
-            data: {
-              status: 'ACTIVE',
-              currentPeriodEnd: periodEnd,
-              updatedAt: now,
-            },
-          });
-        }
-
-        await this.prisma.tenant.update({
-          where: { id: tenantId },
-          data: { status: 'ACTIVE', updatedAt: now },
-        });
-
-        await this.prisma.auditLog.create({
-          data: {
-            id: `aud_react_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-            tenantId,
-            action: 'SUBSCRIPTION_REACTIVATED',
-            resourceType: 'Subscription',
-            resourceId: sub?.id || tenantId,
-            afterData: {
-              status: 'ACTIVE',
-              tenantStatus: 'ACTIVE',
-            },
-          },
-        });
-
-        // Sync Memory Store
-        if (sub) {
-          const memSub = this.prisma.memoryStore.subscriptions.get(sub.id);
-          if (memSub) {
-            memSub.status = 'ACTIVE';
-            memSub.currentPeriodEnd = periodEnd;
-          }
-        }
-        const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
-        if (memTenant) memTenant.status = 'ACTIVE';
-
-        return {
-          success: true,
+    if (sub) {
+      await this.prisma.subscription.update({
+        where: { id: sub.id },
+        data: {
           status: 'ACTIVE',
-          message: `School tenant and subscription successfully restored to ACTIVE.`,
-        };
-      } catch (err: any) {
-        this.logger.error(`Error reactivating subscription: ${err?.message}`);
-        throw err;
-      }
+          currentPeriodEnd: periodEnd,
+          updatedAt: now,
+        },
+      });
     }
-    const memSub = Array.from(this.prisma.memoryStore.subscriptions.values()).find(
-      (s: any) => s.tenantId === tenantId,
-    );
-    if (memSub) {
-      memSub.status = 'ACTIVE';
-      memSub.currentPeriodEnd = new Date(now.getTime() + 30 * 86400000);
-      this.prisma.memoryStore.subscriptions.set(memSub.id, memSub);
-    }
-    const memTenant = this.prisma.memoryStore.tenants.get(tenantId);
-    if (memTenant) {
-      memTenant.status = 'ACTIVE';
-      this.prisma.memoryStore.tenants.set(tenantId, memTenant);
-    }
+
+    await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: { status: 'ACTIVE', updatedAt: now },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        id: `aud_react_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        tenantId,
+        action: 'SUBSCRIPTION_REACTIVATED',
+        resourceType: 'Subscription',
+        resourceId: sub?.id || tenantId,
+        afterData: {
+          status: 'ACTIVE',
+          tenantStatus: 'ACTIVE',
+        },
+      },
+    });
 
     return {
       success: true,
@@ -781,65 +510,67 @@ export class TenantLifecycleService implements OnModuleInit, OnModuleDestroy {
    */
   async cancelSubscription(tenantId: string, reason?: string) {
     const now = new Date();
-    if (this.prisma.isDbConnected) {
-      try {
-        const sub = await this.prisma.subscription.findFirst({
-          where: { tenantId },
-        });
+    const sub = await this.prisma.subscription.findFirst({
+      where: { tenantId },
+    });
 
-        if (sub) {
-          await this.prisma.subscription.update({
-            where: { id: sub.id },
-            data: { status: 'CANCELLED', autoRenew: false, updatedAt: now },
-          });
-        }
-
-        await this.prisma.auditLog.create({
-          data: {
-            id: `aud_canc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-            tenantId,
-            action: 'SUBSCRIPTION_CANCELLED',
-            resourceType: 'Subscription',
-            resourceId: sub?.id || tenantId,
-            afterData: {
-              status: 'CANCELLED',
-              reason: reason || 'Tenant requested cancellation',
-            },
-          },
-        });
-
-        return {
-          success: true,
-          status: 'CANCELLED',
-          message: `Subscription successfully cancelled.`,
-        };
-      } catch (err: any) {
-        this.logger.error(`Error cancelling subscription: ${err?.message}`);
-        throw err;
-      }
+    if (sub) {
+      await this.prisma.subscription.update({
+        where: { id: sub.id },
+        data: { status: 'CANCELLED', autoRenew: false, updatedAt: now },
+      });
     }
 
-    return { success: false, message: 'Database not connected.' };
+    await this.prisma.auditLog.create({
+      data: {
+        id: `aud_canc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        tenantId,
+        action: 'SUBSCRIPTION_CANCELLED',
+        resourceType: 'Subscription',
+        resourceId: sub?.id || tenantId,
+        afterData: {
+          status: 'CANCELLED',
+          reason: reason || 'Tenant requested cancellation',
+        },
+      },
+    });
+
+    return {
+      success: true,
+      status: 'CANCELLED',
+      message: `Subscription successfully cancelled.`,
+    };
   }
 
   /**
    * Server-side gatekeeper: Verifies if a school tenant is authorized to perform operations.
-   * Synchronous check on state store ensuring zero-latency request pipeline gating.
+   * Gating checks directly against PostgreSQL tenant and subscription records.
    */
-  checkTenantOperationAllowed(tenantId: string) {
-    const tenant = this.prisma.memoryStore.tenants.get(tenantId);
-    if (tenant && tenant.status === 'SUSPENDED') {
+  async checkTenantOperationAllowed(tenantId: string) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      include: {
+        subscriptions: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+
+    if (!tenant) {
+      return { allowed: true, status: 'ACTIVE' };
+    }
+
+    if (tenant.status === 'SUSPENDED') {
       throw new ForbiddenException(
         `Tenant account '${tenant.name || tenantId}' is SUSPENDED due to an expired subscription or overdue invoice. Please settle outstanding invoices to restore access.`,
       );
     }
-    if (tenant && tenant.status === 'DELETED') {
+    if (tenant.status === 'DELETED') {
       throw new ForbiddenException(`Tenant account '${tenantId}' has been deleted.`);
     }
 
-    const sub = Array.from(this.prisma.memoryStore.subscriptions.values()).find(
-      (s: any) => s.tenantId === tenantId,
-    );
+    const sub = tenant.subscriptions?.[0];
     if (sub && sub.status === 'EXPIRED') {
       throw new ForbiddenException(
         `Your school's subscription or trial has EXPIRED. Please renew your plan to continue using portal operations.`,
@@ -851,6 +582,6 @@ export class TenantLifecycleService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    return { allowed: true, status: tenant?.status || 'ACTIVE' };
+    return { allowed: true, status: tenant.status };
   }
 }

@@ -12,12 +12,19 @@ export class AdmissionLetterRendererService {
   ) {}
 
   async renderOfferLetter(tenantId: string, offer: any, application: any): Promise<string> {
-    const tenant = this.prisma.memoryStore.tenants.get(tenantId) || {
-      name: 'School Portal Academy',
-      primaryColor: '#1e3a8a',
-      currency: 'NGN',
-    };
-    const campus = this.prisma.memoryStore.campuses.get(offer.campusId) || { name: 'Main Campus' };
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+    });
+    const campus = offer.campusId
+      ? await this.prisma.campus.findFirst({
+          where: { id: offer.campusId, tenantId },
+        })
+      : null;
+
+    const schoolName = tenant?.name || 'School Portal Academy';
+    const primaryColor = tenant?.primaryColor || '#1e3a8a';
+    const currency = tenant?.currency || 'NGN';
+    const campusName = campus?.name || 'Main Campus';
 
     const formattedDate = new Date(offer.offerDate).toLocaleDateString('en-US', {
       year: 'numeric',
@@ -38,8 +45,8 @@ export class AdmissionLetterRendererService {
   <title>Provisional Offer of Admission - ${offer.offerNumber}</title>
   <style>
     body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #1e293b; padding: 40px; margin: 0 auto; max-width: 800px; line-height: 1.6; }
-    .header { border-bottom: 3px solid ${tenant.primaryColor || '#1e3a8a'}; padding-bottom: 20px; margin-bottom: 30px; }
-    .school-name { font-size: 24px; font-weight: bold; color: ${tenant.primaryColor || '#1e3a8a'}; margin: 0; }
+    .header { border-bottom: 3px solid ${primaryColor}; padding-bottom: 20px; margin-bottom: 30px; }
+    .school-name { font-size: 24px; font-weight: bold; color: ${primaryColor}; margin: 0; }
     .campus-name { font-size: 14px; color: #64748b; margin: 5px 0 0; }
     .offer-title { font-size: 18px; font-weight: bold; text-transform: uppercase; margin: 25px 0 15px; color: #0f172a; }
     .details-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 20px 0; }
@@ -52,8 +59,8 @@ export class AdmissionLetterRendererService {
 </head>
 <body>
   <div class="header">
-    <h1 class="school-name">${tenant.name}</h1>
-    <p class="campus-name">${campus.name}</p>
+    <h1 class="school-name">${schoolName}</h1>
+    <p class="campus-name">${campusName}</p>
   </div>
 
   <p><strong>Date:</strong> ${formattedDate}</p>
@@ -63,14 +70,14 @@ export class AdmissionLetterRendererService {
 
   <h2 class="offer-title">PROVISIONAL OFFER OF ADMISSION</h2>
 
-  <p>We are pleased to inform you that <strong>${application.studentFirstName} ${application.studentLastName}</strong> has been offered provisional admission into <strong>${tenant.name}</strong> for the upcoming academic session.</p>
+  <p>We are pleased to inform you that <strong>${application.studentFirstName} ${application.studentLastName}</strong> has been offered provisional admission into <strong>${schoolName}</strong> for the upcoming academic session.</p>
 
   <div class="details-box">
     <div class="details-row"><span class="details-label">Application No:</span> <span class="details-val">${application.applicationNumber}</span></div>
     <div class="details-row"><span class="details-label">Offered Grade / Class:</span> <span class="details-val">${offer.offeredGradeLevel}</span></div>
-    <div class="details-row"><span class="details-label">Campus:</span> <span class="details-val">${campus.name}</span></div>
+    <div class="details-row"><span class="details-label">Campus:</span> <span class="details-val">${campusName}</span></div>
     <div class="details-row"><span class="details-label">Acceptance Deadline:</span> <span class="details-val">${formattedDeadline}</span></div>
-    ${offer.acceptanceFeeAmount > 0 ? `<div class="details-row"><span class="details-label">Acceptance Fee:</span> <span class="details-val">${tenant.currency || 'NGN'} ${offer.acceptanceFeeAmount.toLocaleString()}</span></div>` : ''}
+    ${offer.acceptanceFeeAmount > 0 ? `<div class="details-row"><span class="details-label">Acceptance Fee:</span> <span class="details-val">${currency} ${offer.acceptanceFeeAmount.toLocaleString()}</span></div>` : ''}
   </div>
 
   ${offer.conditions ? `<div class="conditions"><strong>Conditions:</strong><br>${offer.conditions}</div>` : ''}
@@ -80,7 +87,7 @@ export class AdmissionLetterRendererService {
   <p>Congratulations and welcome to our school community!</p>
 
   <div class="footer">
-    <p>This is an official computer-generated document issued by ${tenant.name}.</p>
+    <p>This is an official computer-generated document issued by ${schoolName}.</p>
   </div>
 </body>
 </html>

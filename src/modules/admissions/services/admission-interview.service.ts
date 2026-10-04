@@ -23,49 +23,39 @@ export class AdmissionInterviewService {
 
     // Conflict detection: verify interviewer is not double-booked within a 30-minute window
     const thirtyMinutesMs = 30 * 60 * 1000;
-    const existingInterviews = Array.from(this.prisma.memoryStore.admissionInterviews.values()).filter(
-      (i: any) =>
-        i.tenantId === tenantId &&
-        i.interviewerUserId === dto.interviewerUserId &&
-        i.outcome !== 'RESCHEDULED' &&
-        Math.abs(new Date(i.interviewDate).getTime() - targetDate.getTime()) < thirtyMinutesMs,
+    const existingInterviews = await this.prisma.admissionInterview.findMany({
+      where: {
+        tenantId,
+        interviewerUserId: dto.interviewerUserId,
+        outcome: { not: 'RESCHEDULED' },
+      },
+    });
+
+    const hasConflict = existingInterviews.some(
+      (i) => Math.abs(new Date(i.interviewDate).getTime() - targetDate.getTime()) < thirtyMinutesMs,
     );
 
-    if (existingInterviews.length > 0) {
+    if (hasConflict) {
       throw new ConflictException(
         `Interviewer already has an interview scheduled near ${targetDate.toISOString()}. Please choose another slot or interviewer.`,
       );
     }
 
     const id = `int_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-    const interview = {
-      id,
-      tenantId,
-      applicationId,
-      interviewDate: targetDate,
-      mode: dto.mode || 'IN_PERSON',
-      interviewerUserId: dto.interviewerUserId,
-      interviewerName: dto.interviewerName || null,
-      location: dto.location || null,
-      meetingLink: dto.meetingLink || null,
-      evaluationNotes: dto.notes || null,
-      score: null,
-      outcome: 'PENDING',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+    const interview = await this.prisma.admissionInterview.create({
+      data: {
+        id,
+        tenantId,
+        applicationId,
+        interviewDate: targetDate,
+        interviewerUserId: dto.interviewerUserId,
+        evaluationNotes: dto.notes || null,
+        score: null,
+        outcome: 'PENDING',
+      },
+    });
 
-    if (this.prisma.isDbConnected && (this.prisma as any).admissionInterview) {
-      try {
-        await (this.prisma as any).admissionInterview.create({ data: interview });
-      } catch (err: any) {
-        this.logger.warn(`Prisma create admissionInterview failed: ${err.message}`);
-      }
-    }
-
-    this.prisma.memoryStore.admissionInterviews.set(id, interview);
-
-    if (['SUBMITTED', 'UNDER_REVIEW', 'SCREENING', 'ENTRANCE_TEST'].includes(app.status)) {
+    if (['SUBMITTED', 'UNDER_REVIEW', 'SCREENING', 'ENTRANCE_TEST'].includes(app.rawStatus || app.status)) {
       await this.applicationService.transitionStatus(tenantId, applicationId, {
         status: 'INTERVIEW',
         internalNotes: `Interview scheduled with ${dto.interviewerName || dto.interviewerUserId} for ${interview.interviewDate.toISOString()}`,
@@ -81,29 +71,35 @@ export class AdmissionInterviewService {
     interviewId: string,
     dto: EvaluateInterviewDto,
   ) {
-    const interview = this.prisma.memoryStore.admissionInterviews.get(interviewId);
-    if (!interview || interview.tenantId !== tenantId) {
+    const interview = await this.prisma.admissionInterview.findFirst({
+      where: { id: interviewId, tenantId },
+    });
+    if (!interview) {
       throw new NotFoundException(`Interview ${interviewId} not found`);
     }
 
-    const updated = {
-      ...interview,
-      outcome: dto.outcome,
-      score: dto.score !== undefined ? dto.score : interview.score,
-      evaluationNotes: dto.evaluationNotes
-        ? `${interview.evaluationNotes || ''}\nEvaluation: ${dto.evaluationNotes}`.trim()
-        : interview.evaluationNotes,
-      updatedAt: new Date(),
-    };
+    const updated = await this.prisma.admissionInterview.update({
+      where: { id: interviewId },
+      data: {
+        outcome: dto.outcome,
+        score: dto.score !== undefined ? dto.score : interview.score,
+        evaluationNotes: dto.evaluationNotes
+          ? `${interview.evaluationNotes || ''}\nEvaluation: ${dto.evaluationNotes}`.trim()
+          : interview.evaluationNotes,
+      },
+    });
 
-    this.prisma.memoryStore.admissionInterviews.set(interviewId, updated);
     this.logger.log(`Interview ${interviewId} evaluated with outcome: ${dto.outcome}`);
     return updated;
   }
 
   async listInterviews(tenantId: string, applicationId?: string) {
-    return Array.from(this.prisma.memoryStore.admissionInterviews.values()).filter(
-      (i: any) => i.tenantId === tenantId && (!applicationId || i.applicationId === applicationId),
-    );
+    return this.prisma.admissionInterview.findMany({
+      where: {
+        tenantId,
+        ...(applicationId ? { applicationId } : {}),
+      },
+      orderBy: { interviewDate: 'desc' },
+    });
   }
 }

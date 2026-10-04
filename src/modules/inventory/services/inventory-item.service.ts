@@ -25,13 +25,12 @@ export class InventoryItemService {
   ) {
     const targetCampusId = dto.campusId || campusId || null;
 
-    const existingSku = Array.from(
-      this.prisma.memoryStore.inventoryItems.values(),
-    ).find(
-      (item: any) =>
-        item.tenantId === tenantId &&
-        item.sku.toLowerCase() === dto.sku.toLowerCase(),
-    );
+    const existingSku = await this.prisma.inventoryItem.findFirst({
+      where: {
+        tenantId,
+        sku: { equals: dto.sku, mode: 'insensitive' },
+      },
+    });
 
     if (existingSku) {
       throw new BadRequestException(
@@ -39,52 +38,46 @@ export class InventoryItemService {
       );
     }
 
-    const id = `item_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const initialQty = dto.quantityOnHand || 0;
 
-    const item = {
-      id,
-      tenantId,
-      campusId: targetCampusId,
-      name: dto.name,
-      sku: dto.sku.toUpperCase(),
-      category: dto.category || 'ACADEMIC',
-      description: dto.description || null,
-      unitOfMeasure: dto.unitOfMeasure || 'PIECES',
-      unitCost: dto.unitCost || 0.0,
-      unitSellingPrice: dto.unitSellingPrice || null,
-      quantityOnHand: initialQty,
-      reorderThreshold: dto.reorderThreshold !== undefined ? dto.reorderThreshold : 10,
-      reorderQuantity: dto.reorderQuantity !== undefined ? dto.reorderQuantity : 50,
-      storageLocation: dto.storageLocation || null,
-      status: initialQty > 0 ? 'ACTIVE' : 'OUT_OF_STOCK',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.inventoryItems.set(id, item);
+    const item = await this.prisma.inventoryItem.create({
+      data: {
+        tenantId,
+        campusId: targetCampusId,
+        name: dto.name,
+        sku: dto.sku.toUpperCase(),
+        category: dto.category || 'ACADEMIC',
+        description: dto.description || null,
+        unitOfMeasure: dto.unitOfMeasure || 'PIECES',
+        unitCost: dto.unitCost || 0.0,
+        unitSellingPrice: dto.unitSellingPrice || null,
+        quantityOnHand: initialQty,
+        reorderThreshold: dto.reorderThreshold !== undefined ? dto.reorderThreshold : 10,
+        reorderQuantity: dto.reorderQuantity !== undefined ? dto.reorderQuantity : 50,
+        storageLocation: dto.storageLocation || null,
+        status: initialQty > 0 ? 'ACTIVE' : 'OUT_OF_STOCK',
+      },
+    });
 
     // If initial stock provided, log initial stock movement
     if (initialQty > 0) {
-      const movementId = `mvt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      const movement = {
-        id: movementId,
-        tenantId,
-        campusId: targetCampusId,
-        inventoryItemId: id,
-        type: 'STOCK_IN',
-        quantity: initialQty,
-        previousQty: 0,
-        newQty: initialQty,
-        unitCost: item.unitCost,
-        referenceNumber: 'INITIAL_STOCK_RECORD',
-        issuedToType: null,
-        issuedToId: null,
-        performedBy: userId,
-        notes: 'Initial inventory item stock initialization',
-        createdAt: new Date(),
-      };
-      this.prisma.memoryStore.inventoryStockMovements.set(movementId, movement);
+      await this.prisma.inventoryStockMovement.create({
+        data: {
+          tenantId,
+          campusId: targetCampusId,
+          inventoryItemId: item.id,
+          type: 'STOCK_IN',
+          quantity: initialQty,
+          previousQty: 0,
+          newQty: initialQty,
+          unitCost: item.unitCost,
+          referenceNumber: 'INITIAL_STOCK_RECORD',
+          issuedToType: null,
+          issuedToId: null,
+          performedBy: userId,
+          notes: 'Initial inventory item stock initialization',
+        },
+      });
     }
 
     return item;
@@ -93,35 +86,37 @@ export class InventoryItemService {
   async updateItem(tenantId: string, itemId: string, dto: UpdateInventoryItemDto) {
     const item = await this.getItemById(tenantId, itemId);
 
-    const updated = {
-      ...item,
-      ...dto,
-      status:
-        dto.status ||
-        (item.quantityOnHand <= 0 ? 'OUT_OF_STOCK' : 'ACTIVE'),
-      updatedAt: new Date(),
-    };
+    const newQty = (dto as any).quantityOnHand !== undefined ? (dto as any).quantityOnHand : item.quantityOnHand;
+    const resolvedStatus =
+      dto.status ||
+      (newQty <= 0 ? 'OUT_OF_STOCK' : 'ACTIVE');
 
-    this.prisma.memoryStore.inventoryItems.set(itemId, updated);
-    return updated;
+    return this.prisma.inventoryItem.update({
+      where: { id: itemId },
+      data: {
+        ...dto,
+        status: resolvedStatus,
+      },
+    });
   }
 
   async getItemById(tenantId: string, itemId: string) {
-    const item = this.prisma.memoryStore.inventoryItems.get(itemId);
-    if (!item || item.tenantId !== tenantId) {
+    const item = await this.prisma.inventoryItem.findFirst({
+      where: { id: itemId, tenantId },
+    });
+    if (!item) {
       throw new NotFoundException(`Inventory item with ID '${itemId}' not found`);
     }
     return item;
   }
 
   async getItemBySku(tenantId: string, sku: string) {
-    const item = Array.from(
-      this.prisma.memoryStore.inventoryItems.values(),
-    ).find(
-      (it: any) =>
-        it.tenantId === tenantId &&
-        it.sku.toLowerCase() === sku.toLowerCase(),
-    );
+    const item = await this.prisma.inventoryItem.findFirst({
+      where: {
+        tenantId,
+        sku: { equals: sku, mode: 'insensitive' },
+      },
+    });
     if (!item) {
       throw new NotFoundException(`Inventory item with SKU '${sku}' not found`);
     }
@@ -129,33 +124,36 @@ export class InventoryItemService {
   }
 
   async findAllItems(tenantId: string, filter?: InventoryItemFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.inventoryItems.values()).filter(
-      (item: any) => item.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
 
     if (filter?.campusId) {
-      list = list.filter((item: any) => item.campusId === filter.campusId || item.campusId === null);
+      where.OR = [{ campusId: filter.campusId }, { campusId: null }];
     }
     if (filter?.category) {
-      list = list.filter((item: any) => item.category === filter.category);
+      where.category = filter.category;
     }
     if (filter?.status) {
-      list = list.filter((item: any) => item.status === filter.status);
-    }
-    if (filter?.isLowStock === true || filter?.isLowStock === 'true') {
-      list = list.filter((item: any) => item.quantityOnHand <= item.reorderThreshold);
+      where.status = filter.status;
     }
     if (filter?.search) {
-      const q = filter.search.toLowerCase();
-      list = list.filter(
-        (item: any) =>
-          item.name.toLowerCase().includes(q) ||
-          item.sku.toLowerCase().includes(q) ||
-          (item.storageLocation && item.storageLocation.toLowerCase().includes(q)),
-      );
+      const q = filter.search;
+      where.OR = [
+        { name: { contains: q, mode: 'insensitive' } },
+        { sku: { contains: q, mode: 'insensitive' } },
+        { storageLocation: { contains: q, mode: 'insensitive' } },
+      ];
     }
 
-    return list.sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
+    let items = await this.prisma.inventoryItem.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (filter?.isLowStock === true || filter?.isLowStock === 'true') {
+      items = items.filter((item) => item.quantityOnHand <= item.reorderThreshold);
+    }
+
+    return items;
   }
 
   async getLowStockItems(tenantId: string, campusId?: string) {
@@ -164,7 +162,9 @@ export class InventoryItemService {
 
   async deleteItem(tenantId: string, itemId: string) {
     const item = await this.getItemById(tenantId, itemId);
-    this.prisma.memoryStore.inventoryItems.delete(itemId);
+    await this.prisma.inventoryItem.delete({
+      where: { id: itemId },
+    });
     return { success: true, message: `Inventory item ${item.sku} deleted successfully` };
   }
 }

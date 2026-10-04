@@ -13,7 +13,6 @@ export class TenantResolverMiddleware implements NestMiddleware {
     const requestId = reqAny.requestId || 'req_unknown';
 
     // Check headers first (e.g. for API clients, tests, or proxy headers)
-    // Master Architecture Step 1: Public auth endpoints (login) must NOT be biased by client tenant headers
     const isAuthRoute = req.originalUrl?.includes('/auth/login') || req.originalUrl?.includes('/auth/platform/login') || req.path?.includes('/auth/login') || req.path?.includes('/auth/platform/login');
     const headerTenantId = !isAuthRoute ? (req.headers['x-tenant-id'] as string) : undefined;
     const headerTenantSlug = !isAuthRoute ? (req.headers['x-tenant-slug'] as string) : undefined;
@@ -25,74 +24,29 @@ export class TenantResolverMiddleware implements NestMiddleware {
 
     let tenant: any = null;
 
-    if (this.prisma.isDbConnected) {
-      try {
-        if (headerTenantId) {
-          tenant = (await this.prisma.tenant.findUnique({
-            where: { id: headerTenantId },
-            include: { domains: true },
-          })) || (await this.prisma.tenant.findUnique({
-            where: { slug: headerTenantId },
-            include: { domains: true },
-          }));
-        } else if (headerTenantSlug) {
-          tenant = await this.prisma.tenant.findUnique({
-            where: { slug: headerTenantSlug },
-            include: { domains: true },
-          });
-        } else if (host && !isRootHost) {
-          // 1. Check custom or platform subdomain domain table
-          const tenantDomain = await this.prisma.tenantDomain.findUnique({
-            where: { domain: host },
-            include: { tenant: true },
-          });
-
-          if (tenantDomain) {
-            if (!tenantDomain.isVerified) {
-              throw new HttpException(
-                {
-                  code: ErrorCodes.RESOURCE_NOT_FOUND,
-                  message: 'This custom domain is pending DNS verification and is not yet active.',
-                },
-                HttpStatus.NOT_FOUND,
-              );
-            }
-            tenant = tenantDomain.tenant;
-          } else {
-            // 2. Check if subdomain match (e.g. greenfield.yoursaas.com or greenfield.localhost)
-            const parts = host.split('.');
-            if (parts.length >= 2 && (parts.length >= 3 || parts[parts.length - 1] === 'localhost')) {
-              const sub = parts[0];
-              if (!['www', 'api', 'admin', 'app', 'localhost'].includes(sub)) {
-                tenant = await this.prisma.tenant.findUnique({
-                  where: { slug: sub },
-                  include: { domains: true },
-                });
-              }
-            }
-          }
-        }
-      } catch (err: any) {
-        if (err instanceof HttpException) throw err;
-        this.prisma.isDbConnected = false;
-        tenant = null;
-      }
-    }
-
-    // In-memory fallback if not found or DB not connected
-    if (!tenant) {
+    try {
       if (headerTenantId) {
-        tenant = this.prisma.memoryStore.tenants.get(headerTenantId);
+        tenant = (await this.prisma.tenant.findUnique({
+          where: { id: headerTenantId },
+          include: { domains: true },
+        })) || (await this.prisma.tenant.findUnique({
+          where: { slug: headerTenantId },
+          include: { domains: true },
+        }));
       } else if (headerTenantSlug) {
-        tenant = Array.from(this.prisma.memoryStore.tenants.values()).find(
-          (t) => t.slug === headerTenantSlug,
-        );
+        tenant = await this.prisma.tenant.findUnique({
+          where: { slug: headerTenantSlug },
+          include: { domains: true },
+        });
       } else if (host && !isRootHost) {
-        const domainMatch = Array.from(this.prisma.memoryStore.domains.values()).find(
-          (d) => d.domain === host,
-        );
-        if (domainMatch) {
-          if (!domainMatch.isVerified) {
+        // 1. Check custom or platform subdomain domain table
+        const tenantDomain = await this.prisma.tenantDomain.findUnique({
+          where: { domain: host },
+          include: { tenant: true },
+        });
+
+        if (tenantDomain) {
+          if (!tenantDomain.isVerified) {
             throw new HttpException(
               {
                 code: ErrorCodes.RESOURCE_NOT_FOUND,
@@ -101,19 +55,24 @@ export class TenantResolverMiddleware implements NestMiddleware {
               HttpStatus.NOT_FOUND,
             );
           }
-          tenant = this.prisma.memoryStore.tenants.get(domainMatch.tenantId);
+          tenant = tenantDomain.tenant;
         } else {
+          // 2. Check if subdomain match (e.g. queensschoolcom.yoursaas.com or queensschoolcom.localhost)
           const parts = host.split('.');
           if (parts.length >= 2 && (parts.length >= 3 || parts[parts.length - 1] === 'localhost')) {
             const sub = parts[0];
-            if (!['www', 'api', 'admin', 'app', 'localhost'].includes(sub)) {
-              tenant = Array.from(this.prisma.memoryStore.tenants.values()).find(
-                (t) => t.slug === sub,
-              );
+            if (!['www', 'api', 'admin', 'app', 'localhost', 'platform'].includes(sub)) {
+              tenant = await this.prisma.tenant.findUnique({
+                where: { slug: sub },
+                include: { domains: true },
+              });
             }
           }
         }
       }
+    } catch (err: any) {
+      if (err instanceof HttpException) throw err;
+      tenant = null;
     }
 
     if (tenant) {

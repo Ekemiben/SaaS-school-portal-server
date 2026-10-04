@@ -28,39 +28,22 @@ export class HostelAllocationService {
     userId: string,
     dto: AllocateBedDto,
   ) {
-    if ((dto as any).student) {
-      const targetHostelId = dto.hostelId || (dto as any).hostelId;
-      const targetHostel = this.prisma.memoryStore.hostels.get(targetHostelId);
-      if (targetHostel) {
-        targetHostel.occupiedBeds = (targetHostel.occupiedBeds || 0) + 1;
-        if (!targetHostel.residents) targetHostel.residents = [];
-        targetHostel.residents.push({
-          student: (dto as any).student,
-          class: (dto as any).class || 'JSS 1A',
-          roomNumber: (dto as any).roomNumber || 'Room 101',
-          bedSpace: (dto as any).bedSpace || 'Bed A (Lower)',
-          dateJoined: new Date().toISOString().split('T')[0],
-        });
-        this.prisma.memoryStore.hostels.set(targetHostelId, targetHostel);
-        return { success: true, message: 'Bed space allocated successfully', hostel: targetHostel };
-      }
-    }
-
-    const student = this.prisma.memoryStore.students.get(dto.studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: dto.studentId, tenantId },
+    });
+    if (!student) {
       throw new NotFoundException(`Student with ID ${dto.studentId} not found in this school`);
     }
 
     // Check existing active allocation
-    const existingAllocation = Array.from(
-      this.prisma.memoryStore.hostelAllocations.values(),
-    ).find((a) => a.tenantId === tenantId && a.studentId === dto.studentId && a.status === 'ACTIVE');
+    const existingAllocation = await this.prisma.hostelAllocation.findFirst({
+      where: { tenantId, studentId: dto.studentId, status: 'ACTIVE' },
+      include: { hostel: true, room: true },
+    });
 
     if (existingAllocation) {
-      const existingHostel = this.prisma.memoryStore.hostels.get(existingAllocation.hostelId);
-      const existingRoom = this.prisma.memoryStore.hostelRooms.get(existingAllocation.roomId);
       throw new BadRequestException(
-        `Student already has an active bed allocation in ${existingHostel?.name || 'hostel'}, Room ${existingRoom?.roomNumber || ''}`,
+        `Student already has an active bed allocation in ${existingAllocation.hostel?.name || 'hostel'}, Room ${existingAllocation.room?.roomNumber || ''}`,
       );
     }
 
@@ -80,34 +63,31 @@ export class HostelAllocationService {
       throw new BadRequestException('Cannot allocate male student to a Girls hostel');
     }
 
-    const id = `hal_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const allocation = {
-      id,
-      tenantId,
-      campusId: dto.campusId || hostel.campusId || campusId,
-      hostelId: dto.hostelId,
-      roomId: dto.roomId,
-      bedId: dto.bedId,
-      studentId: dto.studentId,
-      academicSessionId: dto.academicSessionId || null,
-      academicTermId: dto.academicTermId || null,
-      startDate: dto.startDate ? new Date(dto.startDate) : new Date(),
-      expectedEndDate: dto.expectedEndDate ? new Date(dto.expectedEndDate) : null,
-      actualEndDate: null,
-      status: 'ACTIVE',
-      allocatedByUserId: userId,
-      checkoutReason: null,
-      notes: dto.notes || null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.hostelAllocations.set(id, allocation);
+    const allocation = await this.prisma.hostelAllocation.create({
+      data: {
+        tenantId,
+        campusId: dto.campusId || hostel.campusId || campusId,
+        hostelId: dto.hostelId,
+        roomId: dto.roomId,
+        bedId: dto.bedId,
+        studentId: dto.studentId,
+        academicSessionId: dto.academicSessionId || null,
+        academicTermId: dto.academicTermId || null,
+        startDate: dto.startDate ? new Date(dto.startDate) : new Date(),
+        expectedEndDate: dto.expectedEndDate ? new Date(dto.expectedEndDate) : null,
+        actualEndDate: null,
+        status: 'ACTIVE',
+        allocatedByUserId: userId,
+        checkoutReason: null,
+        notes: dto.notes || null,
+      },
+    });
 
     // Update bed status to OCCUPIED
-    bed.status = 'OCCUPIED';
-    bed.updatedAt = new Date();
-    this.prisma.memoryStore.hostelBeds.set(bed.id, bed);
+    await this.prisma.hostelBed.update({
+      where: { id: bed.id },
+      data: { status: 'OCCUPIED' },
+    });
 
     // Update room and hostel occupancy
     await this.updateRoomOccupancy(tenantId, dto.roomId);
@@ -130,8 +110,11 @@ export class HostelAllocationService {
     userId: string,
     dto: TransferBedDto,
   ) {
-    const currentAllocation = this.prisma.memoryStore.hostelAllocations.get(allocationId);
-    if (!currentAllocation || currentAllocation.tenantId !== tenantId || currentAllocation.status !== 'ACTIVE') {
+    const currentAllocation = await this.prisma.hostelAllocation.findFirst({
+      where: { id: allocationId, tenantId, status: 'ACTIVE' },
+      include: { student: true },
+    });
+    if (!currentAllocation) {
       throw new BadRequestException('Active allocation not found for transfer');
     }
 
@@ -144,55 +127,53 @@ export class HostelAllocationService {
     }
 
     // Vacate old bed
-    const oldBed = this.prisma.memoryStore.hostelBeds.get(currentAllocation.bedId);
-    if (oldBed) {
-      oldBed.status = 'VACANT';
-      oldBed.updatedAt = new Date();
-      this.prisma.memoryStore.hostelBeds.set(oldBed.id, oldBed);
-    }
+    await this.prisma.hostelBed.updateMany({
+      where: { id: currentAllocation.bedId, tenantId },
+      data: { status: 'VACANT' },
+    });
 
-    currentAllocation.status = 'TRANSFERRED';
-    currentAllocation.actualEndDate = new Date();
-    currentAllocation.checkoutReason = dto.transferReason || 'Transferred to another room/hostel';
-    currentAllocation.updatedAt = new Date();
-    this.prisma.memoryStore.hostelAllocations.set(allocationId, currentAllocation);
+    await this.prisma.hostelAllocation.update({
+      where: { id: allocationId },
+      data: {
+        status: 'TRANSFERRED',
+        actualEndDate: new Date(),
+        checkoutReason: dto.transferReason || 'Transferred to another room/hostel',
+      },
+    });
 
     await this.updateRoomOccupancy(tenantId, currentAllocation.roomId);
     await this.hostelService.recalculateHostelCounts(tenantId, currentAllocation.hostelId);
 
     // Create new allocation
-    const id = `hal_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const newAllocation = {
-      id,
-      tenantId,
-      campusId: newHostel.campusId,
-      hostelId: dto.newHostelId,
-      roomId: dto.newRoomId,
-      bedId: dto.newBedId,
-      studentId: currentAllocation.studentId,
-      academicSessionId: currentAllocation.academicSessionId,
-      academicTermId: currentAllocation.academicTermId,
-      startDate: new Date(),
-      expectedEndDate: null,
-      actualEndDate: null,
-      status: 'ACTIVE',
-      allocatedByUserId: userId,
-      checkoutReason: null,
-      notes: dto.notes || 'Transferred',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+    const newAllocation = await this.prisma.hostelAllocation.create({
+      data: {
+        tenantId,
+        campusId: newHostel.campusId,
+        hostelId: dto.newHostelId,
+        roomId: dto.newRoomId,
+        bedId: dto.newBedId,
+        studentId: currentAllocation.studentId,
+        academicSessionId: currentAllocation.academicSessionId,
+        academicTermId: currentAllocation.academicTermId,
+        startDate: new Date(),
+        expectedEndDate: null,
+        actualEndDate: null,
+        status: 'ACTIVE',
+        allocatedByUserId: userId,
+        checkoutReason: null,
+        notes: dto.notes || 'Transferred',
+      },
+    });
 
-    this.prisma.memoryStore.hostelAllocations.set(id, newAllocation);
-
-    newBed.status = 'OCCUPIED';
-    newBed.updatedAt = new Date();
-    this.prisma.memoryStore.hostelBeds.set(newBed.id, newBed);
+    await this.prisma.hostelBed.update({
+      where: { id: newBed.id },
+      data: { status: 'OCCUPIED' },
+    });
 
     await this.updateRoomOccupancy(tenantId, dto.newRoomId);
     await this.hostelService.recalculateHostelCounts(tenantId, dto.newHostelId);
 
-    const student = this.prisma.memoryStore.students.get(currentAllocation.studentId);
+    const student = currentAllocation.student;
     return {
       ...newAllocation,
       studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
@@ -204,94 +185,102 @@ export class HostelAllocationService {
   }
 
   async vacateBed(tenantId: string, allocationId: string, dto: VacateBedDto) {
-    const allocation = this.prisma.memoryStore.hostelAllocations.get(allocationId);
-    if (!allocation || allocation.tenantId !== tenantId || allocation.status !== 'ACTIVE') {
+    const allocation = await this.prisma.hostelAllocation.findFirst({
+      where: { id: allocationId, tenantId, status: 'ACTIVE' },
+    });
+    if (!allocation) {
       throw new BadRequestException('Active allocation not found to vacate');
     }
 
-    allocation.status = dto.status || 'VACATED';
-    allocation.actualEndDate = dto.actualEndDate ? new Date(dto.actualEndDate) : new Date();
-    allocation.checkoutReason = dto.checkoutReason || 'Normal checkout';
-    if (dto.notes) allocation.notes = dto.notes;
-    allocation.updatedAt = new Date();
+    const updatedAllocation = await this.prisma.hostelAllocation.update({
+      where: { id: allocationId },
+      data: {
+        status: dto.status || 'VACATED',
+        actualEndDate: dto.actualEndDate ? new Date(dto.actualEndDate) : new Date(),
+        checkoutReason: dto.checkoutReason || 'Normal checkout',
+        ...(dto.notes ? { notes: dto.notes } : {}),
+      },
+    });
 
-    this.prisma.memoryStore.hostelAllocations.set(allocationId, allocation);
-
-    const bed = this.prisma.memoryStore.hostelBeds.get(allocation.bedId);
-    if (bed) {
-      bed.status = 'VACANT';
-      bed.updatedAt = new Date();
-      this.prisma.memoryStore.hostelBeds.set(bed.id, bed);
-    }
+    await this.prisma.hostelBed.updateMany({
+      where: { id: allocation.bedId, tenantId },
+      data: { status: 'VACANT' },
+    });
 
     await this.updateRoomOccupancy(tenantId, allocation.roomId);
     await this.hostelService.recalculateHostelCounts(tenantId, allocation.hostelId);
 
-    return allocation;
+    return updatedAllocation;
   }
 
   async listAllocations(tenantId: string, filter?: AllocationFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.hostelAllocations.values()).filter(
-      (a) => a.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
+    if (filter?.studentId) where.studentId = filter.studentId;
+    if (filter?.hostelId) where.hostelId = filter.hostelId;
+    if (filter?.roomId) where.roomId = filter.roomId;
+    if (filter?.campusId) where.campusId = filter.campusId;
+    if (filter?.status) where.status = filter.status;
+    if (filter?.academicSessionId) where.academicSessionId = filter.academicSessionId;
 
-    if (filter?.studentId) list = list.filter((a) => a.studentId === filter.studentId);
-    if (filter?.hostelId) list = list.filter((a) => a.hostelId === filter.hostelId);
-    if (filter?.roomId) list = list.filter((a) => a.roomId === filter.roomId);
-    if (filter?.campusId) list = list.filter((a) => a.campusId === filter.campusId);
-    if (filter?.status) list = list.filter((a) => a.status === filter.status);
-    if (filter?.academicSessionId) list = list.filter((a) => a.academicSessionId === filter.academicSessionId);
-
-    return list.map((a) => {
-      const student = this.prisma.memoryStore.students.get(a.studentId);
-      const hostel = this.prisma.memoryStore.hostels.get(a.hostelId);
-      const room = this.prisma.memoryStore.hostelRooms.get(a.roomId);
-      const bed = this.prisma.memoryStore.hostelBeds.get(a.bedId);
-
-      return {
-        ...a,
-        studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-        admissionNumber: student?.admissionNumber || '',
-        hostelName: hostel?.name || 'Hostel',
-        roomNumber: room?.roomNumber || 'Room',
-        bedNumber: bed?.bedNumber || 'Bed',
-      };
+    const list = await this.prisma.hostelAllocation.findMany({
+      where,
+      include: {
+        student: true,
+        hostel: true,
+        room: true,
+        bed: true,
+      },
+      orderBy: { createdAt: 'desc' },
     });
+
+    return list.map((a) => ({
+      ...a,
+      studentName: a.student ? `${a.student.firstName} ${a.student.lastName}` : 'Student',
+      admissionNumber: a.student?.admissionNumber || '',
+      hostelName: a.hostel?.name || 'Hostel',
+      roomNumber: a.room?.roomNumber || 'Room',
+      bedNumber: a.bed?.bedNumber || 'Bed',
+    }));
   }
 
   async getActiveAllocationByStudent(tenantId: string, studentId: string) {
-    const allocation = Array.from(this.prisma.memoryStore.hostelAllocations.values()).find(
-      (a) => a.tenantId === tenantId && a.studentId === studentId && a.status === 'ACTIVE',
-    );
+    const allocation = await this.prisma.hostelAllocation.findFirst({
+      where: { tenantId, studentId, status: 'ACTIVE' },
+      include: {
+        student: true,
+        hostel: true,
+        room: true,
+        bed: true,
+      },
+    });
     if (!allocation) return null;
-
-    const student = this.prisma.memoryStore.students.get(allocation.studentId);
-    const hostel = this.prisma.memoryStore.hostels.get(allocation.hostelId);
-    const room = this.prisma.memoryStore.hostelRooms.get(allocation.roomId);
-    const bed = this.prisma.memoryStore.hostelBeds.get(allocation.bedId);
 
     return {
       ...allocation,
-      studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-      admissionNumber: student?.admissionNumber || '',
-      hostelName: hostel?.name || 'Hostel',
-      roomNumber: room?.roomNumber || 'Room',
-      bedNumber: bed?.bedNumber || 'Bed',
+      studentName: allocation.student ? `${allocation.student.firstName} ${allocation.student.lastName}` : 'Student',
+      admissionNumber: allocation.student?.admissionNumber || '',
+      hostelName: allocation.hostel?.name || 'Hostel',
+      roomNumber: allocation.room?.roomNumber || 'Room',
+      bedNumber: allocation.bed?.bedNumber || 'Bed',
     };
   }
 
   private async updateRoomOccupancy(tenantId: string, roomId: string) {
-    const room = this.prisma.memoryStore.hostelRooms.get(roomId);
-    if (!room || room.tenantId !== tenantId) return;
+    const room = await this.prisma.hostelRoom.findFirst({
+      where: { id: roomId, tenantId },
+    });
+    if (!room) return;
 
-    const beds = Array.from(this.prisma.memoryStore.hostelBeds.values()).filter(
-      (b) => b.tenantId === tenantId && b.roomId === roomId,
-    );
-    const occupied = beds.filter((b) => b.status === 'OCCUPIED').length;
-    room.occupied = occupied;
-    room.status = occupied >= room.capacity ? 'FULL' : 'AVAILABLE';
-    room.updatedAt = new Date();
+    const occupied = await this.prisma.hostelBed.count({
+      where: { tenantId, roomId, status: 'OCCUPIED' },
+    });
 
-    this.prisma.memoryStore.hostelRooms.set(roomId, room);
+    await this.prisma.hostelRoom.update({
+      where: { id: roomId },
+      data: {
+        occupied,
+        status: occupied >= room.capacity ? 'FULL' : 'AVAILABLE',
+      },
+    });
   }
 }

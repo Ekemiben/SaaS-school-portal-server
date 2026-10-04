@@ -29,13 +29,17 @@ export class HostelExeatService {
     studentId: string,
     dto: CreateExeatPassDto,
   ) {
-    const student = this.prisma.memoryStore.students.get(studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+    });
+    if (!student) {
       throw new NotFoundException(`Student with ID ${studentId} not found`);
     }
 
-    const hostel = this.prisma.memoryStore.hostels.get(dto.hostelId);
-    if (!hostel || hostel.tenantId !== tenantId) {
+    const hostel = await this.prisma.hostel.findFirst({
+      where: { id: dto.hostelId, tenantId },
+    });
+    if (!hostel) {
       throw new NotFoundException(`Hostel with ID ${dto.hostelId} not found`);
     }
 
@@ -46,36 +50,32 @@ export class HostelExeatService {
       throw new BadRequestException('Expected return date must be after departure date');
     }
 
-    const id = `ext_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const exeat = {
-      id,
-      tenantId,
-      campusId: dto.campusId || hostel.campusId,
-      hostelId: dto.hostelId,
-      roomId: dto.roomId || null,
-      studentId,
-      exeatType: dto.exeatType,
-      reason: dto.reason,
-      destinationAddress: dto.destinationAddress,
-      emergencyPhone: dto.emergencyPhone,
-      accompanyingGuardian: dto.accompanyingGuardian || null,
-      departureDate,
-      expectedReturnDate,
-      actualReturnDate: null,
-      status: 'PENDING_APPROVAL',
-      parentConsentStatus: dto.parentConsentStatus || 'PENDING',
-      approvedByUserId: null,
-      rejectionReason: null,
-      checkoutNotes: null,
-      checkinNotes: null,
-      departureLoggedBy: null,
-      returnLoggedBy: null,
-      parentNotified: false,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.hostelExeats.set(id, exeat);
+    const exeat = await this.prisma.hostelExeat.create({
+      data: {
+        tenantId,
+        campusId: dto.campusId || hostel.campusId,
+        hostelId: dto.hostelId,
+        roomId: dto.roomId || null,
+        studentId,
+        exeatType: dto.exeatType,
+        reason: dto.reason,
+        destinationAddress: dto.destinationAddress,
+        emergencyPhone: dto.emergencyPhone,
+        accompanyingGuardian: dto.accompanyingGuardian || null,
+        departureDate,
+        expectedReturnDate,
+        actualReturnDate: null,
+        status: 'PENDING_APPROVAL',
+        parentConsentStatus: dto.parentConsentStatus || 'PENDING',
+        approvedByUserId: null,
+        rejectionReason: null,
+        checkoutNotes: null,
+        checkinNotes: null,
+        departureLoggedBy: null,
+        returnLoggedBy: null,
+        parentNotified: false,
+      },
+    });
 
     this.dispatchExeatNotification(tenantId, 'EXEAT_REQUESTED', exeat, student, hostel).catch((err) =>
       this.logger.warn(`Fault-isolated exeat notification failed: ${err.message}`),
@@ -95,8 +95,11 @@ export class HostelExeatService {
     wardenUserId: string,
     dto: ApproveExeatPassDto,
   ) {
-    const exeat = this.prisma.memoryStore.hostelExeats.get(exeatId);
-    if (!exeat || exeat.tenantId !== tenantId) {
+    const exeat = await this.prisma.hostelExeat.findFirst({
+      where: { id: exeatId, tenantId },
+      include: { student: true, hostel: true },
+    });
+    if (!exeat) {
       throw new NotFoundException(`Exeat pass with ID ${exeatId} not found`);
     }
 
@@ -105,25 +108,24 @@ export class HostelExeatService {
     }
 
     const newStatus = dto.approved ? 'APPROVED' : 'REJECTED';
-    exeat.status = newStatus;
-    exeat.approvedByUserId = dto.approved ? wardenUserId : null;
-    exeat.rejectionReason = !dto.approved ? dto.rejectionReason || 'Declined by warden' : null;
-    if (dto.parentConsentStatus) exeat.parentConsentStatus = dto.parentConsentStatus;
-    exeat.updatedAt = new Date();
+    const updatedExeat = await this.prisma.hostelExeat.update({
+      where: { id: exeatId },
+      data: {
+        status: newStatus,
+        approvedByUserId: dto.approved ? wardenUserId : null,
+        rejectionReason: !dto.approved ? dto.rejectionReason || 'Declined by warden' : null,
+        ...(dto.parentConsentStatus ? { parentConsentStatus: dto.parentConsentStatus } : {}),
+      },
+    });
 
-    this.prisma.memoryStore.hostelExeats.set(exeatId, exeat);
-
-    const student = this.prisma.memoryStore.students.get(exeat.studentId);
-    const hostel = this.prisma.memoryStore.hostels.get(exeat.hostelId);
-
-    this.dispatchExeatNotification(tenantId, newStatus, exeat, student, hostel).catch((err) =>
+    this.dispatchExeatNotification(tenantId, newStatus, updatedExeat, exeat.student, exeat.hostel).catch((err) =>
       this.logger.warn(`Fault-isolated exeat notification failed: ${err.message}`),
     );
 
     return {
-      ...exeat,
-      studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-      hostelName: hostel?.name || 'Hostel',
+      ...updatedExeat,
+      studentName: exeat.student ? `${exeat.student.firstName} ${exeat.student.lastName}` : 'Student',
+      hostelName: exeat.hostel?.name || 'Hostel',
     };
   }
 
@@ -133,8 +135,11 @@ export class HostelExeatService {
     wardenUserId: string,
     dto: LogExeatDepartureDto,
   ) {
-    const exeat = this.prisma.memoryStore.hostelExeats.get(exeatId);
-    if (!exeat || exeat.tenantId !== tenantId) {
+    const exeat = await this.prisma.hostelExeat.findFirst({
+      where: { id: exeatId, tenantId },
+      include: { student: true, hostel: true },
+    });
+    if (!exeat) {
       throw new NotFoundException(`Exeat pass with ID ${exeatId} not found`);
     }
 
@@ -142,26 +147,25 @@ export class HostelExeatService {
       throw new BadRequestException(`Only APPROVED exeats can be logged for departure (Current: ${exeat.status})`);
     }
 
-    exeat.status = 'DEPARTED';
-    exeat.departureDate = dto.departureDate ? new Date(dto.departureDate) : new Date();
-    exeat.departureLoggedBy = wardenUserId;
-    exeat.checkoutNotes = dto.checkoutNotes || null;
-    exeat.parentNotified = true;
-    exeat.updatedAt = new Date();
+    const updatedExeat = await this.prisma.hostelExeat.update({
+      where: { id: exeatId },
+      data: {
+        status: 'DEPARTED',
+        departureDate: dto.departureDate ? new Date(dto.departureDate) : new Date(),
+        departureLoggedBy: wardenUserId,
+        checkoutNotes: dto.checkoutNotes || null,
+        parentNotified: true,
+      },
+    });
 
-    this.prisma.memoryStore.hostelExeats.set(exeatId, exeat);
-
-    const student = this.prisma.memoryStore.students.get(exeat.studentId);
-    const hostel = this.prisma.memoryStore.hostels.get(exeat.hostelId);
-
-    this.dispatchExeatNotification(tenantId, 'DEPARTED', exeat, student, hostel).catch((err) =>
+    this.dispatchExeatNotification(tenantId, 'DEPARTED', updatedExeat, exeat.student, exeat.hostel).catch((err) =>
       this.logger.warn(`Fault-isolated departure notification failed: ${err.message}`),
     );
 
     return {
-      ...exeat,
-      studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-      hostelName: hostel?.name || 'Hostel',
+      ...updatedExeat,
+      studentName: exeat.student ? `${exeat.student.firstName} ${exeat.student.lastName}` : 'Student',
+      hostelName: exeat.hostel?.name || 'Hostel',
     };
   }
 
@@ -171,8 +175,11 @@ export class HostelExeatService {
     wardenUserId: string,
     dto: LogExeatReturnDto,
   ) {
-    const exeat = this.prisma.memoryStore.hostelExeats.get(exeatId);
-    if (!exeat || exeat.tenantId !== tenantId) {
+    const exeat = await this.prisma.hostelExeat.findFirst({
+      where: { id: exeatId, tenantId },
+      include: { student: true, hostel: true },
+    });
+    if (!exeat) {
       throw new NotFoundException(`Exeat pass with ID ${exeatId} not found`);
     }
 
@@ -180,45 +187,47 @@ export class HostelExeatService {
       throw new BadRequestException(`Only DEPARTED or OVERDUE exeats can be checked in (Current: ${exeat.status})`);
     }
 
-    exeat.status = 'RETURNED';
-    exeat.actualReturnDate = dto.actualReturnDate ? new Date(dto.actualReturnDate) : new Date();
-    exeat.returnLoggedBy = wardenUserId;
-    exeat.checkinNotes = dto.checkinNotes || null;
-    exeat.updatedAt = new Date();
+    const updatedExeat = await this.prisma.hostelExeat.update({
+      where: { id: exeatId },
+      data: {
+        status: 'RETURNED',
+        actualReturnDate: dto.actualReturnDate ? new Date(dto.actualReturnDate) : new Date(),
+        returnLoggedBy: wardenUserId,
+        checkinNotes: dto.checkinNotes || null,
+      },
+    });
 
-    this.prisma.memoryStore.hostelExeats.set(exeatId, exeat);
-
-    const student = this.prisma.memoryStore.students.get(exeat.studentId);
-    const hostel = this.prisma.memoryStore.hostels.get(exeat.hostelId);
-
-    this.dispatchExeatNotification(tenantId, 'RETURNED', exeat, student, hostel).catch((err) =>
+    this.dispatchExeatNotification(tenantId, 'RETURNED', updatedExeat, exeat.student, exeat.hostel).catch((err) =>
       this.logger.warn(`Fault-isolated return notification failed: ${err.message}`),
     );
 
     return {
-      ...exeat,
-      studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-      hostelName: hostel?.name || 'Hostel',
+      ...updatedExeat,
+      studentName: exeat.student ? `${exeat.student.firstName} ${exeat.student.lastName}` : 'Student',
+      hostelName: exeat.hostel?.name || 'Hostel',
     };
   }
 
   async checkAndMarkOverdueExeats(tenantId: string) {
     const now = new Date();
-    const overdueList = Array.from(this.prisma.memoryStore.hostelExeats.values()).filter(
-      (e) => e.tenantId === tenantId && e.status === 'DEPARTED' && new Date(e.expectedReturnDate) < now,
-    );
+    const overdueList = await this.prisma.hostelExeat.findMany({
+      where: {
+        tenantId,
+        status: 'DEPARTED',
+        expectedReturnDate: { lt: now },
+      },
+      include: { student: true, hostel: true },
+    });
 
     const updated = [];
     for (const exeat of overdueList) {
-      exeat.status = 'OVERDUE';
-      exeat.updatedAt = new Date();
-      this.prisma.memoryStore.hostelExeats.set(exeat.id, exeat);
-      updated.push(exeat);
+      const updatedExeat = await this.prisma.hostelExeat.update({
+        where: { id: exeat.id },
+        data: { status: 'OVERDUE' },
+      });
+      updated.push(updatedExeat);
 
-      const student = this.prisma.memoryStore.students.get(exeat.studentId);
-      const hostel = this.prisma.memoryStore.hostels.get(exeat.hostelId);
-
-      this.dispatchExeatNotification(tenantId, 'OVERDUE', exeat, student, hostel).catch((err) =>
+      this.dispatchExeatNotification(tenantId, 'OVERDUE', updatedExeat, exeat.student, exeat.hostel).catch((err) =>
         this.logger.warn(`Fault-isolated overdue alert failed: ${err.message}`),
       );
     }
@@ -227,42 +236,41 @@ export class HostelExeatService {
   }
 
   async listExeats(tenantId: string, filter?: ExeatFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.hostelExeats.values()).filter(
-      (e) => e.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
+    if (filter?.studentId) where.studentId = filter.studentId;
+    if (filter?.hostelId) where.hostelId = filter.hostelId;
+    if (filter?.campusId) where.campusId = filter.campusId;
+    if (filter?.exeatType) where.exeatType = filter.exeatType;
+    if (filter?.status) where.status = filter.status;
 
-    if (filter?.studentId) list = list.filter((e) => e.studentId === filter.studentId);
-    if (filter?.hostelId) list = list.filter((e) => e.hostelId === filter.hostelId);
-    if (filter?.campusId) list = list.filter((e) => e.campusId === filter.campusId);
-    if (filter?.exeatType) list = list.filter((e) => e.exeatType === filter.exeatType);
-    if (filter?.status) list = list.filter((e) => e.status === filter.status);
-
-    return list.map((e) => {
-      const student = this.prisma.memoryStore.students.get(e.studentId);
-      const hostel = this.prisma.memoryStore.hostels.get(e.hostelId);
-      return {
-        ...e,
-        studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-        admissionNumber: student?.admissionNumber || '',
-        hostelName: hostel?.name || 'Hostel',
-      };
+    const list = await this.prisma.hostelExeat.findMany({
+      where,
+      include: { student: true, hostel: true },
+      orderBy: { createdAt: 'desc' },
     });
+
+    return list.map((e) => ({
+      ...e,
+      studentName: e.student ? `${e.student.firstName} ${e.student.lastName}` : 'Student',
+      admissionNumber: e.student?.admissionNumber || '',
+      hostelName: e.hostel?.name || 'Hostel',
+    }));
   }
 
   async getExeatById(tenantId: string, exeatId: string) {
-    const exeat = this.prisma.memoryStore.hostelExeats.get(exeatId);
-    if (!exeat || exeat.tenantId !== tenantId) {
+    const exeat = await this.prisma.hostelExeat.findFirst({
+      where: { id: exeatId, tenantId },
+      include: { student: true, hostel: true },
+    });
+    if (!exeat) {
       throw new NotFoundException(`Exeat pass with ID ${exeatId} not found`);
     }
 
-    const student = this.prisma.memoryStore.students.get(exeat.studentId);
-    const hostel = this.prisma.memoryStore.hostels.get(exeat.hostelId);
-
     return {
       ...exeat,
-      studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-      admissionNumber: student?.admissionNumber || '',
-      hostelName: hostel?.name || 'Hostel',
+      studentName: exeat.student ? `${exeat.student.firstName} ${exeat.student.lastName}` : 'Student',
+      admissionNumber: exeat.student?.admissionNumber || '',
+      hostelName: exeat.hostel?.name || 'Hostel',
     };
   }
 

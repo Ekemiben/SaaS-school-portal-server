@@ -60,7 +60,6 @@ export class TeachersService {
     const designationName = s.designation?.name || (isTeacher ? 'Subject Teacher' : 'Staff Member');
     const officeLocationName = s.staffRoom?.name || s.officeLocation || '';
 
-    // Relational class & subjects
     const assignedClass = s.classes?.[0]?.name || s.assignedClass || 'N/A';
     const assignedClassId = s.classes?.[0]?.id || null;
 
@@ -108,114 +107,80 @@ export class TeachersService {
   }
 
   async findAll(tenantId: string, campusId?: string) {
-    if (this.prisma.isDbConnected) {
-      try {
-        const where: any = { tenantId };
-        if (campusId) where.campusId = campusId;
+    const where: any = { tenantId };
+    if (campusId) where.campusId = campusId;
 
-        // 1. Query universal Staff records with relations if available
-        if (this.prisma.staff?.findMany) {
-          const staffList = await this.prisma.staff.findMany({
-            where,
-            include: {
-              campus: true,
-              department: true,
-              designation: true,
-              staffRoom: true,
-              teacherProfile: true,
-            },
-            orderBy: { createdAt: 'desc' },
-          });
+    if (this.prisma.staff?.findMany) {
+      const staffList = await this.prisma.staff.findMany({
+        where,
+        include: {
+          campus: true,
+          department: true,
+          designation: true,
+          staffRoom: true,
+          teacherProfile: true,
+        },
+        orderBy: { createdAt: 'desc' },
+      });
 
-          if (staffList && staffList.length > 0) {
-            const items = staffList.map((s) => this.formatStaff(s));
-            for (const item of items) {
-              this.prisma.memoryStore.teachers.set(item.id, item);
-            }
-            return items;
-          }
-        }
-
-        // Fallback to legacy teacher table
-        if (this.prisma.teacher?.findMany) {
-          const teachers = await this.prisma.teacher.findMany({
-            where,
-            include: {
-              campus: true,
-              classes: true,
-              department: true,
-              designation: true,
-              staffRoom: true,
-              classSubjects: { include: { subject: true } },
-            },
-            orderBy: { createdAt: 'desc' },
-          });
-
-          const items = teachers.map((t) => this.formatTeacher(t));
-          for (const item of items) {
-            this.prisma.memoryStore.teachers.set(item.id, item);
-          }
-          return items;
-        }
-      } catch (err: any) {
-        this.logger.warn(`Failed querying staff from DB, falling back to memoryStore: ${err.message}`);
+      if (staffList && staffList.length > 0) {
+        return staffList.map((s) => this.formatStaff(s));
       }
     }
 
-    return Array.from(this.prisma.memoryStore.teachers.values()).filter(
-      (t) => t.tenantId === tenantId && (!campusId || t.campusId === campusId),
-    );
+    const teachers = await this.prisma.teacher.findMany({
+      where,
+      include: {
+        campus: true,
+        classes: true,
+        department: true,
+        designation: true,
+        staffRoom: true,
+        classSubjects: { include: { subject: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return teachers.map((t) => this.formatTeacher(t));
   }
 
   async findById(tenantId: string, teacherId: string) {
-    if (this.prisma.isDbConnected) {
-      try {
-        if (this.prisma.staff?.findFirst) {
-          const staff = await this.prisma.staff.findFirst({
-            where: { id: teacherId, tenantId },
-            include: {
-              campus: true,
-              department: true,
-              designation: true,
-              staffRoom: true,
-              teacherProfile: true,
-            },
-          });
-          if (staff) {
-            return this.formatStaff(staff);
-          }
-        }
-
-        if (this.prisma.teacher?.findFirst) {
-          const t = await this.prisma.teacher.findFirst({
-            where: { id: teacherId, tenantId },
-            include: {
-              campus: true,
-              classes: true,
-              department: true,
-              designation: true,
-              staffRoom: true,
-              classSubjects: { include: { subject: true } },
-            },
-          });
-          if (t) {
-            return this.formatTeacher(t);
-          }
-        }
-      } catch (err: any) {
-        this.logger.warn(`Failed querying staff by id from DB: ${err.message}`);
+    if (this.prisma.staff?.findFirst) {
+      const staff = await this.prisma.staff.findFirst({
+        where: { id: teacherId, tenantId },
+        include: {
+          campus: true,
+          department: true,
+          designation: true,
+          staffRoom: true,
+          teacherProfile: true,
+        },
+      });
+      if (staff) {
+        return this.formatStaff(staff);
       }
     }
 
-    const teacher = this.prisma.memoryStore.teachers.get(teacherId);
-    if (!teacher || teacher.tenantId !== tenantId) {
+    const t = await this.prisma.teacher.findFirst({
+      where: { id: teacherId, tenantId },
+      include: {
+        campus: true,
+        classes: true,
+        department: true,
+        designation: true,
+        staffRoom: true,
+        classSubjects: { include: { subject: true } },
+      },
+    });
+
+    if (!t) {
       throw new NotFoundException('Teacher not found in this school');
     }
-    return teacher;
+
+    return this.formatTeacher(t);
   }
 
   async create(tenantId: string, data: any, user?: any) {
-    // 1. Financial Authorization Enforcement
     const hasFinancialData =
       data.basicSalary !== undefined ||
       data.housingAllowance !== undefined ||
@@ -228,348 +193,306 @@ export class TeachersService {
       throw new ForbiddenException('You do not have permission to manage staff financial profiles.');
     }
 
-    if (this.prisma.isDbConnected) {
-      try {
-        // Enforce staff subscription quota
-        const sub = await this.prisma.subscription.findFirst({
+    const sub = await this.prisma.subscription.findFirst({
+      where: { tenantId },
+    });
+    const maxStaff = sub?.maxStaff ?? 30;
+    const currentCount = this.prisma.staff?.count
+      ? await this.prisma.staff.count({ where: { tenantId, isActive: true } })
+      : await this.prisma.teacher.count({ where: { tenantId, isActive: true } });
+    if (currentCount >= maxStaff) {
+      throw new ForbiddenException(
+        `Staff hiring quota reached (${currentCount}/${maxStaff}). Please upgrade your subscription plan to add more staff.`,
+      );
+    }
+
+    let campusId = data.campusId;
+    if (campusId) {
+      const campusExists = await this.prisma.campus.findFirst({
+        where: { id: campusId, tenantId },
+      });
+      if (!campusExists) campusId = undefined;
+    }
+
+    if (!campusId) {
+      const mainCampus =
+        (await this.prisma.campus.findFirst({
+          where: { tenantId, isMain: true },
+        })) ||
+        (await this.prisma.campus.findFirst({
           where: { tenantId },
+        }));
+      if (mainCampus) {
+        campusId = mainCampus.id;
+      } else {
+        const newCampus = await this.prisma.campus.create({
+          data: {
+            id: `cmp_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+            tenantId,
+            name: 'Main Campus',
+            code: 'MAIN-01',
+            isMain: true,
+          },
         });
-        const maxStaff = sub?.maxStaff ?? 30;
-        const currentCount = this.prisma.staff?.count
-          ? await this.prisma.staff.count({ where: { tenantId, isActive: true } })
-          : await this.prisma.teacher.count({ where: { tenantId, isActive: true } });
-        if (currentCount >= maxStaff) {
-          throw new ForbiddenException(
-            `Staff hiring quota reached (${currentCount}/${maxStaff}). Please upgrade your subscription plan to add more staff.`,
-          );
-        }
-
-        // 2. Resolve campusId
-        let campusId = data.campusId;
-        if (campusId) {
-          const campusExists = await this.prisma.campus.findFirst({
-            where: { id: campusId, tenantId },
-          });
-          if (!campusExists) campusId = undefined;
-        }
-
-        if (!campusId) {
-          const mainCampus =
-            (await this.prisma.campus.findFirst({
-              where: { tenantId, isMain: true },
-            })) ||
-            (await this.prisma.campus.findFirst({
-              where: { tenantId },
-            }));
-          if (mainCampus) {
-            campusId = mainCampus.id;
-          } else {
-            const newCampus = await this.prisma.campus.create({
-              data: {
-                id: `cmp_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
-                tenantId,
-                name: 'Main Campus',
-                code: 'MAIN-01',
-                isMain: true,
-              },
-            });
-            campusId = newCampus.id;
-          }
-        }
-
-        // 3. Validate Department Tenant Integrity
-        let departmentId = data.departmentId || null;
-        if (departmentId) {
-          const dept = await this.prisma.department.findFirst({
-            where: { id: departmentId, tenantId },
-          });
-          if (!dept) {
-            throw new ForbiddenException('Assigned department does not belong to this school organization.');
-          }
-        }
-
-        // 4. Validate Designation Tenant Integrity
-        let designationId = data.designationId || null;
-        let designationName = 'Staff Member';
-        if (designationId) {
-          const desig = await this.prisma.designation.findFirst({
-            where: { id: designationId, tenantId },
-          });
-          if (!desig) {
-            throw new ForbiddenException('Assigned designation does not belong to this school organization.');
-          }
-          designationName = desig.name;
-        }
-
-        // 5. Validate Staff Room Tenant + Campus Integrity
-        let staffRoomId = data.staffRoomId || null;
-        if (staffRoomId) {
-          const room = await this.prisma.staffRoom.findFirst({
-            where: { id: staffRoomId, tenantId },
-          });
-          if (!room) {
-            throw new ForbiddenException('Assigned staff room does not belong to this school organization.');
-          }
-          if (room.campusId && room.campusId !== campusId) {
-            throw new BadRequestException('Assigned staff room belongs to a different school campus.');
-          }
-        }
-
-        // 6. Validate Class Tenant & Campus Integrity
-        let linkedClass: any = null;
-        const targetClassRef = data.assignedClassId || data.assignedClass;
-        if (targetClassRef && targetClassRef !== 'N/A' && String(targetClassRef).trim()) {
-          linkedClass = await this.prisma.class.findFirst({
-            where: {
-              tenantId,
-              OR: [{ id: String(targetClassRef).trim() }, { name: { equals: String(targetClassRef).trim(), mode: 'insensitive' } }],
-            },
-          });
-          if (linkedClass && linkedClass.campusId !== campusId) {
-            throw new BadRequestException('Assigned class belongs to a different school campus.');
-          }
-        }
-
-        // 7. Resolve Names & Employee ID
-        const firstName = (data.firstName || data.fullName?.split(' ')[0] || 'Staff').trim();
-        const lastName = (data.lastName || data.fullName?.split(' ').slice(1).join(' ') || 'Member').trim();
-
-        let employeeNumber = (data.employeeNumber || data.employeeId || '').trim();
-        if (!employeeNumber) {
-          employeeNumber = `EMP-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`;
-        }
-        const existingEmp = this.prisma.staff?.findUnique
-          ? await this.prisma.staff.findUnique({ where: { tenantId_employeeNumber: { tenantId, employeeNumber } } })
-          : await this.prisma.teacher.findUnique({ where: { tenantId_employeeNumber: { tenantId, employeeNumber } } });
-        if (existingEmp) {
-          employeeNumber = `${employeeNumber}-${Math.floor(100 + Math.random() * 900)}`;
-        }
-
-        const isActive =
-          data.isActive !== undefined
-            ? Boolean(data.isActive)
-            : data.status
-            ? data.status.toLowerCase() === 'active'
-            : true;
-
-        const phoneClean = data.phone ? data.phone.replace(/\s+/g, '') : null;
-
-        let subjectsTaughtStr: string | null = null;
-        if (data.subjectsTaught) {
-          if (Array.isArray(data.subjectsTaught)) {
-            subjectsTaughtStr = data.subjectsTaught.map((s: any) => String(s).trim()).filter(Boolean).join(', ');
-          } else if (typeof data.subjectsTaught === 'string' && data.subjectsTaught.trim()) {
-            subjectsTaughtStr = data.subjectsTaught.trim();
-          }
-        }
-
-        const isTeachingStaff = Boolean(
-          data.isTeachingStaff ||
-          linkedClass ||
-          subjectsTaughtStr ||
-          data.specialization ||
-          data.qualification ||
-          designationName.toLowerCase().includes('teacher') ||
-          designationName.toLowerCase().includes('tutor') ||
-          designationName.toLowerCase().includes('instructor'),
-        );
-
-        const id = `stf_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
-
-        // 8. ATOMIC PRISMA TRANSACTION
-        const createdResult = await this.prisma.$transaction(async (tx) => {
-          // A. Insert Universal Staff
-          let newStaff: any = null;
-          if (tx.staff?.create) {
-            newStaff = await tx.staff.create({
-              data: {
-                id,
-                tenantId,
-                campusId,
-                employeeNumber,
-                firstName,
-                middleName: data.middleName || null,
-                lastName,
-                email: (data.email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@school.edu`).toLowerCase().trim(),
-                phone: phoneClean,
-                gender: data.gender || null,
-                dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : null,
-                departmentId,
-                designationId,
-                staffRoomId,
-                employmentStatus: isActive ? 'ACTIVE' : 'ON_LEAVE',
-                joiningDate: data.dateJoined ? new Date(data.dateJoined) : new Date(),
-                isActive,
-              },
-              include: {
-                campus: true,
-                department: true,
-                designation: true,
-                staffRoom: true,
-              },
-            });
-          }
-
-          // B. If teaching staff, insert TeacherProfile & legacy Teacher row
-          if (isTeachingStaff && tx.teacherProfile?.create) {
-            await tx.teacherProfile.create({
-              data: {
-                id: `tcp_${(newStaff?.id || id).replace(/^stf_/, '')}`,
-                tenantId,
-                staffId: newStaff?.id || id,
-                specialization: data.specialization || data.department || null,
-                qualification: data.qualification || null,
-              },
-            });
-          }
-
-          let newTeacher: any = null;
-          if (tx.teacher?.create) {
-            newTeacher = await tx.teacher.create({
-              data: {
-                id: newStaff?.id || id,
-                tenantId,
-                campusId,
-                employeeNumber: (newStaff || { employeeNumber }).employeeNumber,
-                firstName,
-                lastName,
-                email: (data.email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@school.edu`).toLowerCase().trim(),
-                phone: phoneClean,
-                departmentId,
-                designationId,
-                staffRoomId,
-                specialization: data.specialization || data.department || null,
-                qualification: data.qualification || null,
-                joiningDate: data.dateJoined ? new Date(data.dateJoined) : new Date(),
-                isActive,
-                officeLocation: data.officeLocation ? String(data.officeLocation).trim() : null,
-                subjectsTaught: subjectsTaughtStr,
-                assignedClass: linkedClass ? linkedClass.name : data.assignedClass || null,
-              },
-              include: {
-                campus: true,
-                department: true,
-                designation: true,
-                staffRoom: true,
-              },
-            });
-          }
-
-          const staffRefId = (newStaff && newStaff.id) || (newTeacher && newTeacher.id) || id;
-
-          // Form Teacher Assignment
-          if (linkedClass && tx.class?.update) {
-            await tx.class.update({
-              where: { id: linkedClass.id },
-              data: { classTeacherId: staffRefId },
-            });
-          }
-
-          // C. Staff Salary Profile (if valid financial details provided and authorized)
-          if (
-            hasFinancialData &&
-            (data.basicSalary !== undefined || data.bankName || data.accountNumber) &&
-            tx.staffSalaryProfile?.upsert
-          ) {
-            const basicSalary = data.basicSalary !== undefined ? Number(data.basicSalary) : 0;
-            const housingAllowance = data.housingAllowance !== undefined ? Number(data.housingAllowance) : 0;
-            const transportAllowance = data.transportAllowance !== undefined ? Number(data.transportAllowance) : 0;
-            const otherAllowances = data.otherAllowances !== undefined ? Number(data.otherAllowances) : 0;
-
-            await tx.staffSalaryProfile.upsert({
-              where: { tenantId_staffUserId: { tenantId, staffUserId: staffRefId } },
-              update: {
-                campusId,
-                basicSalary,
-                housingAllowance,
-                transportAllowance,
-                otherAllowances,
-                bankName: data.bankName?.trim() || null,
-                bankCode: data.bankCode?.trim() || null,
-                accountNumber: data.accountNumber?.trim() || null,
-                accountName: data.accountName?.trim() || `${firstName} ${lastName}`.trim(),
-                isActive: true,
-              },
-              create: {
-                id: `ssp_${staffRefId}`,
-                tenantId,
-                campusId,
-                staffUserId: staffRefId,
-                basicSalary,
-                housingAllowance,
-                transportAllowance,
-                otherAllowances,
-                bankName: data.bankName?.trim() || null,
-                bankCode: data.bankCode?.trim() || null,
-                accountNumber: data.accountNumber?.trim() || null,
-                accountName: data.accountName?.trim() || `${firstName} ${lastName}`.trim(),
-                isActive: true,
-              },
-            });
-          }
-
-          return newStaff || newTeacher || { id, tenantId, campusId, firstName, lastName, employeeNumber, isActive };
-        });
-
-        const createdWithClasses = {
-          ...createdResult,
-          classes: linkedClass ? [linkedClass] : [],
-        };
-        const formatted = this.formatStaff(createdWithClasses, createdResult.campus?.name);
-
-        this.prisma.memoryStore.teachers.set(createdResult.id, formatted);
-        return formatted;
-      } catch (err: any) {
-        this.logger.error(`Failed persisting staff to PostgreSQL: ${err.message}`, err.stack);
-        throw err;
+        campusId = newCampus.id;
       }
     }
 
-    // In-memory fallback
-    const id = `tch_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const firstName = data.firstName || data.fullName?.split(' ')[0] || 'Teacher';
-    const lastName = data.lastName || data.fullName?.split(' ').slice(1).join(' ') || '';
-    const fullName = data.fullName || `${firstName} ${lastName}`.trim();
-    const teacher = {
-      ...data,
-      id,
-      tenantId,
-      campusId: data.campusId || 'campus_main_01',
-      employeeNumber:
-        data.employeeNumber ||
-        data.employeeId ||
-        `EMP-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`,
-      employeeId:
-        data.employeeId ||
-        data.employeeNumber ||
-        `EMP-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`,
-      firstName,
-      lastName,
-      fullName,
-      email: data.email,
-      phone: data.phone || null,
-      department: data.department || 'Sciences',
-      departmentId: data.departmentId || null,
-      role: data.role || 'Subject Teacher',
-      designation: data.role || 'Subject Teacher',
-      designationId: data.designationId || null,
-      specialization: data.specialization || null,
-      qualification: data.qualification || null,
-      status: data.status || 'Active',
-      isActive: data.isActive ?? true,
-      assignedClass: data.assignedClass || 'N/A',
-      subjectsTaught: Array.isArray(data.subjectsTaught)
-        ? data.subjectsTaught
-        : data.subjectsTaught
-        ? data.subjectsTaught.split(',').map((s: string) => s.trim()).filter(Boolean)
-        : [],
-      officeLocation: data.officeLocation || '',
-      staffRoomId: data.staffRoomId || null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
+    let departmentId = data.departmentId || null;
+    if (departmentId) {
+      const dept = await this.prisma.department.findFirst({
+        where: { id: departmentId, tenantId },
+      });
+      if (!dept) {
+        throw new ForbiddenException('Assigned department does not belong to this school organization.');
+      }
+    } else if (data.department && typeof data.department === 'string') {
+      const dept = await this.prisma.department.findFirst({
+        where: {
+          tenantId,
+          OR: [
+            { name: { equals: data.department.trim(), mode: 'insensitive' } },
+            { code: { equals: data.department.trim(), mode: 'insensitive' } },
+          ],
+        },
+      });
+      if (dept) departmentId = dept.id;
+    }
+
+    let designationId = data.designationId || null;
+    let designationName = 'Staff Member';
+    if (designationId) {
+      const desig = await this.prisma.designation.findFirst({
+        where: { id: designationId, tenantId },
+      });
+      if (!desig) {
+        throw new ForbiddenException('Assigned designation does not belong to this school organization.');
+      }
+      designationName = desig.name;
+    } else if ((data.designation || data.role) && typeof (data.designation || data.role) === 'string') {
+      const queryRole = (data.designation || data.role).trim();
+      const desig = await this.prisma.designation.findFirst({
+        where: {
+          tenantId,
+          OR: [
+            { name: { equals: queryRole, mode: 'insensitive' } },
+            { code: { equals: queryRole, mode: 'insensitive' } },
+          ],
+        },
+      });
+      if (desig) {
+        designationId = desig.id;
+        designationName = desig.name;
+      }
+    }
+
+    let staffRoomId = data.staffRoomId || null;
+    if (staffRoomId) {
+      const room = await this.prisma.staffRoom.findFirst({
+        where: { id: staffRoomId, tenantId },
+      });
+      if (!room) {
+        throw new ForbiddenException('Assigned staff room does not belong to this school organization.');
+      }
+      if (room.campusId && room.campusId !== campusId) {
+        throw new BadRequestException('Assigned staff room belongs to a different school campus.');
+      }
+    }
+
+    let linkedClass: any = null;
+    const targetClassRef = data.assignedClassId || data.assignedClass;
+    if (targetClassRef && targetClassRef !== 'N/A' && String(targetClassRef).trim()) {
+      linkedClass = await this.prisma.class.findFirst({
+        where: {
+          tenantId,
+          OR: [{ id: String(targetClassRef).trim() }, { name: { equals: String(targetClassRef).trim(), mode: 'insensitive' } }],
+        },
+      });
+      if (linkedClass && linkedClass.campusId !== campusId) {
+        throw new BadRequestException('Assigned class belongs to a different school campus.');
+      }
+    }
+
+    const firstName = (data.firstName || data.fullName?.split(' ')[0] || 'Staff').trim();
+    const lastName = (data.lastName || data.fullName?.split(' ').slice(1).join(' ') || 'Member').trim();
+
+    let employeeNumber = (data.employeeNumber || data.employeeId || '').trim();
+    if (!employeeNumber) {
+      employeeNumber = `EMP-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`;
+    }
+    const existingEmp = this.prisma.staff?.findUnique
+      ? await this.prisma.staff.findUnique({ where: { tenantId_employeeNumber: { tenantId, employeeNumber } } })
+      : await this.prisma.teacher.findUnique({ where: { tenantId_employeeNumber: { tenantId, employeeNumber } } });
+    if (existingEmp) {
+      employeeNumber = `${employeeNumber}-${Math.floor(100 + Math.random() * 900)}`;
+    }
+
+    const isActive =
+      data.isActive !== undefined
+        ? Boolean(data.isActive)
+        : data.status
+        ? data.status.toLowerCase() === 'active'
+        : true;
+
+    const phoneClean = data.phone ? data.phone.replace(/\s+/g, '') : null;
+
+    let subjectsTaughtStr: string | null = null;
+    if (data.subjectsTaught) {
+      if (Array.isArray(data.subjectsTaught)) {
+        subjectsTaughtStr = data.subjectsTaught.map((s: any) => String(s).trim()).filter(Boolean).join(', ');
+      } else if (typeof data.subjectsTaught === 'string' && data.subjectsTaught.trim()) {
+        subjectsTaughtStr = data.subjectsTaught.trim();
+      }
+    }
+
+    const isTeachingStaff = Boolean(
+      data.isTeachingStaff ||
+      linkedClass ||
+      subjectsTaughtStr ||
+      data.specialization ||
+      data.qualification ||
+      designationName.toLowerCase().includes('teacher') ||
+      designationName.toLowerCase().includes('tutor') ||
+      designationName.toLowerCase().includes('instructor'),
+    );
+
+    const id = `stf_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+
+    const createdResult = await this.prisma.$transaction(async (tx) => {
+      let newStaff: any = null;
+      if (tx.staff?.create) {
+        newStaff = await tx.staff.create({
+          data: {
+            id,
+            tenantId,
+            campusId,
+            employeeNumber,
+            firstName,
+            middleName: data.middleName || null,
+            lastName,
+            email: (data.email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@school.edu`).toLowerCase().trim(),
+            phone: phoneClean,
+            gender: data.gender || null,
+            dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : null,
+            departmentId,
+            designationId,
+            staffRoomId,
+            employmentStatus: isActive ? 'ACTIVE' : 'ON_LEAVE',
+            joiningDate: data.dateJoined ? new Date(data.dateJoined) : new Date(),
+            isActive,
+          },
+          include: {
+            campus: true,
+            department: true,
+            designation: true,
+            staffRoom: true,
+          },
+        });
+      }
+
+      if (isTeachingStaff && tx.teacherProfile?.create) {
+        await tx.teacherProfile.create({
+          data: {
+            id: `tcp_${(newStaff?.id || id).replace(/^stf_/, '')}`,
+            tenantId,
+            staffId: newStaff?.id || id,
+            specialization: data.specialization || data.department || null,
+            qualification: data.qualification || null,
+          },
+        });
+      }
+
+      let newTeacher: any = null;
+      if (tx.teacher?.create) {
+        newTeacher = await tx.teacher.create({
+          data: {
+            id: newStaff?.id || id,
+            tenantId,
+            campusId,
+            employeeNumber: (newStaff || { employeeNumber }).employeeNumber,
+            firstName,
+            lastName,
+            email: (data.email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@school.edu`).toLowerCase().trim(),
+            phone: phoneClean,
+            departmentId,
+            designationId,
+            staffRoomId,
+            specialization: data.specialization || data.department || null,
+            qualification: data.qualification || null,
+            joiningDate: data.dateJoined ? new Date(data.dateJoined) : new Date(),
+            isActive,
+            officeLocation: data.officeLocation ? String(data.officeLocation).trim() : null,
+            subjectsTaught: subjectsTaughtStr,
+            assignedClass: linkedClass ? linkedClass.name : data.assignedClass || null,
+          },
+          include: {
+            campus: true,
+            department: true,
+            designation: true,
+            staffRoom: true,
+          },
+        });
+      }
+
+      const staffRefId = (newStaff && newStaff.id) || (newTeacher && newTeacher.id) || id;
+
+      if (linkedClass && tx.class?.update) {
+        await tx.class.update({
+          where: { id: linkedClass.id },
+          data: { classTeacherId: staffRefId },
+        });
+      }
+
+      if (
+        hasFinancialData &&
+        (data.basicSalary !== undefined || data.bankName || data.accountNumber) &&
+        tx.staffSalaryProfile?.upsert
+      ) {
+        const basicSalary = data.basicSalary !== undefined ? Number(data.basicSalary) : 0;
+        const housingAllowance = data.housingAllowance !== undefined ? Number(data.housingAllowance) : 0;
+        const transportAllowance = data.transportAllowance !== undefined ? Number(data.transportAllowance) : 0;
+        const otherAllowances = data.otherAllowances !== undefined ? Number(data.otherAllowances) : 0;
+
+        await tx.staffSalaryProfile.upsert({
+          where: { tenantId_staffUserId: { tenantId, staffUserId: staffRefId } },
+          update: {
+            campusId,
+            basicSalary,
+            housingAllowance,
+            transportAllowance,
+            otherAllowances,
+            bankName: data.bankName?.trim() || null,
+            bankCode: data.bankCode?.trim() || null,
+            accountNumber: data.accountNumber?.trim() || null,
+            accountName: data.accountName?.trim() || `${firstName} ${lastName}`.trim(),
+            isActive: true,
+          },
+          create: {
+            id: `ssp_${staffRefId}`,
+            tenantId,
+            campusId,
+            staffUserId: staffRefId,
+            basicSalary,
+            housingAllowance,
+            transportAllowance,
+            otherAllowances,
+            bankName: data.bankName?.trim() || null,
+            bankCode: data.bankCode?.trim() || null,
+            accountNumber: data.accountNumber?.trim() || null,
+            accountName: data.accountName?.trim() || `${firstName} ${lastName}`.trim(),
+            isActive: true,
+          },
+        });
+      }
+
+      return newStaff || newTeacher || { id, tenantId, campusId, firstName, lastName, employeeNumber, isActive };
+    });
+
+    const createdWithClasses = {
+      ...createdResult,
+      classes: linkedClass ? [linkedClass] : [],
     };
-    this.prisma.memoryStore.teachers.set(id, teacher);
-    return teacher;
+    return this.formatStaff(createdWithClasses, createdResult.campus?.name);
   }
 
   async update(tenantId: string, teacherId: string, data: any, user?: any) {
@@ -585,221 +508,205 @@ export class TeachersService {
       throw new ForbiddenException('You do not have permission to manage staff financial profiles.');
     }
 
-    if (this.prisma.isDbConnected) {
-      try {
-        const existing = await this.prisma.teacher.findFirst({
-          where: { id: teacherId, tenantId },
+    const existing = await this.prisma.teacher.findFirst({
+      where: { id: teacherId, tenantId },
+    });
+    if (!existing) {
+      throw new NotFoundException('Teacher not found in this school');
+    }
+
+    const updateData: any = {};
+
+    if (data.firstName || data.fullName) {
+      updateData.firstName = (data.firstName || data.fullName?.split(' ')[0] || existing.firstName).trim();
+    }
+    if (data.lastName || data.fullName) {
+      updateData.lastName = (data.lastName || data.fullName?.split(' ').slice(1).join(' ') || existing.lastName).trim();
+    }
+    if (data.email) updateData.email = data.email.toLowerCase().trim();
+    if (data.phone !== undefined) updateData.phone = data.phone ? data.phone.replace(/\s+/g, '') : null;
+    if (data.specialization !== undefined) updateData.specialization = data.specialization;
+    if (data.qualification !== undefined) updateData.qualification = data.qualification;
+    if (data.dateJoined) updateData.joiningDate = new Date(data.dateJoined);
+    if (data.isActive !== undefined) updateData.isActive = Boolean(data.isActive);
+    if (data.status) updateData.isActive = data.status.toLowerCase() === 'active';
+    if (data.officeLocation !== undefined) updateData.officeLocation = data.officeLocation?.trim() || null;
+
+    if (data.departmentId !== undefined) {
+      if (data.departmentId) {
+        const dept = await this.prisma.department.findFirst({
+          where: { id: data.departmentId, tenantId },
         });
-        if (!existing) {
-          throw new NotFoundException('Teacher not found in this school');
-        }
+        if (!dept) throw new ForbiddenException('Assigned department does not belong to this school organization.');
+      }
+      updateData.departmentId = data.departmentId || null;
+    } else if (data.department && typeof data.department === 'string') {
+      const dept = await this.prisma.department.findFirst({
+        where: {
+          tenantId,
+          OR: [
+            { name: { equals: data.department.trim(), mode: 'insensitive' } },
+            { code: { equals: data.department.trim(), mode: 'insensitive' } },
+          ],
+        },
+      });
+      if (dept) updateData.departmentId = dept.id;
+    }
 
-        const updateData: any = {};
-
-        if (data.firstName || data.fullName) {
-          updateData.firstName = (data.firstName || data.fullName?.split(' ')[0] || existing.firstName).trim();
-        }
-        if (data.lastName || data.fullName) {
-          updateData.lastName = (data.lastName || data.fullName?.split(' ').slice(1).join(' ') || existing.lastName).trim();
-        }
-        if (data.email) updateData.email = data.email.toLowerCase().trim();
-        if (data.phone !== undefined) updateData.phone = data.phone ? data.phone.replace(/\s+/g, '') : null;
-        if (data.specialization !== undefined) updateData.specialization = data.specialization;
-        if (data.qualification !== undefined) updateData.qualification = data.qualification;
-        if (data.dateJoined) updateData.joiningDate = new Date(data.dateJoined);
-        if (data.isActive !== undefined) updateData.isActive = Boolean(data.isActive);
-        if (data.status) updateData.isActive = data.status.toLowerCase() === 'active';
-        if (data.officeLocation !== undefined) updateData.officeLocation = data.officeLocation?.trim() || null;
-
-        // Department Tenant Check
-        if (data.departmentId !== undefined) {
-          if (data.departmentId) {
-            const dept = await this.prisma.department.findFirst({
-              where: { id: data.departmentId, tenantId },
-            });
-            if (!dept) throw new ForbiddenException('Assigned department does not belong to this school organization.');
-          }
-          updateData.departmentId = data.departmentId || null;
-        }
-
-        // Designation Tenant Check
-        if (data.designationId !== undefined) {
-          if (data.designationId) {
-            const desig = await this.prisma.designation.findFirst({
-              where: { id: data.designationId, tenantId },
-            });
-            if (!desig) throw new ForbiddenException('Assigned designation does not belong to this school organization.');
-          }
-          updateData.designationId = data.designationId || null;
-        }
-
-        // Staff Room Tenant + Campus Check
-        if (data.staffRoomId !== undefined) {
-          if (data.staffRoomId) {
-            const room = await this.prisma.staffRoom.findFirst({
-              where: { id: data.staffRoomId, tenantId },
-            });
-            if (!room) throw new ForbiddenException('Assigned staff room does not belong to this school organization.');
-            if (room.campusId && room.campusId !== existing.campusId) {
-              throw new BadRequestException('Assigned staff room belongs to a different school campus.');
-            }
-          }
-          updateData.staffRoomId = data.staffRoomId || null;
-        }
-
-        if (data.subjectsTaught !== undefined) {
-          if (Array.isArray(data.subjectsTaught)) {
-            updateData.subjectsTaught = data.subjectsTaught.map((s: any) => String(s).trim()).filter(Boolean).join(', ');
-          } else if (typeof data.subjectsTaught === 'string') {
-            updateData.subjectsTaught = data.subjectsTaught.trim() || null;
-          }
-        }
-
-        // Class linking & ClassTeacher assignment
-        if (data.assignedClass !== undefined || data.assignedClassId !== undefined) {
-          const val = data.assignedClassId || data.assignedClass;
-          if (!val || val === 'N/A') {
-            await this.prisma.class.updateMany({
-              where: { tenantId, classTeacherId: teacherId },
-              data: { classTeacherId: null },
-            });
-            updateData.assignedClass = null;
-          } else {
-            const matchedClass = await this.prisma.class.findFirst({
-              where: {
-                tenantId,
-                OR: [{ id: val }, { name: { equals: val, mode: 'insensitive' } }],
-              },
-            });
-            if (matchedClass) {
-              if (matchedClass.campusId !== existing.campusId) {
-                throw new BadRequestException('Assigned class belongs to a different school campus.');
-              }
-              await this.prisma.class.updateMany({
-                where: { tenantId, classTeacherId: teacherId, id: { not: matchedClass.id } },
-                data: { classTeacherId: null },
-              });
-              await this.prisma.class.update({
-                where: { id: matchedClass.id },
-                data: { classTeacherId: teacherId },
-              });
-              updateData.assignedClass = matchedClass.name;
-            } else {
-              await this.prisma.class.updateMany({
-                where: { tenantId, classTeacherId: teacherId },
-                data: { classTeacherId: null },
-              });
-              updateData.assignedClass = val;
-            }
-          }
-        }
-
-        // ATOMIC PRISMA UPDATE TRANSACTION
-        const updated = await this.prisma.$transaction(async (tx) => {
-          const res = await tx.teacher.update({
-            where: { id: teacherId },
-            data: updateData,
-            include: {
-              campus: true,
-              classes: true,
-              department: true,
-              designation: true,
-              staffRoom: true,
-              classSubjects: { include: { subject: true } },
-            },
-          });
-
-          // Update StaffSalaryProfile if financial data is provided
-          if (hasFinancialData) {
-            const basicSalary = data.basicSalary !== undefined ? Number(data.basicSalary) : 0;
-            const housingAllowance = data.housingAllowance !== undefined ? Number(data.housingAllowance) : 0;
-            const transportAllowance = data.transportAllowance !== undefined ? Number(data.transportAllowance) : 0;
-            const otherAllowances = data.otherAllowances !== undefined ? Number(data.otherAllowances) : 0;
-
-            await tx.staffSalaryProfile.upsert({
-              where: { tenantId_staffUserId: { tenantId, staffUserId: teacherId } },
-              update: {
-                ...(data.basicSalary !== undefined && { basicSalary }),
-                ...(data.housingAllowance !== undefined && { housingAllowance }),
-                ...(data.transportAllowance !== undefined && { transportAllowance }),
-                ...(data.otherAllowances !== undefined && { otherAllowances }),
-                ...(data.bankName !== undefined && { bankName: data.bankName?.trim() || null }),
-                ...(data.bankCode !== undefined && { bankCode: data.bankCode?.trim() || null }),
-                ...(data.accountNumber !== undefined && { accountNumber: data.accountNumber?.trim() || null }),
-                ...(data.accountName !== undefined && { accountName: data.accountName?.trim() || null }),
-              },
-              create: {
-                id: `ssp_${teacherId}`,
-                tenantId,
-                campusId: existing.campusId,
-                staffUserId: teacherId,
-                basicSalary,
-                housingAllowance,
-                transportAllowance,
-                otherAllowances,
-                bankName: data.bankName?.trim() || null,
-                bankCode: data.bankCode?.trim() || null,
-                accountNumber: data.accountNumber?.trim() || null,
-                accountName: data.accountName?.trim() || null,
-                isActive: true,
-              },
-            });
-          }
-
-          return res;
+    if (data.designationId !== undefined) {
+      if (data.designationId) {
+        const desig = await this.prisma.designation.findFirst({
+          where: { id: data.designationId, tenantId },
         });
+        if (!desig) throw new ForbiddenException('Assigned designation does not belong to this school organization.');
+      }
+      updateData.designationId = data.designationId || null;
+    } else if ((data.designation || data.role) && typeof (data.designation || data.role) === 'string') {
+      const queryRole = (data.designation || data.role).trim();
+      const desig = await this.prisma.designation.findFirst({
+        where: {
+          tenantId,
+          OR: [
+            { name: { equals: queryRole, mode: 'insensitive' } },
+            { code: { equals: queryRole, mode: 'insensitive' } },
+          ],
+        },
+      });
+      if (desig) updateData.designationId = desig.id;
+    }
 
-        const formatted = this.formatTeacher(updated);
-        this.prisma.memoryStore.teachers.set(teacherId, formatted);
-        return formatted;
-      } catch (err: any) {
-        if (err instanceof NotFoundException || err instanceof ForbiddenException || err instanceof BadRequestException) {
-          throw err;
+    if (data.staffRoomId !== undefined) {
+      if (data.staffRoomId) {
+        const room = await this.prisma.staffRoom.findFirst({
+          where: { id: data.staffRoomId, tenantId },
+        });
+        if (!room) throw new ForbiddenException('Assigned staff room does not belong to this school organization.');
+        if (room.campusId && room.campusId !== existing.campusId) {
+          throw new BadRequestException('Assigned staff room belongs to a different school campus.');
         }
-        this.logger.warn(`Failed updating teacher in DB: ${err.message}`);
-        throw err;
+      }
+      updateData.staffRoomId = data.staffRoomId || null;
+    }
+
+    if (data.subjectsTaught !== undefined) {
+      if (Array.isArray(data.subjectsTaught)) {
+        updateData.subjectsTaught = data.subjectsTaught.map((s: any) => String(s).trim()).filter(Boolean).join(', ');
+      } else if (typeof data.subjectsTaught === 'string') {
+        updateData.subjectsTaught = data.subjectsTaught.trim() || null;
       }
     }
 
-    const teacher = await this.findById(tenantId, teacherId);
-    Object.assign(teacher, data, { updatedAt: new Date() });
-    if (data.firstName || data.lastName) {
-      teacher.fullName = `${teacher.firstName || ''} ${teacher.lastName || ''}`.trim();
-    }
-    this.prisma.memoryStore.teachers.set(teacherId, teacher);
-    return teacher;
-  }
-
-  async delete(tenantId: string, teacherId: string) {
-    if (this.prisma.isDbConnected) {
-      try {
-        const existing = await this.prisma.teacher.findFirst({
-          where: { id: teacherId, tenantId },
-        });
-        if (!existing) {
-          throw new NotFoundException('Teacher not found in this school');
-        }
-
-        // Clear any class teacher assignments first
+    if (data.assignedClass !== undefined || data.assignedClassId !== undefined) {
+      const val = data.assignedClassId || data.assignedClass;
+      if (!val || val === 'N/A') {
         await this.prisma.class.updateMany({
           where: { tenantId, classTeacherId: teacherId },
           data: { classTeacherId: null },
         });
-
-        await this.prisma.teacher.delete({
-          where: { id: teacherId },
+        updateData.assignedClass = null;
+      } else {
+        const matchedClass = await this.prisma.class.findFirst({
+          where: {
+            tenantId,
+            OR: [{ id: val }, { name: { equals: val, mode: 'insensitive' } }],
+          },
         });
-
-        this.prisma.memoryStore.teachers.delete(teacherId);
-        return { success: true, message: 'Teacher record removed successfully' };
-      } catch (err: any) {
-        if (err instanceof NotFoundException) throw err;
-        this.logger.warn(`Failed deleting teacher from DB: ${err.message}`);
+        if (matchedClass) {
+          if (matchedClass.campusId !== existing.campusId) {
+            throw new BadRequestException('Assigned class belongs to a different school campus.');
+          }
+          await this.prisma.class.updateMany({
+            where: { tenantId, classTeacherId: teacherId, id: { not: matchedClass.id } },
+            data: { classTeacherId: null },
+          });
+          await this.prisma.class.update({
+            where: { id: matchedClass.id },
+            data: { classTeacherId: teacherId },
+          });
+          updateData.assignedClass = matchedClass.name;
+        } else {
+          await this.prisma.class.updateMany({
+            where: { tenantId, classTeacherId: teacherId },
+            data: { classTeacherId: null },
+          });
+          updateData.assignedClass = val;
+        }
       }
     }
 
-    await this.findById(tenantId, teacherId);
-    this.prisma.memoryStore.teachers.delete(teacherId);
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const res = await tx.teacher.update({
+        where: { id: teacherId },
+        data: updateData,
+        include: {
+          campus: true,
+          classes: true,
+          department: true,
+          designation: true,
+          staffRoom: true,
+          classSubjects: { include: { subject: true } },
+        },
+      });
+
+      if (hasFinancialData) {
+        const basicSalary = data.basicSalary !== undefined ? Number(data.basicSalary) : 0;
+        const housingAllowance = data.housingAllowance !== undefined ? Number(data.housingAllowance) : 0;
+        const transportAllowance = data.transportAllowance !== undefined ? Number(data.transportAllowance) : 0;
+        const otherAllowances = data.otherAllowances !== undefined ? Number(data.otherAllowances) : 0;
+
+        await tx.staffSalaryProfile.upsert({
+          where: { tenantId_staffUserId: { tenantId, staffUserId: teacherId } },
+          update: {
+            ...(data.basicSalary !== undefined && { basicSalary }),
+            ...(data.housingAllowance !== undefined && { housingAllowance }),
+            ...(data.transportAllowance !== undefined && { transportAllowance }),
+            ...(data.otherAllowances !== undefined && { otherAllowances }),
+            ...(data.bankName !== undefined && { bankName: data.bankName?.trim() || null }),
+            ...(data.bankCode !== undefined && { bankCode: data.bankCode?.trim() || null }),
+            ...(data.accountNumber !== undefined && { accountNumber: data.accountNumber?.trim() || null }),
+            ...(data.accountName !== undefined && { accountName: data.accountName?.trim() || null }),
+          },
+          create: {
+            id: `ssp_${teacherId}`,
+            tenantId,
+            campusId: existing.campusId,
+            staffUserId: teacherId,
+            basicSalary,
+            housingAllowance,
+            transportAllowance,
+            otherAllowances,
+            bankName: data.bankName?.trim() || null,
+            bankCode: data.bankCode?.trim() || null,
+            accountNumber: data.accountNumber?.trim() || null,
+            accountName: data.accountName?.trim() || null,
+            isActive: true,
+          },
+        });
+      }
+
+      return res;
+    });
+
+    return this.formatTeacher(updated);
+  }
+
+  async delete(tenantId: string, teacherId: string) {
+    const existing = await this.prisma.teacher.findFirst({
+      where: { id: teacherId, tenantId },
+    });
+    if (!existing) {
+      throw new NotFoundException('Teacher not found in this school');
+    }
+
+    await this.prisma.class.updateMany({
+      where: { tenantId, classTeacherId: teacherId },
+      data: { classTeacherId: null },
+    });
+
+    await this.prisma.teacher.delete({
+      where: { id: teacherId },
+    });
+
     return { success: true, message: 'Teacher record removed successfully' };
   }
 }

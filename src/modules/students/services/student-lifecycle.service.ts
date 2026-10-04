@@ -21,8 +21,10 @@ export class StudentLifecycleService {
     actorUserId: string,
     dto: SuspendStudentDto,
   ) {
-    const student = this.prisma.memoryStore.students.get(studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+    });
+    if (!student) {
       throw new NotFoundException(`Student ${studentId} not found`);
     }
 
@@ -30,32 +32,32 @@ export class StudentLifecycleService {
       throw new BadRequestException('Student is already suspended.');
     }
 
-    student.status = 'SUSPENDED';
-    student.updatedAt = new Date();
-    this.prisma.memoryStore.students.set(studentId, student);
+    const updatedStudent = await this.prisma.student.update({
+      where: { id: studentId },
+      data: { status: 'SUSPENDED' },
+    });
 
-    const lifecycleEventId = `ev_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const lifecycleEvent = {
-      id: lifecycleEventId,
-      tenantId,
-      studentId,
-      eventType: 'SUSPENSION',
-      fromCampusId: student.campusId,
-      toCampusId: student.campusId,
-      fromClassId: null,
-      toClassId: null,
-      fromAcademicYearId: null,
-      toAcademicYearId: null,
-      reason: dto.reason,
-      notes: dto.notes ? `${dto.notes} (End date: ${dto.endDate || 'Indefinite'})` : `End date: ${dto.endDate || 'Indefinite'}`,
-      actorUserId,
-      effectiveDate: new Date(),
-      createdAt: new Date(),
-    };
-    this.prisma.memoryStore.studentLifecycleEvents.set(lifecycleEventId, lifecycleEvent);
+    const lifecycleEvent = await this.prisma.studentLifecycleEvent.create({
+      data: {
+        id: `ev_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
+        tenantId,
+        studentId,
+        eventType: 'SUSPENSION',
+        fromCampusId: student.campusId,
+        toCampusId: student.campusId,
+        fromClassId: null,
+        toClassId: null,
+        fromAcademicYearId: null,
+        toAcademicYearId: null,
+        reason: dto.reason,
+        notes: dto.notes ? `${dto.notes} (End date: ${dto.endDate || 'Indefinite'})` : `End date: ${dto.endDate || 'Indefinite'}`,
+        actorUserId,
+        effectiveDate: new Date(),
+      },
+    });
 
     this.logger.log(`Student ${student.admissionNumber} (${studentId}) suspended by ${actorUserId}`);
-    return { student, lifecycleEvent };
+    return { student: updatedStudent, lifecycleEvent };
   }
 
   async reinstateStudent(
@@ -64,8 +66,10 @@ export class StudentLifecycleService {
     actorUserId: string,
     dto: ReinstateStudentDto,
   ) {
-    const student = this.prisma.memoryStore.students.get(studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+    });
+    if (!student) {
       throw new NotFoundException(`Student ${studentId} not found`);
     }
 
@@ -73,32 +77,32 @@ export class StudentLifecycleService {
       throw new BadRequestException('Only suspended students can be reinstated.');
     }
 
-    student.status = 'ACTIVE';
-    student.updatedAt = new Date();
-    this.prisma.memoryStore.students.set(studentId, student);
+    const updatedStudent = await this.prisma.student.update({
+      where: { id: studentId },
+      data: { status: 'ACTIVE' },
+    });
 
-    const lifecycleEventId = `ev_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const lifecycleEvent = {
-      id: lifecycleEventId,
-      tenantId,
-      studentId,
-      eventType: 'REINSTATEMENT',
-      fromCampusId: student.campusId,
-      toCampusId: student.campusId,
-      fromClassId: null,
-      toClassId: null,
-      fromAcademicYearId: null,
-      toAcademicYearId: null,
-      reason: 'Administrative Reinstatement',
-      notes: dto.notes || 'Reinstated to active status',
-      actorUserId,
-      effectiveDate: new Date(),
-      createdAt: new Date(),
-    };
-    this.prisma.memoryStore.studentLifecycleEvents.set(lifecycleEventId, lifecycleEvent);
+    const lifecycleEvent = await this.prisma.studentLifecycleEvent.create({
+      data: {
+        id: `ev_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
+        tenantId,
+        studentId,
+        eventType: 'REINSTATEMENT',
+        fromCampusId: student.campusId,
+        toCampusId: student.campusId,
+        fromClassId: null,
+        toClassId: null,
+        fromAcademicYearId: null,
+        toAcademicYearId: null,
+        reason: 'Administrative Reinstatement',
+        notes: dto.notes || 'Reinstated to active status',
+        actorUserId,
+        effectiveDate: new Date(),
+      },
+    });
 
     this.logger.log(`Student ${student.admissionNumber} (${studentId}) reinstated by ${actorUserId}`);
-    return { student, lifecycleEvent };
+    return { student: updatedStudent, lifecycleEvent };
   }
 
   async withdrawStudent(
@@ -107,8 +111,10 @@ export class StudentLifecycleService {
     actorUserId: string,
     dto: WithdrawStudentDto,
   ) {
-    const student = this.prisma.memoryStore.students.get(studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+    });
+    if (!student) {
       throw new NotFoundException(`Student ${studentId} not found`);
     }
 
@@ -116,41 +122,43 @@ export class StudentLifecycleService {
       throw new BadRequestException(`Cannot withdraw student with status "${student.status}".`);
     }
 
-    student.status = 'INACTIVE';
-    student.updatedAt = new Date();
-    this.prisma.memoryStore.students.set(studentId, student);
+    const updatedStudent = await this.prisma.student.update({
+      where: { id: studentId },
+      data: { status: 'INACTIVE' },
+    });
 
-    const currentEnrollment = Array.from(this.prisma.memoryStore.enrollments.values()).find(
-      (e: any) => e.tenantId === tenantId && e.studentId === studentId && e.status === 'ACTIVE',
-    );
+    const currentEnrollment = await this.prisma.enrollment.findFirst({
+      where: { tenantId, studentId, status: 'ACTIVE' },
+    });
+
     if (currentEnrollment) {
-      currentEnrollment.status = 'WITHDRAWN';
-      currentEnrollment.completedAt = new Date();
-      this.prisma.memoryStore.enrollments.set(currentEnrollment.id, currentEnrollment);
+      await this.prisma.enrollment.update({
+        where: { id: currentEnrollment.id },
+        data: { status: 'WITHDRAWN' },
+      });
     }
 
-    const lifecycleEventId = `ev_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const lifecycleEvent = {
-      id: lifecycleEventId,
-      tenantId,
-      studentId,
-      eventType: 'WITHDRAWAL',
-      fromCampusId: student.campusId,
-      toCampusId: null,
-      fromClassId: currentEnrollment ? currentEnrollment.classId : null,
-      toClassId: null,
-      fromAcademicYearId: currentEnrollment ? currentEnrollment.academicYearId : null,
-      toAcademicYearId: null,
-      reason: dto.reason,
-      notes: dto.notes || null,
-      actorUserId,
-      effectiveDate: new Date(),
-      createdAt: new Date(),
-    };
-    this.prisma.memoryStore.studentLifecycleEvents.set(lifecycleEventId, lifecycleEvent);
+    const lifecycleEvent = await this.prisma.studentLifecycleEvent.create({
+      data: {
+        id: `ev_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
+        tenantId,
+        studentId,
+        eventType: 'WITHDRAWAL',
+        fromCampusId: student.campusId,
+        toCampusId: null,
+        fromClassId: currentEnrollment ? currentEnrollment.classId : null,
+        toClassId: null,
+        fromAcademicYearId: currentEnrollment ? currentEnrollment.academicYearId : null,
+        toAcademicYearId: null,
+        reason: dto.reason,
+        notes: dto.notes || null,
+        actorUserId,
+        effectiveDate: new Date(),
+      },
+    });
 
     this.logger.log(`Student ${student.admissionNumber} formally withdrawn (${dto.reason})`);
-    return { student, lifecycleEvent };
+    return { student: updatedStudent, lifecycleEvent };
   }
 
   async graduateStudent(
@@ -159,8 +167,10 @@ export class StudentLifecycleService {
     actorUserId: string,
     dto: GraduateStudentDto,
   ) {
-    const student = this.prisma.memoryStore.students.get(studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+    });
+    if (!student) {
       throw new NotFoundException(`Student ${studentId} not found`);
     }
 
@@ -168,73 +178,78 @@ export class StudentLifecycleService {
       throw new BadRequestException('Student has already graduated.');
     }
 
-    const currentEnrollment = Array.from(this.prisma.memoryStore.enrollments.values()).find(
-      (e: any) => e.tenantId === tenantId && e.studentId === studentId && e.status === 'ACTIVE',
-    );
+    const currentEnrollment = await this.prisma.enrollment.findFirst({
+      where: { tenantId, studentId, status: 'ACTIVE' },
+    });
 
-    student.status = 'GRADUATED';
-    student.updatedAt = new Date();
-    this.prisma.memoryStore.students.set(studentId, student);
+    const updatedStudent = await this.prisma.student.update({
+      where: { id: studentId },
+      data: { status: 'GRADUATED' },
+    });
 
     if (currentEnrollment) {
-      currentEnrollment.status = 'GRADUATED';
-      currentEnrollment.completedAt = new Date();
-      this.prisma.memoryStore.enrollments.set(currentEnrollment.id, currentEnrollment);
+      await this.prisma.enrollment.update({
+        where: { id: currentEnrollment.id },
+        data: { status: 'GRADUATED' },
+      });
     }
 
     const alumniId = `alm_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const alumni = {
-      id: alumniId,
-      tenantId,
-      studentId,
-      admissionNumber: student.admissionNumber,
-      studentName: `${student.firstName} ${student.lastName}`,
-      graduationYear: dto.graduationYear,
-      graduatingClassId: currentEnrollment ? currentEnrollment.classId : null,
-      finalCgpa: dto.finalCgpa || null,
-      honors: dto.honors || null,
-      certificateNumber: dto.certificateNumber || `CERT-${dto.graduationYear}-${student.admissionNumber.replace(/\//g, '-')}`,
-      alumniContactEmail: dto.alumniContactEmail || student.email || null,
-      alumniContactPhone: dto.alumniContactPhone || student.phone || null,
-      currentOccupation: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    this.prisma.memoryStore.alumniRecords.set(alumniId, alumni);
+    const certificateNumber = dto.certificateNumber || `CERT-${dto.graduationYear}-${student.admissionNumber.replace(/\//g, '-')}`;
 
-    const lifecycleEventId = `ev_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const lifecycleEvent = {
-      id: lifecycleEventId,
-      tenantId,
-      studentId,
-      eventType: 'GRADUATION',
-      fromCampusId: student.campusId,
-      toCampusId: null,
-      fromClassId: currentEnrollment ? currentEnrollment.classId : null,
-      toClassId: null,
-      fromAcademicYearId: currentEnrollment ? currentEnrollment.academicYearId : null,
-      toAcademicYearId: null,
-      reason: `Graduation Class of ${dto.graduationYear}`,
-      notes: dto.notes || `Certificate No: ${alumni.certificateNumber}`,
-      actorUserId,
-      effectiveDate: new Date(),
-      createdAt: new Date(),
-    };
-    this.prisma.memoryStore.studentLifecycleEvents.set(lifecycleEventId, lifecycleEvent);
+    const alumni = await this.prisma.alumniRecord.create({
+      data: {
+        id: alumniId,
+        tenantId,
+        studentId,
+        admissionNumber: student.admissionNumber,
+        studentName: `${student.firstName} ${student.lastName}`,
+        graduationYear: dto.graduationYear,
+        graduatingClassId: currentEnrollment ? currentEnrollment.classId : null,
+        finalCgpa: dto.finalCgpa || null,
+        honors: dto.honors || null,
+        certificateNumber,
+        alumniContactEmail: dto.alumniContactEmail || student.email || null,
+        alumniContactPhone: dto.alumniContactPhone || student.phone || null,
+        currentOccupation: null,
+      },
+    });
+
+    const lifecycleEvent = await this.prisma.studentLifecycleEvent.create({
+      data: {
+        id: `ev_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
+        tenantId,
+        studentId,
+        eventType: 'GRADUATION',
+        fromCampusId: student.campusId,
+        toCampusId: null,
+        fromClassId: currentEnrollment ? currentEnrollment.classId : null,
+        toClassId: null,
+        fromAcademicYearId: currentEnrollment ? currentEnrollment.academicYearId : null,
+        toAcademicYearId: null,
+        reason: `Graduation Class of ${dto.graduationYear}`,
+        notes: dto.notes || `Certificate No: ${certificateNumber}`,
+        actorUserId,
+        effectiveDate: new Date(),
+      },
+    });
 
     this.logger.log(`Student ${student.admissionNumber} graduated into Alumni registry`);
-    return { student, alumniRecord: alumni, alumni, lifecycleEvent };
+    return { student: updatedStudent, alumniRecord: alumni, alumni, lifecycleEvent };
   }
 
   async getLifecycleHistory(tenantId: string, studentId: string) {
-    const student = this.prisma.memoryStore.students.get(studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+    });
+    if (!student) {
       throw new NotFoundException(`Student ${studentId} not found`);
     }
 
-    return Array.from(this.prisma.memoryStore.studentLifecycleEvents.values())
-      .filter((e: any) => e.tenantId === tenantId && e.studentId === studentId)
-      .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return this.prisma.studentLifecycleEvent.findMany({
+      where: { tenantId, studentId },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
   async getStudentTimeline(tenantId: string, studentId: string) {
@@ -242,29 +257,29 @@ export class StudentLifecycleService {
   }
 
   async listAlumni(tenantId: string, filter?: AlumniFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.alumniRecords.values()).filter(
-      (a: any) => a.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
 
     if (filter?.graduationYear) {
-      list = list.filter((a: any) => a.graduationYear === Number(filter.graduationYear));
+      where.graduationYear = Number(filter.graduationYear);
     }
     if (filter?.search) {
-      const q = filter.search.toLowerCase();
-      list = list.filter(
-        (a: any) =>
-          a.studentName.toLowerCase().includes(q) ||
-          a.admissionNumber.toLowerCase().includes(q) ||
-          (a.certificateNumber && a.certificateNumber.toLowerCase().includes(q)),
-      );
+      const q = filter.search.trim();
+      where.OR = [
+        { studentName: { contains: q, mode: 'insensitive' } },
+        { admissionNumber: { contains: q, mode: 'insensitive' } },
+        { certificateNumber: { contains: q, mode: 'insensitive' } },
+      ];
     }
 
-    return list
-      .map((a: any) => ({
-        ...a,
-        student: this.prisma.memoryStore.students.get(a.studentId) || null,
-      }))
-      .sort((a: any, b: any) => b.graduationYear - a.graduationYear);
+    const records = await this.prisma.alumniRecord.findMany({
+      where,
+      orderBy: { graduationYear: 'desc' },
+      include: {
+        student: true,
+      },
+    });
+
+    return records;
   }
 
   async getAlumniRecords(tenantId: string, filter?: AlumniFilterDto) {

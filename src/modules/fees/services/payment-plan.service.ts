@@ -32,8 +32,11 @@ export class PaymentPlanService {
   constructor(private readonly prisma: PrismaService) {}
 
   async createPaymentPlan(tenantId: string, dto: CreatePaymentPlanDto): Promise<PaymentPlanRecord> {
-    const invoice = this.prisma.memoryStore.invoices.get(dto.invoiceId);
-    if (!invoice || invoice.tenantId !== tenantId) {
+    const invoice = await this.prisma.invoice.findFirst({
+      where: { id: dto.invoiceId, tenantId },
+    });
+
+    if (!invoice) {
       throw new NotFoundException('Invoice not found');
     }
 
@@ -71,9 +74,14 @@ export class PaymentPlanService {
     };
 
     this.paymentPlans.set(dto.invoiceId, plan);
-    invoice.hasPaymentPlan = true;
-    invoice.paymentPlanId = planId;
-    this.prisma.memoryStore.invoices.set(invoice.id, invoice);
+
+    await this.prisma.invoice.update({
+      where: { id: dto.invoiceId },
+      data: {
+        notes: invoice.notes ? `${invoice.notes} | Payment Plan: ${planId}` : `Payment Plan: ${planId}`,
+        updatedAt: new Date(),
+      },
+    }).catch(() => {});
 
     return plan;
   }

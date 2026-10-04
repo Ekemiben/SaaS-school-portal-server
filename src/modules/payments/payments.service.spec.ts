@@ -18,7 +18,7 @@ describe('PaymentsService Webhooks and Receipts', () => {
       PAYSTACK_SECRET_KEY: 'test_paystack_secret',
       FLUTTERWAVE_SECRET_HASH: 'test_flw_secret',
     });
-    const paystackAdapter = new PaystackPaymentAdapter(configService);
+    const paystackAdapter = new PaystackPaymentAdapter(configService, prisma);
     const flutterwaveAdapter = new FlutterwavePaymentAdapter(configService);
     const storageProvider = new CloudflareR2StorageProvider(configService as any);
     const queueService = new QueueService();
@@ -34,7 +34,7 @@ describe('PaymentsService Webhooks and Receipts', () => {
   });
 
   it('should verify Paystack webhook signature and process successful payment', async () => {
-    prisma.memoryStore.payments.set('pay_test_123', {
+    const paymentRecord = {
       id: 'pay_test_123',
       tenantId: 'tenant_greenfield_01',
       studentId: 'stud_001',
@@ -44,8 +44,42 @@ describe('PaymentsService Webhooks and Receipts', () => {
       provider: 'PAYSTACK',
       reference: 'TXN_TEST_123',
       status: 'PENDING',
+      metadata: { invoiceId: 'inv_demo_01' },
       createdAt: new Date(),
       updatedAt: new Date(),
+      invoice: {
+        id: 'inv_demo_01',
+        totalAmount: 50000,
+        paidAmount: 0,
+        balanceAmount: 50000,
+      },
+      student: {
+        id: 'stud_001',
+        firstName: 'John',
+        lastName: 'Doe',
+      },
+    };
+
+    vi.spyOn(prisma.payment, 'findFirst').mockResolvedValue(paymentRecord as any);
+    vi.spyOn(prisma.payment, 'updateMany').mockResolvedValue({ count: 1 });
+    vi.spyOn(prisma.payment, 'findUnique').mockResolvedValue({
+      ...paymentRecord,
+      status: 'SUCCESSFUL',
+    } as any);
+    vi.spyOn(prisma.invoice, 'findFirst').mockResolvedValue(paymentRecord.invoice as any);
+    vi.spyOn(prisma.invoice, 'update').mockResolvedValue({
+      ...paymentRecord.invoice,
+      paidAmount: 50000,
+      balanceAmount: 0,
+      status: 'PAID',
+    } as any);
+    vi.spyOn(prisma.studentParent, 'findMany').mockResolvedValue([]);
+    vi.spyOn(prisma.auditLog, 'create').mockResolvedValue({} as any);
+    vi.spyOn(prisma, '$transaction').mockImplementation(async (cb: any) => {
+      if (typeof cb === 'function') {
+        return cb(prisma);
+      }
+      return cb;
     });
 
     const payload = {

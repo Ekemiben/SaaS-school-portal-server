@@ -38,18 +38,24 @@ export class BookCirculationService {
 
     if (dto.borrowerType === 'STUDENT') {
       if (!dto.studentId) throw new BadRequestException('studentId is required for student loans');
-      const student = this.prisma.memoryStore.students.get(dto.studentId);
-      if (!student || student.tenantId !== tenantId) {
+      const student = await this.prisma.student.findFirst({
+        where: { id: dto.studentId, tenantId },
+      });
+      if (!student) {
         throw new NotFoundException(`Student with ID ${dto.studentId} not found`);
       }
       borrowerName = `${student.firstName} ${student.lastName}`;
       borrowerIdentifier = student.admissionNumber;
 
       // Limit active loans to 5
-      const activeStudentLoans = Array.from(this.prisma.memoryStore.bookIssues.values()).filter(
-        (i) => i.tenantId === tenantId && i.studentId === dto.studentId && (i.status === 'ACTIVE' || i.status === 'OVERDUE'),
-      );
-      if (activeStudentLoans.length >= 5) {
+      const activeStudentLoansCount = await this.prisma.bookIssue.count({
+        where: {
+          tenantId,
+          studentId: dto.studentId,
+          status: { in: ['ACTIVE', 'OVERDUE'] },
+        },
+      });
+      if (activeStudentLoansCount >= 5) {
         throw new BadRequestException('Student has reached maximum active loan limit (5 books)');
       }
     }
@@ -61,68 +67,70 @@ export class BookCirculationService {
     } else if (dto.bookCopyId) {
       copy = await this.catalogService.getBookCopyById(tenantId, dto.bookCopyId);
     } else {
-      const availableCopies = Array.from(this.prisma.memoryStore.bookCopies.values()).filter(
-        (c) => c.tenantId === tenantId && c.bookId === dto.bookId && c.status === 'AVAILABLE',
-      );
-      if (availableCopies.length === 0) {
+      const availableCopy = await this.prisma.bookCopy.findFirst({
+        where: { tenantId, bookId: dto.bookId, status: 'AVAILABLE' },
+      });
+      if (!availableCopy) {
         throw new BadRequestException(`No available physical copies for "${book.title}"`);
       }
-      copy = availableCopies[0];
+      copy = availableCopy;
     }
 
     if (copy.status !== 'AVAILABLE' && copy.status !== 'RESERVED') {
       throw new BadRequestException(`Book copy ${copy.accessionNumber} is not available (Status: ${copy.status})`);
     }
 
-    const id = `iss_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const issue = {
-      id,
-      tenantId,
-      campusId: dto.campusId || book.campusId || campusId,
-      bookId: dto.bookId,
-      bookCopyId: copy.id,
-      borrowerType: dto.borrowerType || 'STUDENT',
-      studentId: dto.studentId || null,
-      staffUserId: dto.staffUserId || null,
-      issuedByUserId,
-      issueDate: new Date(),
-      dueDate: new Date(dto.dueDate),
-      returnDate: null,
-      status: 'ACTIVE',
-      renewalsCount: 0,
-      maxRenewals: 2,
-      returnCondition: null,
-      returnNotes: null,
-      receivedByUserId: null,
-      overdueDays: 0,
-      fineAmount: 0,
-      finePaidStatus: 'NONE',
-      notes: dto.notes || null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.bookIssues.set(id, issue);
+    const issue = await this.prisma.bookIssue.create({
+      data: {
+        tenantId,
+        campusId: dto.campusId || book.campusId || campusId,
+        bookId: dto.bookId,
+        bookCopyId: copy.id,
+        borrowerType: dto.borrowerType || 'STUDENT',
+        studentId: dto.studentId || null,
+        staffUserId: dto.staffUserId || null,
+        issuedByUserId,
+        issueDate: new Date(),
+        dueDate: new Date(dto.dueDate),
+        returnDate: null,
+        status: 'ACTIVE',
+        renewalsCount: 0,
+        maxRenewals: 2,
+        returnCondition: null,
+        returnNotes: null,
+        receivedByUserId: null,
+        overdueDays: 0,
+        fineAmount: 0,
+        finePaidStatus: 'NONE',
+      },
+    });
 
     // Update copy status
-    copy.status = 'ISSUED';
-    copy.updatedAt = new Date();
-    this.prisma.memoryStore.bookCopies.set(copy.id, copy);
+    await this.prisma.bookCopy.update({
+      where: { id: copy.id },
+      data: { status: 'ISSUED' },
+    });
     await this.catalogService.recalculateBookCounters(tenantId, dto.bookId);
 
     // Check & fulfill waiting reservation if matches borrower
-    const reservation = Array.from(this.prisma.memoryStore.bookReservations.values()).find(
-      (r) =>
-        r.tenantId === tenantId &&
-        r.bookId === dto.bookId &&
-        r.studentId === dto.studentId &&
-        (r.status === 'ACTIVE_WAITING' || r.status === 'READY_FOR_PICKUP'),
-    );
-    if (reservation) {
-      reservation.status = 'FULFILLED';
-      reservation.fulfilledAt = new Date();
-      reservation.updatedAt = new Date();
-      this.prisma.memoryStore.bookReservations.set(reservation.id, reservation);
+    if (dto.studentId) {
+      const reservation = await this.prisma.bookReservation.findFirst({
+        where: {
+          tenantId,
+          bookId: dto.bookId,
+          studentId: dto.studentId,
+          status: { in: ['ACTIVE_WAITING', 'READY_FOR_PICKUP'] },
+        },
+      });
+      if (reservation) {
+        await this.prisma.bookReservation.update({
+          where: { id: reservation.id },
+          data: {
+            status: 'FULFILLED',
+            fulfilledAt: new Date(),
+          },
+        });
+      }
     }
 
     this.dispatchIssueNotification(tenantId, 'ISSUED', issue, book, borrowerName).catch((err) =>
@@ -146,8 +154,10 @@ export class BookCirculationService {
     receivedByUserId: string,
     dto: ReturnBookDto,
   ) {
-    const issue = this.prisma.memoryStore.bookIssues.get(issueId);
-    if (!issue || issue.tenantId !== tenantId || issue.status === 'RETURNED') {
+    const issue = await this.prisma.bookIssue.findFirst({
+      where: { id: issueId, tenantId },
+    });
+    if (!issue || issue.status === 'RETURNED') {
       throw new BadRequestException('Active book issue not found');
     }
 
@@ -159,76 +169,82 @@ export class BookCirculationService {
     const damageFine = dto.damageFineAmount || 0;
     const totalFine = calculatedOverdueFine + damageFine;
 
-    issue.status = 'RETURNED';
-    issue.returnDate = now;
-    issue.receivedByUserId = receivedByUserId;
-    issue.returnCondition = dto.returnCondition || 'GOOD';
-    issue.returnNotes = dto.returnNotes || null;
-    issue.overdueDays = overdueDays;
-    issue.fineAmount = totalFine;
-    issue.finePaidStatus = totalFine > 0 ? 'PENDING' : 'NONE';
-    issue.updatedAt = now;
-
-    this.prisma.memoryStore.bookIssues.set(issueId, issue);
+    const updatedIssue = await this.prisma.bookIssue.update({
+      where: { id: issueId },
+      data: {
+        status: 'RETURNED',
+        returnDate: now,
+        receivedByUserId,
+        returnCondition: dto.returnCondition || 'GOOD',
+        returnNotes: dto.returnNotes || null,
+        overdueDays,
+        fineAmount: totalFine,
+        finePaidStatus: totalFine > 0 ? 'PENDING' : 'NONE',
+      },
+    });
 
     // If fine generated, record LibraryFine
     if (totalFine > 0) {
-      const fineId = `fin_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      const fine = {
-        id: fineId,
-        tenantId,
-        campusId: issue.campusId,
-        issueId,
-        studentId: issue.studentId,
-        staffUserId: issue.staffUserId,
-        overdueDays,
-        ratePerDay: finePerDay,
-        totalAmount: totalFine,
-        paidAmount: 0,
-        balanceDue: totalFine,
-        status: 'UNPAID',
-        waivedByUserId: null,
-        waiveReason: null,
-        paymentReference: null,
-        paidAt: null,
-        createdAt: now,
-        updatedAt: now,
-      };
-      this.prisma.memoryStore.libraryFines.set(fineId, fine);
+      await this.prisma.libraryFine.create({
+        data: {
+          tenantId,
+          campusId: issue.campusId,
+          issueId,
+          studentId: issue.studentId,
+          staffUserId: issue.staffUserId,
+          overdueDays,
+          ratePerDay: finePerDay,
+          totalAmount: totalFine,
+          paidAmount: 0,
+          balanceDue: totalFine,
+          status: 'UNPAID',
+          waivedByUserId: null,
+          waiveReason: null,
+          paymentReference: null,
+          paidAt: null,
+        },
+      });
     }
 
     // Update copy status
     if (issue.bookCopyId) {
-      const copy = this.prisma.memoryStore.bookCopies.get(issue.bookCopyId);
-      if (copy) {
-        copy.condition = dto.returnCondition || copy.condition;
-        copy.status = dto.returnCondition === 'DAMAGED' ? 'MAINTENANCE' : 'AVAILABLE';
-        copy.updatedAt = now;
-        this.prisma.memoryStore.bookCopies.set(copy.id, copy);
-      }
+      const condition = dto.returnCondition || 'GOOD';
+      await this.prisma.bookCopy.update({
+        where: { id: issue.bookCopyId },
+        data: {
+          condition,
+          status: condition === 'DAMAGED' ? 'MAINTENANCE' : 'AVAILABLE',
+        },
+      });
     }
 
     await this.catalogService.recalculateBookCounters(tenantId, issue.bookId);
 
     // Promote next reservation if exists
-    const nextReservation = Array.from(this.prisma.memoryStore.bookReservations.values())
-      .filter((r) => r.tenantId === tenantId && r.bookId === issue.bookId && r.status === 'ACTIVE_WAITING')
-      .sort((a, b) => a.priorityQueue - b.priorityQueue)[0];
+    const nextReservation = await this.prisma.bookReservation.findFirst({
+      where: { tenantId, bookId: issue.bookId, status: 'ACTIVE_WAITING' },
+      orderBy: { priorityQueue: 'asc' },
+    });
 
     if (nextReservation) {
-      nextReservation.status = 'READY_FOR_PICKUP';
-      nextReservation.notifiedAt = now;
-      nextReservation.expiryDate = new Date(now.getTime() + 48 * 3600 * 1000); // 48h pickup window
-      nextReservation.updatedAt = now;
-      this.prisma.memoryStore.bookReservations.set(nextReservation.id, nextReservation);
+      await this.prisma.bookReservation.update({
+        where: { id: nextReservation.id },
+        data: {
+          status: 'READY_FOR_PICKUP',
+          notifiedAt: now,
+          expiryDate: new Date(now.getTime() + 48 * 3600 * 1000), // 48h pickup window
+        },
+      });
     }
 
-    return issue;
+    return updatedIssue;
   }
 
   async renewBook(tenantId: string, issueId: string, dto: RenewBookDto) {
-    const issue = this.prisma.memoryStore.bookIssues.get(issueId);
-    if (!issue || issue.tenantId !== tenantId || issue.status !== 'ACTIVE') {
+    const issue = await this.prisma.bookIssue.findFirst({
+      where: { id: issueId, tenantId, status: 'ACTIVE' },
+    });
+    if (!issue) {
       throw new BadRequestException('Active book issue not found');
     }
 
@@ -237,67 +253,71 @@ export class BookCirculationService {
     }
 
     // Check if reserved by another student
-    const hasWaitingReservation = Array.from(this.prisma.memoryStore.bookReservations.values()).some(
-      (r) => r.tenantId === tenantId && r.bookId === issue.bookId && r.status === 'ACTIVE_WAITING',
-    );
+    const hasWaitingReservation = await this.prisma.bookReservation.findFirst({
+      where: { tenantId, bookId: issue.bookId, status: 'ACTIVE_WAITING' },
+    });
     if (hasWaitingReservation) {
       throw new BadRequestException('Cannot renew book because another patron has placed a hold reservation');
     }
 
-    issue.dueDate = new Date(dto.newDueDate);
-    issue.renewalsCount += 1;
-    if (dto.notes) issue.notes = dto.notes;
-    issue.updatedAt = new Date();
-
-    this.prisma.memoryStore.bookIssues.set(issueId, issue);
-    return issue;
-  }
-
-  async listIssues(tenantId: string, filter?: IssueFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.bookIssues.values()).filter(
-      (i) => i.tenantId === tenantId,
-    );
-
-    if (filter?.bookId) list = list.filter((i) => i.bookId === filter.bookId);
-    if (filter?.studentId) list = list.filter((i) => i.studentId === filter.studentId);
-    if (filter?.staffUserId) list = list.filter((i) => i.staffUserId === filter.staffUserId);
-    if (filter?.borrowerType) list = list.filter((i) => i.borrowerType === filter.borrowerType);
-    if (filter?.status) list = list.filter((i) => i.status === filter.status);
-    if (filter?.campusId) list = list.filter((i) => i.campusId === filter.campusId);
-
-    return list.map((i) => {
-      const book = this.prisma.memoryStore.books.get(i.bookId);
-      const copy = i.bookCopyId ? this.prisma.memoryStore.bookCopies.get(i.bookCopyId) : null;
-      const student = i.studentId ? this.prisma.memoryStore.students.get(i.studentId) : null;
-
-      return {
-        ...i,
-        bookTitle: book?.title || 'Book',
-        author: book?.author || '',
-        accessionNumber: copy?.accessionNumber || '',
-        borrowerName: student ? `${student.firstName} ${student.lastName}` : 'Staff / Patron',
-        admissionNumber: student?.admissionNumber || '',
-      };
+    return this.prisma.bookIssue.update({
+      where: { id: issueId },
+      data: {
+        dueDate: new Date(dto.newDueDate),
+        renewalsCount: { increment: 1 },
+      },
     });
   }
 
+  async listIssues(tenantId: string, filter?: IssueFilterDto) {
+    const where: any = { tenantId };
+    if (filter?.bookId) where.bookId = filter.bookId;
+    if (filter?.studentId) where.studentId = filter.studentId;
+    if (filter?.staffUserId) where.staffUserId = filter.staffUserId;
+    if (filter?.borrowerType) where.borrowerType = filter.borrowerType;
+    if (filter?.status) where.status = filter.status;
+    if (filter?.campusId) where.campusId = filter.campusId;
+
+    const list = await this.prisma.bookIssue.findMany({
+      where,
+      include: {
+        book: true,
+        bookCopy: true,
+        student: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return list.map((i) => ({
+      ...i,
+      bookTitle: i.book?.title || 'Book',
+      author: i.book?.author || '',
+      accessionNumber: i.bookCopy?.accessionNumber || '',
+      borrowerName: i.student ? `${i.student.firstName} ${i.student.lastName}` : 'Staff / Patron',
+      admissionNumber: i.student?.admissionNumber || '',
+    }));
+  }
+
   async getIssueById(tenantId: string, issueId: string) {
-    const issue = this.prisma.memoryStore.bookIssues.get(issueId);
-    if (!issue || issue.tenantId !== tenantId) {
+    const issue = await this.prisma.bookIssue.findFirst({
+      where: { id: issueId, tenantId },
+      include: {
+        book: true,
+        bookCopy: true,
+        student: true,
+      },
+    });
+    if (!issue) {
       throw new NotFoundException(`Book issue with ID ${issueId} not found`);
     }
 
-    const book = this.prisma.memoryStore.books.get(issue.bookId);
-    const copy = issue.bookCopyId ? this.prisma.memoryStore.bookCopies.get(issue.bookCopyId) : null;
-    const student = issue.studentId ? this.prisma.memoryStore.students.get(issue.studentId) : null;
-
     return {
       ...issue,
-      bookTitle: book?.title || 'Book',
-      author: book?.author || '',
-      accessionNumber: copy?.accessionNumber || '',
-      borrowerName: student ? `${student.firstName} ${student.lastName}` : 'Staff / Patron',
-      admissionNumber: student?.admissionNumber || '',
+      bookTitle: issue.book?.title || 'Book',
+      author: issue.book?.author || '',
+      accessionNumber: issue.bookCopy?.accessionNumber || '',
+      borrowerName: issue.student ? `${issue.student.firstName} ${issue.student.lastName}` : 'Staff / Patron',
+      admissionNumber: issue.student?.admissionNumber || '',
     };
   }
 

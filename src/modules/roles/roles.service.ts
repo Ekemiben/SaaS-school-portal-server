@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
 
@@ -6,101 +6,88 @@ import { SystemPermissions } from '../../common/constants/permissions.js';
 export class RolesService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async listRoles(_tenantId: string) {
-    const systemRoles = [
-      {
-        id: 'role_school_owner',
-        name: 'School Owner',
-        description: 'Complete administrative access across all school campuses, finance, and settings',
-        isSystem: true,
-        permissions: Object.values(SystemPermissions),
-      },
-      {
-        id: 'role_school_admin',
-        name: 'School Admin',
-        description: 'School administrator with management rights over academics, users, and students',
-        isSystem: true,
-        permissions: [
-          'users.view', 'users.create', 'users.update', 'campuses.view',
-          'students.view', 'students.create', 'students.update', 'students.delete',
-          'academics.view', 'academics.manage', 'attendance.view', 'attendance.mark',
-          'examinations.manage', 'results.enter', 'results.approve', 'results.publish',
-          'fees.view', 'fees.create', 'invoices.manage', 'payments.view',
-          'reports.view', 'files.manage',
+  async listRoles(tenantId: string) {
+    const roles = await this.prisma.role.findMany({
+      where: {
+        OR: [
+          { tenantId },
+          { isSystem: true },
+          { tenantId: null },
         ],
       },
-      {
-        id: 'role_campus_admin',
-        name: 'Campus Admin',
-        description: 'Administrator scoped to a specific school campus',
-        isSystem: true,
-        permissions: [
-          'campuses.view', 'students.view', 'students.create', 'students.update',
-          'academics.view', 'attendance.view', 'attendance.mark',
-          'results.enter', 'fees.view', 'payments.view', 'files.manage',
-        ],
+      include: {
+        permissions: {
+          include: {
+            permission: true,
+          },
+        },
       },
-      {
-        id: 'role_teacher',
-        name: 'Teacher',
-        description: 'Class teacher with attendance marking and examination grading access',
-        isSystem: true,
-        permissions: [
-          'students.view', 'academics.view', 'attendance.view', 'attendance.mark',
-          'results.enter', 'files.manage',
-        ],
-      },
-      {
-        id: 'role_accountant',
-        name: 'Accountant / Bursar',
-        description: 'Financial bursar handling fee collection, invoices, payments, and payroll',
-        isSystem: true,
-        permissions: [
-          'students.view', 'fees.view', 'fees.create', 'fees.manage', 'invoices.manage',
-          'payments.view', 'payroll.manage', 'expenses.manage', 'reports.view',
-        ],
-      },
-      {
-        id: 'role_parent',
-        name: 'Parent / Guardian',
-        description: 'Parent portal access to view linked student grades, attendance, and pay fees',
-        isSystem: true,
-        permissions: ['students.view', 'fees.view', 'payments.view'],
-      },
-      {
-        id: 'role_student',
-        name: 'Student',
-        description: 'Student portal access to view class timetable, results, and notifications',
-        isSystem: true,
-        permissions: ['students.view'],
-      },
-    ];
+      orderBy: { createdAt: 'asc' },
+    });
 
-    const customRoles = Array.from(this.prisma.memoryStore.roles.values()).filter(
-      (r) => r.tenantId === _tenantId,
-    );
-
-    return [...systemRoles, ...customRoles];
+    return roles.map((r) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description || '',
+      isSystem: r.isSystem,
+      permissions: r.permissions.map((p) => p.permission.name),
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    }));
   }
 
   async createRole(
     tenantId: string,
     dto: { name: string; description?: string; permissions: string[] },
   ) {
-    const id = `role_custom_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const newRole = {
-      id,
-      tenantId,
-      name: dto.name,
-      description: dto.description || '',
-      isSystem: false,
-      permissions: dto.permissions || [],
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+    const existing = await this.prisma.role.findFirst({
+      where: { tenantId, name: dto.name },
+    });
+    if (existing) {
+      throw new BadRequestException(`Role with name "${dto.name}" already exists in this school.`);
+    }
 
-    this.prisma.memoryStore.roles.set(id, newRole);
-    return newRole;
+    const role = await this.prisma.role.create({
+      data: {
+        tenantId,
+        name: dto.name,
+        description: dto.description || '',
+        isSystem: false,
+      },
+    });
+
+    if (dto.permissions && dto.permissions.length > 0) {
+      for (const permName of dto.permissions) {
+        let perm = await this.prisma.permission.findUnique({
+          where: { name: permName },
+        });
+        if (!perm) {
+          perm = await this.prisma.permission.create({
+            data: {
+              name: permName,
+              module: permName.split('.')[0] || 'general',
+              description: `Permission for ${permName}`,
+            },
+          });
+        }
+        await this.prisma.rolePermission.create({
+          data: {
+            roleId: role.id,
+            permissionId: perm.id,
+          },
+        });
+      }
+    }
+
+    return {
+      id: role.id,
+      name: role.name,
+      description: role.description || '',
+      isSystem: role.isSystem,
+      permissions: dto.permissions || [],
+      createdAt: role.createdAt,
+      updatedAt: role.updatedAt,
+    };
   }
 
   async updateRole(
@@ -108,35 +95,75 @@ export class RolesService {
     roleId: string,
     dto: { name?: string; description?: string; permissions?: string[] },
   ) {
-    if (roleId.startsWith('role_school_') || roleId.startsWith('role_teacher') || roleId.startsWith('role_parent')) {
-      throw new Error('System-defined default roles cannot be modified.');
+    const role = await this.prisma.role.findFirst({
+      where: { id: roleId, tenantId },
+    });
+    if (!role) {
+      throw new NotFoundException('Role not found or cannot be modified.');
+    }
+    if (role.isSystem) {
+      throw new BadRequestException('System-defined default roles cannot be modified.');
     }
 
-    const role = this.prisma.memoryStore.roles.get(roleId);
-    if (!role || role.tenantId !== tenantId) {
-      throw new Error('Custom role not found.');
+    const updated = await this.prisma.role.update({
+      where: { id: roleId },
+      data: {
+        ...(dto.name ? { name: dto.name } : {}),
+        ...(dto.description !== undefined ? { description: dto.description } : {}),
+      },
+    });
+
+    if (dto.permissions) {
+      await this.prisma.rolePermission.deleteMany({
+        where: { roleId },
+      });
+      for (const permName of dto.permissions) {
+        let perm = await this.prisma.permission.findUnique({
+          where: { name: permName },
+        });
+        if (!perm) {
+          perm = await this.prisma.permission.create({
+            data: {
+              name: permName,
+              module: permName.split('.')[0] || 'general',
+              description: `Permission for ${permName}`,
+            },
+          });
+        }
+        await this.prisma.rolePermission.create({
+          data: {
+            roleId: role.id,
+            permissionId: perm.id,
+          },
+        });
+      }
     }
 
-    if (dto.name) role.name = dto.name;
-    if (dto.description !== undefined) role.description = dto.description;
-    if (dto.permissions) role.permissions = dto.permissions;
-    role.updatedAt = new Date();
-
-    this.prisma.memoryStore.roles.set(roleId, role);
-    return role;
+    return {
+      id: updated.id,
+      name: updated.name,
+      description: updated.description || '',
+      isSystem: updated.isSystem,
+      permissions: dto.permissions || [],
+      createdAt: updated.createdAt,
+      updatedAt: updated.updatedAt,
+    };
   }
 
   async deleteRole(tenantId: string, roleId: string) {
-    if (roleId.startsWith('role_school_') || roleId.startsWith('role_teacher') || roleId.startsWith('role_parent')) {
-      throw new Error('System-defined default roles cannot be deleted.');
+    const role = await this.prisma.role.findFirst({
+      where: { id: roleId, tenantId },
+    });
+    if (!role) {
+      throw new NotFoundException('Role not found.');
+    }
+    if (role.isSystem) {
+      throw new BadRequestException('System-defined default roles cannot be deleted.');
     }
 
-    const role = this.prisma.memoryStore.roles.get(roleId);
-    if (!role || role.tenantId !== tenantId) {
-      throw new Error('Custom role not found.');
-    }
-
-    this.prisma.memoryStore.roles.delete(roleId);
+    await this.prisma.role.delete({
+      where: { id: roleId },
+    });
     return { success: true, message: 'Custom role deleted successfully.' };
   }
 

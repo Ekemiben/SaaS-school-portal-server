@@ -19,25 +19,14 @@ export class PayrollDisbursementService {
   ) {}
 
   async disbursePayroll(tenantId: string, payrollId: string, dto?: DisburseIndividualPayrollDto) {
-    let payroll: any = null;
-    let salaryProfile: any = null;
+    const payroll = await this.prisma.payroll.findFirst({
+      where: { id: payrollId, tenantId },
+    });
+    if (!payroll) throw new NotFoundException(`Payroll record "${payrollId}" not found.`);
 
-    if (this.prisma.isDbConnected) {
-      payroll = await this.prisma.payroll.findFirst({
-        where: { id: payrollId, tenantId },
-      });
-      if (!payroll) throw new NotFoundException(`Payroll record "${payrollId}" not found.`);
-
-      salaryProfile = await this.prisma.staffSalaryProfile.findFirst({
-        where: { tenantId, staffUserId: payroll.staffUserId },
-      });
-    } else {
-      payroll = this.prisma.memoryStore.payroll.get(payrollId);
-      if (!payroll || payroll.tenantId !== tenantId) {
-        throw new NotFoundException('Payroll record not found.');
-      }
-      salaryProfile = this.prisma.memoryStore.staffSalaryProfiles?.get(`${tenantId}_${payroll.staffUserId}`);
-    }
+    const salaryProfile = await this.prisma.staffSalaryProfile.findFirst({
+      where: { tenantId, staffUserId: payroll.staffUserId },
+    });
 
     if (payroll.status === 'PAID') {
       throw new BadRequestException(`Payroll "${payrollId}" has already been paid.`);
@@ -62,7 +51,12 @@ export class PayrollDisbursementService {
     const transferResult = await provider.initiateTransfer({
       amount: payroll.netSalary,
       currency: payroll.currency || 'NGN',
-      recipient: { bankCode, bankName, accountNumber, accountName },
+      recipient: {
+        bankCode: bankCode || undefined,
+        bankName: bankName || undefined,
+        accountNumber,
+        accountName: accountName || undefined,
+      },
       reference,
       reason: dto?.reason || `Salary payment for ${payroll.month}/${payroll.year}`,
       tenantId,
@@ -72,23 +66,14 @@ export class PayrollDisbursementService {
     const isDirectSuccess = transferResult.status === 'SUCCESS';
     const newStatus = isDirectSuccess ? 'PAID' : 'PROCESSING';
 
-    if (this.prisma.isDbConnected) {
-      await this.prisma.payroll.update({
-        where: { id: payrollId },
-        data: {
-          status: newStatus,
-          paymentReference: reference,
-          ...(isDirectSuccess ? { paymentDate: new Date() } : {}),
-        },
-      });
-    } else {
-      Object.assign(payroll, {
+    await this.prisma.payroll.update({
+      where: { id: payrollId },
+      data: {
         status: newStatus,
         paymentReference: reference,
         ...(isDirectSuccess ? { paymentDate: new Date() } : {}),
-      });
-      this.prisma.memoryStore.payroll.set(payrollId, payroll);
-    }
+      },
+    });
 
     return {
       payrollId,
@@ -104,28 +89,15 @@ export class PayrollDisbursementService {
   }
 
   async bulkDisbursePayroll(tenantId: string, dto: BulkDisbursePayrollDto) {
-    let approvedPayrolls: any[] = [];
-
-    if (this.prisma.isDbConnected) {
-      approvedPayrolls = await this.prisma.payroll.findMany({
-        where: {
-          tenantId,
-          month: Number(dto.month),
-          year: Number(dto.year),
-          status: 'APPROVED',
-          ...(dto.campusId && { campusId: dto.campusId }),
-        },
-      });
-    } else {
-      approvedPayrolls = Array.from(this.prisma.memoryStore.payroll.values()).filter(
-        (p: any) =>
-          p.tenantId === tenantId &&
-          p.month === Number(dto.month) &&
-          p.year === Number(dto.year) &&
-          p.status === 'APPROVED' &&
-          (!dto.campusId || p.campusId === dto.campusId),
-      );
-    }
+    const approvedPayrolls = await this.prisma.payroll.findMany({
+      where: {
+        tenantId,
+        month: Number(dto.month),
+        year: Number(dto.year),
+        status: 'APPROVED',
+        ...(dto.campusId && { campusId: dto.campusId }),
+      },
+    });
 
     const successful: any[] = [];
     const pending: any[] = [];
@@ -163,14 +135,9 @@ export class PayrollDisbursementService {
   }
 
   async reconcilePayroll(tenantId: string, payrollId: string, providerName?: string) {
-    let payroll: any = null;
-    if (this.prisma.isDbConnected) {
-      payroll = await this.prisma.payroll.findFirst({ where: { id: payrollId, tenantId } });
-    } else {
-      payroll = this.prisma.memoryStore.payroll.get(payrollId);
-    }
+    const payroll = await this.prisma.payroll.findFirst({ where: { id: payrollId, tenantId } });
 
-    if (!payroll || payroll.tenantId !== tenantId) {
+    if (!payroll) {
       throw new NotFoundException(`Payroll record "${payrollId}" not found.`);
     }
 
@@ -182,15 +149,10 @@ export class PayrollDisbursementService {
     const verifyResult = await provider.verifyTransfer(payroll.paymentReference);
 
     if (verifyResult.status === 'SUCCESS') {
-      if (this.prisma.isDbConnected) {
-        await this.prisma.payroll.update({
-          where: { id: payrollId },
-          data: { status: 'PAID', paymentDate: verifyResult.settledAt || new Date() },
-        });
-      } else {
-        payroll.status = 'PAID';
-        payroll.paymentDate = verifyResult.settledAt || new Date();
-      }
+      await this.prisma.payroll.update({
+        where: { id: payrollId },
+        data: { status: 'PAID', paymentDate: verifyResult.settledAt || new Date() },
+      });
     }
 
     return {
@@ -218,24 +180,15 @@ export class PayrollDisbursementService {
     const isSuccess = event === 'transfer.success' || event === 'transfer.completed';
     const isFailed = event === 'transfer.failed' || event === 'transfer.reversed';
 
-    if (this.prisma.isDbConnected) {
-      const payroll = await this.prisma.payroll.findFirst({ where: { paymentReference: reference } });
-      if (payroll) {
-        await this.prisma.payroll.update({
-          where: { id: payroll.id },
-          data: {
-            status: isSuccess ? 'PAID' : isFailed ? 'FAILED' : payroll.status,
-            ...(isSuccess ? { paymentDate: new Date() } : {}),
-          },
-        });
-      }
-    } else {
-      for (const p of this.prisma.memoryStore.payroll.values()) {
-        if (p.paymentReference === reference) {
-          p.status = isSuccess ? 'PAID' : isFailed ? 'FAILED' : p.status;
-          if (isSuccess) p.paymentDate = new Date();
-        }
-      }
+    const payroll = await this.prisma.payroll.findFirst({ where: { paymentReference: reference } });
+    if (payroll) {
+      await this.prisma.payroll.update({
+        where: { id: payroll.id },
+        data: {
+          status: isSuccess ? 'PAID' : isFailed ? 'FAILED' : payroll.status,
+          ...(isSuccess ? { paymentDate: new Date() } : {}),
+        },
+      });
     }
 
     return { status: 'PROCESSED', reference, event };

@@ -17,7 +17,7 @@ import { MessageTemplateService } from '../../communications/services/message-te
 import { CommunicationPolicyService } from '../../communications/services/communication-policy.service.js';
 import { CommunicationWalletService } from '../../communications/services/communication-wallet.service.js';
 import { CampaignChannel } from '../../communications/dto/campaign.dto.js';
-import crypto, { randomUUID } from 'crypto';
+import crypto from 'crypto';
 
 @Injectable()
 export class DebtRecoveryService {
@@ -52,141 +52,70 @@ export class DebtRecoveryService {
 
   // --- Defaulters Discovery ---
   async getDefaulters(tenantId: string, filters: DefaulterFilterDto = {}, referenceDate: Date = new Date()) {
-    let rawInvoices: any[] = [];
+    const whereClause: any = {
+      tenantId,
+      status: { notIn: ['CANCELLED', 'PAID'] },
+      balanceAmount: { gt: 0 },
+    };
+    if (filters.academicYearId) whereClause.academicYearId = filters.academicYearId;
+    if (filters.termId) whereClause.termId = filters.termId;
+    if (filters.classId) whereClause.classId = filters.classId;
 
-    if (this.prisma?.isDbConnected) {
-      try {
-        const whereClause: any = {
-          tenantId,
-          status: { notIn: ['CANCELLED', 'PAID'] },
-          balanceAmount: { gt: 0 },
-        };
-        if (filters.academicYearId) whereClause.academicYearId = filters.academicYearId;
-        if (filters.termId) whereClause.termId = filters.termId;
-        if (filters.classId) whereClause.classId = filters.classId;
-
-        const dbInvoices = await this.prisma.invoice.findMany({
-          where: whereClause,
+    const dbInvoices = await this.prisma.invoice.findMany({
+      where: whereClause,
+      include: {
+        student: {
           include: {
-            student: {
+            campus: true,
+            enrollments: {
               include: {
-                campus: true,
-                enrollments: {
-                  include: {
-                    class: true,
-                  },
-                },
-                parents: {
-                  include: {
-                    parent: true,
-                  },
-                },
+                class: true,
+              },
+            },
+            parents: {
+              include: {
+                parent: true,
               },
             },
           },
-        });
+        },
+      },
+    });
 
-        if (dbInvoices && dbInvoices.length > 0) {
-          rawInvoices = dbInvoices.map((inv: any) => {
-            const student = inv.student;
-            const primaryParentRel = student?.parents?.[0];
-            const parent = primaryParentRel?.parent;
-            const currentEnrollment = student?.enrollments?.[0];
-            return {
-              id: inv.id,
-              tenantId: inv.tenantId,
-              studentId: inv.studentId,
-              studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
-              admissionNumber: student?.admissionNumber || 'N/A',
-              classId: inv.classId || currentEnrollment?.classId,
-              className: currentEnrollment?.class?.name || 'Class',
-              campusId: student?.campusId,
-              invoiceNumber: inv.invoiceNumber,
-              totalAmount: inv.totalAmount,
-              paidAmount: inv.paidAmount || 0,
-              balanceAmount: inv.balanceAmount,
-              currency: inv.currency || 'NGN',
-              dueDate: inv.dueDate,
-              createdAt: inv.createdAt,
-              lastReminderSentAt: (inv as any).lastReminderSentAt || null,
-              reminderCount: (inv as any).reminderCount || 0,
-              parent: parent
-                ? {
-                    id: parent.id,
-                    userId: parent.userId || parent.id,
-                    name: `${parent.firstName} ${parent.lastName}`,
-                    phone: parent.phone,
-                    email: parent.email,
-                  }
-                : null,
-            };
-          });
-        }
-      } catch (err: any) {
-        this.logger.warn(`Could not fetch defaulters from DB: ${err.message}`);
-      }
-    }
-
-    if (rawInvoices.length === 0 && this.prisma?.memoryStore) {
-      const memory = this.prisma.memoryStore as any;
-      let invoices = Array.from(this.prisma.memoryStore.invoices.values()).filter(
-        (i: any) =>
-          i.tenantId === tenantId &&
-          i.status !== 'CANCELLED' &&
-          i.status !== 'PAID' &&
-          (i.balanceAmount > 0 || (i.totalAmount - (i.paidAmount || 0)) > 0),
-      );
-
-      if (filters.campusId) {
-        const studentMap = this.prisma.memoryStore.students;
-        invoices = invoices.filter((i: any) => studentMap.get(i.studentId)?.campusId === filters.campusId);
-      }
-      if (filters.academicYearId) invoices = invoices.filter((i: any) => i.academicYearId === filters.academicYearId);
-      if (filters.termId) invoices = invoices.filter((i: any) => i.termId === filters.termId);
-      if (filters.classId) invoices = invoices.filter((i: any) => i.classId === filters.classId);
-
-      const parentStudentMap = new Map<string, any>();
-      for (const sp of memory.studentParents?.values() || []) {
-        parentStudentMap.set(sp.studentId, sp.parentId);
-      }
-
-      rawInvoices = invoices.map((inv: any) => {
-        const student = this.prisma.memoryStore.students.get(inv.studentId);
-        const studentClass = inv.classId ? this.prisma.memoryStore.classes.get(inv.classId) : null;
-        const parentId = parentStudentMap.get(inv.studentId);
-        const parent = parentId ? this.prisma.memoryStore.parents.get(parentId) : null;
-        const balance = inv.balanceAmount ?? (inv.totalAmount - (inv.paidAmount || 0));
-
-        return {
-          id: inv.id,
-          tenantId: inv.tenantId,
-          studentId: inv.studentId,
-          studentName: student ? `${student.firstName} ${student.lastName}` : inv.studentName || 'Student',
-          admissionNumber: student?.admissionNumber || inv.admissionNumber || 'N/A',
-          classId: inv.classId,
-          className: studentClass?.name || 'Class',
-          campusId: student?.campusId,
-          invoiceNumber: inv.invoiceNumber,
-          totalAmount: inv.totalAmount,
-          paidAmount: inv.paidAmount || 0,
-          balanceAmount: balance,
-          currency: inv.currency || 'NGN',
-          dueDate: inv.dueDate,
-          createdAt: inv.createdAt,
-          lastReminderSentAt: inv.lastReminderSentAt || null,
-          reminderCount: inv.reminderCount || 0,
-          parent: parent
-            ? {
-                id: parent.id,
-                userId: parent.userId || parent.id,
-                name: `${parent.firstName} ${parent.lastName}`,
-                phone: parent.phone,
-                email: parent.email,
-              }
-            : null,
-        };
-      });
-    }
+    const rawInvoices = dbInvoices.map((inv: any) => {
+      const student = inv.student;
+      const primaryParentRel = student?.parents?.[0];
+      const parent = primaryParentRel?.parent;
+      const currentEnrollment = student?.enrollments?.[0];
+      return {
+        id: inv.id,
+        tenantId: inv.tenantId,
+        studentId: inv.studentId,
+        studentName: student ? `${student.firstName} ${student.lastName}` : 'Student',
+        admissionNumber: student?.admissionNumber || 'N/A',
+        classId: inv.classId || currentEnrollment?.classId,
+        className: currentEnrollment?.class?.name || 'Class',
+        campusId: student?.campusId,
+        invoiceNumber: inv.invoiceNumber,
+        totalAmount: inv.totalAmount,
+        paidAmount: inv.paidAmount || 0,
+        balanceAmount: inv.balanceAmount,
+        currency: inv.currency || 'NGN',
+        dueDate: inv.dueDate,
+        createdAt: inv.createdAt,
+        lastReminderSentAt: (inv as any).lastReminderSentAt || null,
+        reminderCount: (inv as any).reminderCount || 0,
+        parent: parent
+          ? {
+              id: parent.id,
+              userId: parent.userId || parent.id,
+              name: `${parent.firstName} ${parent.lastName}`,
+              phone: parent.phone,
+              email: parent.email,
+            }
+          : null,
+      };
+    });
 
     const defaulters: any[] = [];
     for (const inv of rawInvoices) {
@@ -227,18 +156,19 @@ export class DebtRecoveryService {
 
   // --- Collection Analytics ---
   async getCollectionAnalytics(tenantId: string, filters: DefaulterFilterDto = {}, referenceDate: Date = new Date()) {
-    let invoices = Array.from(this.prisma.memoryStore.invoices.values()).filter(
-      (i: any) => i.tenantId === tenantId && i.status !== 'CANCELLED',
-    );
+    const whereClause: any = {
+      tenantId,
+      status: { not: 'CANCELLED' },
+    };
+    if (filters.campusId) whereClause.campusId = filters.campusId;
+    if (filters.academicYearId) whereClause.academicYearId = filters.academicYearId;
+    if (filters.termId) whereClause.termId = filters.termId;
 
-    if (filters.campusId) {
-      const studentMap = this.prisma.memoryStore.students;
-      invoices = invoices.filter((i: any) => studentMap.get(i.studentId)?.campusId === filters.campusId);
-    }
-    if (filters.academicYearId) invoices = invoices.filter((i: any) => i.academicYearId === filters.academicYearId);
-    if (filters.termId) invoices = invoices.filter((i: any) => i.termId === filters.termId);
+    const invoices = await this.prisma.invoice.findMany({
+      where: whereClause,
+    });
 
-    const metrics = AgingAnalysisCalculator.calculateMetrics(invoices, referenceDate);
+    const metrics = AgingAnalysisCalculator.calculateMetrics(invoices as any, referenceDate);
     return {
       tenantId,
       filters,
@@ -255,8 +185,11 @@ export class DebtRecoveryService {
     termId?: string;
     examType: ExamType;
   }) {
-    const student = this.prisma.memoryStore.students.get(params.studentId);
-    if (!student || student.tenantId !== params.tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: params.studentId, tenantId: params.tenantId },
+    });
+
+    if (!student) {
       throw new NotFoundException('Student record not found');
     }
 
@@ -266,15 +199,15 @@ export class DebtRecoveryService {
         ? policy.midTermMinPercentagePaid
         : policy.finalExamMinPercentagePaid;
 
-    // Fetch invoices for this student in this term/year
-    const invoices = Array.from(this.prisma.memoryStore.invoices.values()).filter(
-      (i: any) =>
-        i.tenantId === params.tenantId &&
-        i.studentId === params.studentId &&
-        i.status !== 'CANCELLED' &&
-        (!params.academicYearId || i.academicYearId === params.academicYearId) &&
-        (!params.termId || i.termId === params.termId),
-    );
+    const invoices = await this.prisma.invoice.findMany({
+      where: {
+        tenantId: params.tenantId,
+        studentId: params.studentId,
+        status: { not: 'CANCELLED' },
+        ...(params.academicYearId ? { academicYearId: params.academicYearId } : {}),
+        ...(params.termId ? { termId: params.termId } : {}),
+      },
+    });
 
     const totalBilled = invoices.reduce((acc, i: any) => acc + (i.totalAmount || 0), 0);
     const totalPaid = invoices.reduce((acc, i: any) => acc + (i.paidAmount || 0), 0);
@@ -310,7 +243,6 @@ export class DebtRecoveryService {
       ? defaulters.filter((d) => dto.invoiceIds!.includes(d.invoiceId))
       : defaulters;
 
-    // Fetch communication settings / policy if available
     let policy: any = null;
     if (this.policyService) {
       try {
@@ -344,7 +276,6 @@ export class DebtRecoveryService {
       effectiveChannels.push(CampaignChannel.IN_APP, CampaignChannel.EMAIL);
     }
 
-    // Resolve template if available
     let template: any = null;
     if (this.templateService) {
       try {
@@ -364,27 +295,13 @@ export class DebtRecoveryService {
 
     for (const d of targetDefaulters) {
       const now = new Date();
-      // Update memory store invoice
-      const inv = this.prisma.memoryStore.invoices.get(d.invoiceId);
-      if (inv) {
-        inv.lastReminderSentAt = now;
-        inv.reminderCount = (inv.reminderCount || 0) + 1;
-        this.prisma.memoryStore.invoices.set(inv.id, inv);
-      }
 
-      // Update DB invoice if connected
-      if (this.prisma?.isDbConnected) {
-        try {
-          await this.prisma.invoice.update({
-            where: { id: d.invoiceId },
-            data: {
-              updatedAt: now,
-            },
-          });
-        } catch (err: any) {
-          // ignore if DB record missing in mocked tests
-        }
-      }
+      await this.prisma.invoice.update({
+        where: { id: d.invoiceId },
+        data: {
+          updatedAt: now,
+        },
+      }).catch(() => {});
 
       const formattedDueDate = d.dueDate
         ? new Date(d.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })

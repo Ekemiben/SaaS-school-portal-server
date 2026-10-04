@@ -8,7 +8,7 @@ interface RateLimitBucket {
 
 @Injectable()
 export class RateLimitMiddleware implements NestMiddleware {
-  private static readonly memoryStore = new Map<string, RateLimitBucket>();
+  private static readonly rateLimitBuckets = new Map<string, RateLimitBucket>();
 
   use(req: Request, res: Response, next: NextFunction) {
     const rawIp = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown-ip';
@@ -58,13 +58,13 @@ export class RateLimitMiddleware implements NestMiddleware {
     const key = `${scopeKey}:${tier}`;
     const now = Date.now();
 
-    let bucket = RateLimitMiddleware.memoryStore.get(key);
+    let bucket = RateLimitMiddleware.rateLimitBuckets.get(key);
     if (!bucket || now > bucket.resetTime) {
       bucket = {
         count: 0,
         resetTime: now + windowMs,
       };
-      RateLimitMiddleware.memoryStore.set(key, bucket);
+      RateLimitMiddleware.rateLimitBuckets.set(key, bucket);
     }
 
     bucket.count++;

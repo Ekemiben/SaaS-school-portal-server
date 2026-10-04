@@ -33,8 +33,16 @@ export class MedicalProfileService {
   }
 
   async getMedicalProfile(tenantId: string, studentId: string) {
-    const student = this.prisma.memoryStore.students.get(studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+      include: {
+        enrollments: {
+          where: { status: 'ACTIVE' },
+          take: 1,
+        },
+      },
+    });
+    if (!student) {
       throw new NotFoundException('Student not found');
     }
 
@@ -75,7 +83,7 @@ export class MedicalProfileService {
         admissionNumber: student.admissionNumber,
         gender: student.gender,
         dateOfBirth: student.dateOfBirth,
-        classId: student.currentClassId || student.classId,
+        classId: student.enrollments[0]?.classId || null,
       },
       alerts,
       hasCriticalAlerts: alerts.some((a) => a.severity === 'HIGH'),
@@ -88,8 +96,10 @@ export class MedicalProfileService {
     dto: CreateMedicalProfileDto | UpdateMedicalProfileDto,
     updatedByUserId?: string,
   ) {
-    const student = this.prisma.memoryStore.students.get(studentId);
-    if (!student || student.tenantId !== tenantId) {
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+    });
+    if (!student) {
       throw new NotFoundException('Student not found');
     }
 
@@ -160,7 +170,7 @@ export class MedicalProfileService {
   async getEmergencyActionPlan(tenantId: string, studentId: string) {
     const profile = await this.getMedicalProfile(tenantId, studentId);
     const studentClass = profile.student.classId
-      ? this.prisma.memoryStore.classes.get(profile.student.classId)
+      ? await this.prisma.class.findFirst({ where: { id: profile.student.classId, tenantId } })
       : null;
 
     const criticalAllergies = (profile.allergies || []).filter(
@@ -185,12 +195,15 @@ export class MedicalProfileService {
   }
 
   async getClassMedicalAlertRoster(tenantId: string, classId: string) {
-    const studentsInClass = Array.from(this.prisma.memoryStore.students.values()).filter(
-      (s: any) =>
-        s.tenantId === tenantId &&
-        (s.currentClassId === classId || s.classId === classId) &&
-        s.status === 'ACTIVE',
-    );
+    const studentsInClass = await this.prisma.student.findMany({
+      where: {
+        tenantId,
+        status: 'ACTIVE',
+        enrollments: {
+          some: { classId, status: 'ACTIVE' },
+        },
+      },
+    });
 
     const roster: any[] = [];
     for (const student of studentsInClass) {

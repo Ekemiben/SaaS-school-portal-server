@@ -19,43 +19,24 @@ export class PayslipService {
   ) {}
 
   async generatePayslip(tenantId: string, payrollId: string, requestingUserId?: string) {
-    let payroll: any = null;
-    let tenant: any = null;
-    let campus: any = null;
-    let user: any = null;
-    let salaryProfile: any = null;
+    const payroll = await this.prisma.payroll.findFirst({
+      where: { id: payrollId, tenantId },
+      include: { campus: true },
+    });
+    if (!payroll) throw new NotFoundException(`Payroll record "${payrollId}" not found.`);
 
-    if (this.prisma.isDbConnected) {
-      payroll = await this.prisma.payroll.findFirst({
-        where: { id: payrollId, tenantId },
-        include: { campus: true },
-      });
-      if (!payroll) throw new NotFoundException(`Payroll record "${payrollId}" not found.`);
-
-      tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
-      campus = payroll.campus || (payroll.campusId ? await this.prisma.campus.findUnique({ where: { id: payroll.campusId } }) : null);
-      user = await this.prisma.user.findFirst({
-        where: { id: payroll.staffUserId, tenantId },
-        include: { teacherProfile: true },
-      });
-      salaryProfile = await this.prisma.staffSalaryProfile.findFirst({
-        where: { tenantId, staffUserId: payroll.staffUserId },
-      });
-    } else {
-      payroll = this.prisma.memoryStore.payroll.get(payrollId);
-      if (!payroll || payroll.tenantId !== tenantId) {
-        throw new NotFoundException('Payroll record not found.');
-      }
-      tenant = this.prisma.memoryStore.tenants.get(tenantId);
-      campus = payroll.campusId ? this.prisma.memoryStore.campuses.get(payroll.campusId) : null;
-      user = this.prisma.memoryStore.users.get(payroll.staffUserId);
-      salaryProfile = this.prisma.memoryStore.staffSalaryProfiles?.get(`${tenantId}_${payroll.staffUserId}`);
-    }
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+    const campus = payroll.campus || (payroll.campusId ? await this.prisma.campus.findUnique({ where: { id: payroll.campusId } }) : null);
+    const user = await this.prisma.user.findFirst({
+      where: { id: payroll.staffUserId, tenantId },
+      include: { teacherProfile: true },
+    });
+    const salaryProfile = await this.prisma.staffSalaryProfile.findFirst({
+      where: { tenantId, staffUserId: payroll.staffUserId },
+    });
 
     // Security check: staff self-service can only view their own payslip
     if (requestingUserId && requestingUserId !== payroll.staffUserId && !requestingUserId.startsWith('admin_') && !requestingUserId.startsWith('usr_owner')) {
-      // If requestingUserId is not the staff member themselves and not an admin
-      // Check if user is staff trying to access another staff's payslip
       if (requestingUserId === 'other_staff_user') {
         throw new ForbiddenException('You are not authorized to view another employee\'s payslip.');
       }
@@ -68,24 +49,24 @@ export class PayslipService {
     const renderData: PayslipRenderData = {
       school: {
         name: tenant?.name || 'School Organization',
-        logoUrl: tenant?.logoUrl,
-        campusName: campus?.name,
+        logoUrl: tenant?.logoUrl || undefined,
+        campusName: campus?.name || undefined,
         address: tenant?.slug ? `${tenant.slug}.schoolportal.edu` : undefined,
-        email: tenant?.email,
+        email: (tenant as any)?.email || undefined,
         currency: payroll.currency || 'NGN',
       },
       staff: {
         name: staffName,
         employeeNumber,
         email: staffEmail,
-        bankName: salaryProfile?.bankName,
-        accountNumber: salaryProfile?.accountNumber,
+        bankName: salaryProfile?.bankName || undefined,
+        accountNumber: salaryProfile?.accountNumber || undefined,
       },
       period: {
         month: payroll.month,
         year: payroll.year,
         paymentDate: payroll.paymentDate ? new Date(payroll.paymentDate).toLocaleDateString() : undefined,
-        paymentReference: payroll.paymentReference,
+        paymentReference: payroll.paymentReference || undefined,
         status: payroll.status,
       },
       earnings: {
@@ -115,15 +96,10 @@ export class PayslipService {
       `payslip_${payroll.year}_${payroll.month}_${employeeNumber}.html`,
     );
 
-    if (this.prisma.isDbConnected) {
-      await this.prisma.payroll.update({
-        where: { id: payroll.id },
-        data: { payslipUrl: storageKey },
-      });
-    } else {
-      payroll.payslipUrl = storageKey;
-      this.prisma.memoryStore.payroll.set(payroll.id, payroll);
-    }
+    await this.prisma.payroll.update({
+      where: { id: payroll.id },
+      data: { payslipUrl: storageKey },
+    });
 
     return {
       payrollId: payroll.id,
@@ -141,28 +117,16 @@ export class PayslipService {
   }
 
   async getStaffPayslips(tenantId: string, staffUserId: string, query?: QueryStaffPayslipsDto) {
-    let payrolls: any[] = [];
-
-    if (this.prisma.isDbConnected) {
-      payrolls = await this.prisma.payroll.findMany({
-        where: {
-          tenantId,
-          staffUserId,
-          status: { in: ['APPROVED', 'PAID'] },
-          ...(query?.year && { year: Number(query.year) }),
-        },
-        orderBy: [{ year: 'desc' }, { month: 'desc' }],
-        take: query?.limit || 24,
-      });
-    } else {
-      payrolls = Array.from(this.prisma.memoryStore.payroll.values()).filter(
-        (p: any) =>
-          p.tenantId === tenantId &&
-          p.staffUserId === staffUserId &&
-          (p.status === 'APPROVED' || p.status === 'PAID') &&
-          (!query?.year || p.year === Number(query.year)),
-      );
-    }
+    const payrolls = await this.prisma.payroll.findMany({
+      where: {
+        tenantId,
+        staffUserId,
+        status: { in: ['APPROVED', 'PAID'] },
+        ...(query?.year && { year: Number(query.year) }),
+      },
+      orderBy: [{ year: 'desc' }, { month: 'desc' }],
+      take: query?.limit || 24,
+    });
 
     const results = [];
     for (const p of payrolls) {
@@ -192,26 +156,14 @@ export class PayslipService {
   }
 
   async bulkGeneratePayslips(tenantId: string, dto: BulkGeneratePayslipsDto) {
-    let payrolls: any[] = [];
-
-    if (this.prisma.isDbConnected) {
-      payrolls = await this.prisma.payroll.findMany({
-        where: {
-          tenantId,
-          month: Number(dto.month),
-          year: Number(dto.year),
-          ...(dto.campusId && { campusId: dto.campusId }),
-        },
-      });
-    } else {
-      payrolls = Array.from(this.prisma.memoryStore.payroll.values()).filter(
-        (p: any) =>
-          p.tenantId === tenantId &&
-          p.month === Number(dto.month) &&
-          p.year === Number(dto.year) &&
-          (!dto.campusId || p.campusId === dto.campusId),
-      );
-    }
+    const payrolls = await this.prisma.payroll.findMany({
+      where: {
+        tenantId,
+        month: Number(dto.month),
+        year: Number(dto.year),
+        ...(dto.campusId && { campusId: dto.campusId }),
+      },
+    });
 
     const generated = [];
     for (const p of payrolls) {

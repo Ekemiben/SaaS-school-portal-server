@@ -23,21 +23,13 @@ export class FilesService {
 
   async listFiles(tenantId: string, filter?: { category?: string; limit?: number; offset?: number }) {
     const category = filter?.category;
-    if (this.prisma.isDbConnected && (this.prisma as any).fileAsset) {
-      try {
-        return await (this.prisma as any).fileAsset.findMany({
-          where: {
-            tenantId,
-            ...(category ? { category } : {}),
-          },
-          orderBy: { createdAt: 'desc' },
-        });
-      } catch {}
-    }
-
-    return Array.from(this.prisma.memoryStore.fileAssets.values()).filter(
-      (f) => f.tenantId === tenantId && (!category || f.category === category),
-    );
+    return this.prisma.fileAsset.findMany({
+      where: {
+        tenantId,
+        ...(category ? { category } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
   async registerFile(
@@ -90,41 +82,21 @@ export class FilesService {
       presignedDownload = { downloadUrl: await (this.storageProvider as any).getDownloadPresignedUrl(tenantId, storageKey, dto.originalName) };
     }
 
-    const fileData = {
-      id: fileId,
-      tenantId,
-      storageKey,
-      originalName: dto.originalName,
-      mimeType: dto.mimeType,
-      sizeBytes: dto.sizeBytes,
-      category,
-      status: 'PENDING_UPLOAD',
-      uploadedByUserId: userId,
-      createdAt: new Date(),
-    };
-
-    if (this.prisma.isDbConnected && (this.prisma as any).fileAsset) {
-      try {
-        await (this.prisma as any).fileAsset.create({
-          data: {
-            id: fileId,
-            tenantId,
-            storageKey,
-            originalName: dto.originalName,
-            mimeType: dto.mimeType,
-            sizeBytes: dto.sizeBytes,
-            category,
-            uploadedByUserId: userId,
-            createdAt: new Date(),
-          },
-        });
-      } catch {}
-    }
-
-    this.prisma.memoryStore.fileAssets.set(fileId, fileData);
+    const fileData = await this.prisma.fileAsset.create({
+      data: {
+        id: fileId,
+        tenantId,
+        storageKey,
+        originalName: dto.originalName,
+        mimeType: dto.mimeType,
+        sizeBytes: dto.sizeBytes,
+        category,
+        uploadedByUserId: userId,
+      },
+    });
 
     return {
-      file: fileData,
+      file: { ...fileData, status: 'PENDING_UPLOAD' },
       fileId,
       storageKey,
       uploadUrl: presignedUpload.uploadUrl,
@@ -143,17 +115,11 @@ export class FilesService {
   }
 
   async getFile(tenantId: string, fileId: string) {
-    let file: any = null;
-    if (this.prisma.isDbConnected && (this.prisma as any).fileAsset) {
-      try {
-        file = await (this.prisma as any).fileAsset.findUnique({ where: { id: fileId } });
-      } catch {}
-    }
-    if (!file) {
-      file = this.prisma.memoryStore.fileAssets.get(fileId);
-    }
+    const file = await this.prisma.fileAsset.findFirst({
+      where: { id: fileId, tenantId },
+    });
 
-    if (!file || file.tenantId !== tenantId) {
+    if (!file) {
       throw new NotFoundException('File asset not found in this school.');
     }
 
@@ -186,17 +152,10 @@ export class FilesService {
     }
 
     if (exists) {
-      file.status = 'READY';
-      if (this.prisma.isDbConnected && (this.prisma as any).fileAsset) {
-        try {
-          await (this.prisma as any).fileAsset.update({ where: { id: fileId }, data: { status: 'READY' } });
-        } catch {}
-      }
-      this.prisma.memoryStore.fileAssets.set(fileId, file);
-      return { confirmed: true, status: 'READY', file };
+      return { confirmed: true, status: 'READY', file: { ...file, status: 'READY' } };
     }
 
-    return { confirmed: false, status: 'PENDING_UPLOAD', file };
+    return { confirmed: false, status: 'PENDING_UPLOAD', file: { ...file, status: 'PENDING_UPLOAD' } };
   }
 
   async getPresignedDownload(tenantId: string, fileId: string) {
@@ -209,18 +168,11 @@ export class FilesService {
   }
 
   async deleteFile(tenantId: string, fileId: string) {
-    let file: any = null;
+    const file = await this.prisma.fileAsset.findFirst({
+      where: { id: fileId, tenantId },
+    });
 
-    if (this.prisma.isDbConnected && (this.prisma as any).fileAsset) {
-      try {
-        file = await (this.prisma as any).fileAsset.findUnique({ where: { id: fileId } });
-      } catch {}
-    }
     if (!file) {
-      file = this.prisma.memoryStore.fileAssets.get(fileId);
-    }
-
-    if (!file || file.tenantId !== tenantId) {
       throw new NotFoundException('File asset not found in this school.');
     }
 
@@ -238,12 +190,9 @@ export class FilesService {
       await (this.storageProvider as any).getAdapter().deleteObject(file.storageKey);
     }
 
-    if (this.prisma.isDbConnected && (this.prisma as any).fileAsset) {
-      try {
-        await (this.prisma as any).fileAsset.delete({ where: { id: fileId } });
-      } catch {}
-    }
-    this.prisma.memoryStore.fileAssets.delete(fileId);
+    await this.prisma.fileAsset.delete({
+      where: { id: fileId },
+    });
 
     return { success: true, message: 'File asset deleted successfully' };
   }

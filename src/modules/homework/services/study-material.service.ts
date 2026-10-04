@@ -6,6 +6,7 @@ import {
   StudyMaterialFilterDto,
 } from '../dto/study-material.dto.js';
 import { ErrorCodes } from '../../../common/constants/error-codes.js';
+import { randomUUID } from 'crypto';
 
 @Injectable()
 export class StudyMaterialService {
@@ -18,51 +19,57 @@ export class StudyMaterialService {
     teacherUserId: string,
     dto: CreateStudyMaterialDto,
   ) {
-    const classRecord = this.prisma.memoryStore.classes.get(dto.classId);
-    if (!classRecord || classRecord.tenantId !== tenantId) {
+    const classRecord = await this.prisma.class.findFirst({
+      where: { id: dto.classId, tenantId },
+    });
+    if (!classRecord) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Class not found in this school',
       });
     }
 
-    const subject = this.prisma.memoryStore.subjects.get(dto.subjectId);
-    if (!subject || subject.tenantId !== tenantId) {
+    const subject = await this.prisma.subject.findFirst({
+      where: { id: dto.subjectId, tenantId },
+    });
+    if (!subject) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Subject not found in this school',
       });
     }
 
-    const id = `mat_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const material = {
-      id,
-      tenantId,
-      campusId: dto.campusId || classRecord.campusId || null,
-      classId: dto.classId,
-      subjectId: dto.subjectId,
-      academicYearId: dto.academicYearId || classRecord.academicYearId || null,
-      termId: dto.termId || null,
-      uploadedByUserId: teacherUserId,
-      title: dto.title,
-      description: dto.description || null,
-      topic: dto.topic || null,
-      resourceType: dto.resourceType,
-      fileUrl: dto.fileUrl || null,
-      fileAssetId: dto.fileAssetId || null,
-      externalUrl: dto.externalUrl || null,
-      fileSizeBytes: dto.fileSizeBytes || null,
-      mimeType: dto.mimeType || null,
-      tags: dto.tags || [],
-      visibilityScope: dto.visibilityScope || 'STUDENTS_AND_PARENTS',
-      viewCount: 0,
-      downloadCount: 0,
-      isPublished: dto.isPublished ?? true,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.prisma.memoryStore.studyMaterials.set(id, material);
+    const id = `mat_${Date.now()}_${randomUUID().substring(0, 5)}`;
+    const material = await this.prisma.studyMaterial.create({
+      data: {
+        id,
+        tenantId,
+        campusId: dto.campusId || classRecord.campusId || null,
+        classId: dto.classId,
+        subjectId: dto.subjectId,
+        academicYearId: dto.academicYearId || classRecord.academicYearId || null,
+        termId: dto.termId || null,
+        uploadedByUserId: teacherUserId,
+        title: dto.title,
+        description: dto.description || null,
+        topic: dto.topic || null,
+        resourceType: dto.resourceType,
+        fileUrl: dto.fileUrl || null,
+        fileAssetId: dto.fileAssetId || null,
+        externalUrl: dto.externalUrl || null,
+        fileSizeBytes: dto.fileSizeBytes || null,
+        mimeType: dto.mimeType || null,
+        tags: (dto.tags as any) || [],
+        visibilityScope: dto.visibilityScope || 'STUDENTS_AND_PARENTS',
+        viewCount: 0,
+        downloadCount: 0,
+        isPublished: dto.isPublished ?? true,
+      },
+      include: {
+        class: true,
+        subject: true,
+      },
+    });
 
     return {
       ...material,
@@ -72,54 +79,47 @@ export class StudyMaterialService {
   }
 
   async getStudyMaterials(tenantId: string, filter: StudyMaterialFilterDto) {
-    let list = Array.from(this.prisma.memoryStore.studyMaterials.values()).filter(
-      (m) => m.tenantId === tenantId,
-    );
+    const where: any = { tenantId };
 
-    if (filter.classId) {
-      list = list.filter((m) => m.classId === filter.classId);
-    }
-    if (filter.subjectId) {
-      list = list.filter((m) => m.subjectId === filter.subjectId);
-    }
-    if (filter.campusId) {
-      list = list.filter((m) => m.campusId === filter.campusId);
-    }
-    if (filter.topic) {
-      list = list.filter((m) => m.topic?.toLowerCase().includes(filter.topic!.toLowerCase()));
-    }
-    if (filter.resourceType) {
-      list = list.filter((m) => m.resourceType === filter.resourceType);
-    }
-    if (filter.visibilityScope) {
-      list = list.filter((m) => m.visibilityScope === filter.visibilityScope);
-    }
+    if (filter.classId) where.classId = filter.classId;
+    if (filter.subjectId) where.subjectId = filter.subjectId;
+    if (filter.campusId) where.campusId = filter.campusId;
+    if (filter.topic) where.topic = { contains: filter.topic, mode: 'insensitive' };
+    if (filter.resourceType) where.resourceType = filter.resourceType;
+    if (filter.visibilityScope) where.visibilityScope = filter.visibilityScope;
     if (filter.search) {
-      const q = filter.search.toLowerCase();
-      list = list.filter(
-        (m) =>
-          m.title.toLowerCase().includes(q) ||
-          m.description?.toLowerCase().includes(q) ||
-          m.tags?.some((t: string) => t.toLowerCase().includes(q)),
-      );
+      where.OR = [
+        { title: { contains: filter.search, mode: 'insensitive' } },
+        { description: { contains: filter.search, mode: 'insensitive' } },
+      ];
     }
 
-    return list
-      .map((m) => {
-        const cls = this.prisma.memoryStore.classes.get(m.classId);
-        const sub = this.prisma.memoryStore.subjects.get(m.subjectId);
-        return {
-          ...m,
-          className: cls?.name || 'Class',
-          subjectName: sub?.name || 'Subject',
-        };
-      })
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const list = await this.prisma.studyMaterial.findMany({
+      where,
+      include: {
+        class: true,
+        subject: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return list.map((m) => ({
+      ...m,
+      className: m.class?.name || 'Class',
+      subjectName: m.subject?.name || 'Subject',
+    }));
   }
 
   async getStudyMaterialById(tenantId: string, id: string, incrementView: boolean = true) {
-    const material = this.prisma.memoryStore.studyMaterials.get(id);
-    if (!material || material.tenantId !== tenantId) {
+    const material = await this.prisma.studyMaterial.findFirst({
+      where: { id, tenantId },
+      include: {
+        class: true,
+        subject: true,
+      },
+    });
+
+    if (!material) {
       throw new NotFoundException({
         errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
         message: 'Study material not found',
@@ -127,54 +127,88 @@ export class StudyMaterialService {
     }
 
     if (incrementView) {
-      material.viewCount = (material.viewCount || 0) + 1;
-      this.prisma.memoryStore.studyMaterials.set(id, material);
+      await this.prisma.studyMaterial.update({
+        where: { id },
+        data: { viewCount: { increment: 1 } },
+      });
+      material.viewCount += 1;
     }
-
-    const cls = this.prisma.memoryStore.classes.get(material.classId);
-    const sub = this.prisma.memoryStore.subjects.get(material.subjectId);
 
     return {
       ...material,
-      className: cls?.name || 'Class',
-      subjectName: sub?.name || 'Subject',
+      className: material.class?.name || 'Class',
+      subjectName: material.subject?.name || 'Subject',
     };
   }
 
   async recordDownload(tenantId: string, id: string) {
     const material = await this.getStudyMaterialById(tenantId, id, false);
-    material.downloadCount = (material.downloadCount || 0) + 1;
-    this.prisma.memoryStore.studyMaterials.set(id, material);
+    const updated = await this.prisma.studyMaterial.update({
+      where: { id },
+      data: { downloadCount: { increment: 1 } },
+    });
 
     return {
-      id: material.id,
-      downloadCount: material.downloadCount,
-      fileUrl: material.fileUrl || material.externalUrl,
+      id: updated.id,
+      downloadCount: updated.downloadCount,
+      fileUrl: updated.fileUrl || updated.externalUrl,
     };
   }
 
   async updateStudyMaterial(tenantId: string, id: string, dto: UpdateStudyMaterialDto) {
-    const material = await this.getStudyMaterialById(tenantId, id, false);
+    const existing = await this.prisma.studyMaterial.findFirst({
+      where: { id, tenantId },
+    });
 
-    if (dto.title !== undefined) material.title = dto.title;
-    if (dto.description !== undefined) material.description = dto.description;
-    if (dto.topic !== undefined) material.topic = dto.topic;
-    if (dto.resourceType !== undefined) material.resourceType = dto.resourceType;
-    if (dto.fileUrl !== undefined) material.fileUrl = dto.fileUrl;
-    if (dto.externalUrl !== undefined) material.externalUrl = dto.externalUrl;
-    if (dto.tags !== undefined) material.tags = dto.tags;
-    if (dto.visibilityScope !== undefined) material.visibilityScope = dto.visibilityScope;
-    if (dto.isPublished !== undefined) material.isPublished = dto.isPublished;
+    if (!existing) {
+      throw new NotFoundException({
+        errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
+        message: 'Study material not found',
+      });
+    }
 
-    material.updatedAt = new Date();
-    this.prisma.memoryStore.studyMaterials.set(id, material);
+    const updated = await this.prisma.studyMaterial.update({
+      where: { id },
+      data: {
+        ...(dto.title !== undefined ? { title: dto.title } : {}),
+        ...(dto.description !== undefined ? { description: dto.description } : {}),
+        ...(dto.topic !== undefined ? { topic: dto.topic } : {}),
+        ...(dto.resourceType !== undefined ? { resourceType: dto.resourceType } : {}),
+        ...(dto.fileUrl !== undefined ? { fileUrl: dto.fileUrl } : {}),
+        ...(dto.externalUrl !== undefined ? { externalUrl: dto.externalUrl } : {}),
+        ...(dto.tags !== undefined ? { tags: dto.tags as any } : {}),
+        ...(dto.visibilityScope !== undefined ? { visibilityScope: dto.visibilityScope } : {}),
+        ...(dto.isPublished !== undefined ? { isPublished: dto.isPublished } : {}),
+      },
+      include: {
+        class: true,
+        subject: true,
+      },
+    });
 
-    return material;
+    return {
+      ...updated,
+      className: updated.class?.name || 'Class',
+      subjectName: updated.subject?.name || 'Subject',
+    };
   }
 
   async deleteStudyMaterial(tenantId: string, id: string) {
-    await this.getStudyMaterialById(tenantId, id, false);
-    this.prisma.memoryStore.studyMaterials.delete(id);
+    const existing = await this.prisma.studyMaterial.findFirst({
+      where: { id, tenantId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException({
+        errorCode: ErrorCodes.RESOURCE_NOT_FOUND,
+        message: 'Study material not found',
+      });
+    }
+
+    await this.prisma.studyMaterial.delete({
+      where: { id },
+    });
+
     return { success: true, message: 'Study material removed successfully' };
   }
 }
