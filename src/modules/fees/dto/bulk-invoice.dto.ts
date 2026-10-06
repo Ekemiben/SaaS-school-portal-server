@@ -41,14 +41,17 @@ export class SiblingDiscountConfigDto {
 }
 
 export class BulkGenerateInvoicesDto {
+  @IsOptional()
   @IsString()
-  campusId!: string;
+  campusId?: string;
 
+  @IsOptional()
   @IsString()
-  academicYearId!: string;
+  academicYearId?: string;
 
+  @IsOptional()
   @IsString()
-  termId!: string;
+  termId?: string;
 
   @IsOptional()
   @IsArray()
@@ -59,8 +62,9 @@ export class BulkGenerateInvoicesDto {
   @IsString()
   feeStructureId?: string;
 
+  @IsOptional()
   @IsString()
-  dueDate!: string;
+  dueDate?: string;
 
   @IsOptional()
   @IsBoolean()
@@ -82,9 +86,9 @@ export class BulkGenerateInvoicesDto {
 export interface BulkInvoicingResultDto {
   jobId: string;
   tenantId: string;
-  campusId: string;
-  academicYearId: string;
-  termId: string;
+  campusId?: string;
+  academicYearId?: string;
+  termId?: string;
   totalStudents: number;
   invoicesCreated: number;
   invoicesSkipped: number;

@@ -14,8 +14,9 @@ export class FeeItemDto {
   @IsString()
   name!: string; // e.g. "Tuition Fee", "Science Laboratory Levy", "PTA Levy", "Uniform"
 
+  @IsOptional()
   @IsString()
-  code!: string; // e.g. "TUI", "LAB", "PTA", "UNIFORM", "BUS"
+  code?: string; // e.g. "TUI", "LAB", "PTA", "UNIFORM", "BUS"
 
   @IsNumber()
   @Min(0)
@@ -46,11 +47,13 @@ export class CreateFeeStructureDto {
   @IsString()
   description?: string;
 
+  @IsOptional()
   @IsString()
-  campusId!: string;
+  campusId?: string;
 
+  @IsOptional()
   @IsString()
-  academicYearId!: string;
+  academicYearId?: string;
 
   @IsOptional()
   @IsString()
@@ -122,6 +125,14 @@ export class UpdateFeeStructureDto {
 
   @IsOptional()
   @IsString()
+  campusId?: string;
+
+  @IsOptional()
+  @IsString()
+  academicYearId?: string;
+
+  @IsOptional()
+  @IsString()
   termId?: string;
 
   @IsOptional()
@@ -165,6 +176,10 @@ export class UpdateFeeStructureDto {
   @ValidateNested({ each: true })
   @Type(() => FeeItemDto)
   items?: FeeItemDto[];
+
+  @IsOptional()
+  @IsNumber()
+  amount?: number;
 }
 
 export class EvaluateStudentFeeDto {

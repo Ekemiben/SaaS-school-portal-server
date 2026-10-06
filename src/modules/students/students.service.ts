@@ -824,6 +824,13 @@ export class StudentsService {
           orderBy: { date: 'desc' },
         },
         invoices: {
+          include: {
+            feeStructure: true,
+            payments: {
+              where: { status: 'SUCCESSFUL' },
+              orderBy: { paidAt: 'desc' },
+            },
+          },
           orderBy: { dueDate: 'desc' },
         },
       },
@@ -851,6 +858,13 @@ export class StudentsService {
             orderBy: { date: 'desc' },
           },
           invoices: {
+            include: {
+              feeStructure: true,
+              payments: {
+                where: { status: 'SUCCESSFUL' },
+                orderBy: { paidAt: 'desc' },
+              },
+            },
             orderBy: { dueDate: 'desc' },
           },
         },
@@ -873,6 +887,40 @@ export class StudentsService {
       throw new NotFoundException('Student profile not found for this account.');
     }
 
+    // Fetch tenant-wide fee structures to attach official class fee schedule
+    const tenantFeeStructures = await this.prisma.feeStructure.findMany({
+      where: { tenantId, status: 'ACTIVE' },
+      include: { class: true, term: true, academicYear: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { name: true, currency: true },
+    });
+    const currency = tenant?.currency || 'NGN';
+
+    const classId = student.enrollments?.[0]?.classId || (student as any).classId || null;
+    const gradeLevel = student.enrollments?.[0]?.class?.gradeLevel;
+
+    const matchedStructure =
+      tenantFeeStructures.find((f) => f.classId === classId) ||
+      tenantFeeStructures.find((f) => f.applicableGradeLevel === gradeLevel) ||
+      tenantFeeStructures.find((f) => !f.classId && !f.applicableGradeLevel) ||
+      null;
+
+    const feeSchedule = matchedStructure
+      ? {
+          id: matchedStructure.id,
+          name: matchedStructure.name,
+          totalAmount: matchedStructure.amount,
+          currency: matchedStructure.currency || currency,
+          termName: matchedStructure.term?.name || 'Current Term',
+          sessionName: matchedStructure.academicYear?.name || 'Current Session',
+          items: Array.isArray(matchedStructure.items) ? matchedStructure.items : [],
+        }
+      : null;
+
     // Compute authentic attendance metrics
     const totalAttendance = student.attendance.length;
     const presentCount = student.attendance.filter(
@@ -885,6 +933,31 @@ export class StudentsService {
     const totalInvoiced = student.invoices.reduce((sum, inv) => sum + (inv.totalAmount || 0), 0);
     const totalPaid = student.invoices.reduce((sum, inv) => sum + (inv.paidAmount || 0), 0);
     const balanceDue = student.invoices.reduce((sum, inv) => sum + (inv.balanceAmount || 0), 0);
+
+    // Exam clearance calculation (Mid-term: 50%, Final: 100%)
+    const percentagePaid = totalInvoiced > 0 ? Number(((totalPaid / totalInvoiced) * 100).toFixed(1)) : 100;
+    const isMidTermCleared = percentagePaid >= 50;
+    const isFinalExamCleared = percentagePaid >= 100;
+    const isCleared = isFinalExamCleared || (totalInvoiced === 0 && balanceDue === 0);
+    const cleanAdmiss = (student.admissionNumber || student.id).replace(/[^a-zA-Z0-9]/g, '').slice(-6).toUpperCase();
+    const clearanceToken = `CLR-${cleanAdmiss}-${Math.abs(Math.round(totalPaid || 0)).toString(16).toUpperCase()}`;
+
+    const examClearance = {
+      isCleared,
+      isMidTermCleared,
+      isFinalExamCleared,
+      percentagePaid,
+      midTermThreshold: 50,
+      finalExamThreshold: 100,
+      clearanceToken,
+      status: isCleared ? 'CLEARED' : (isMidTermCleared ? 'MID_TERM_ONLY' : 'BLOCKED'),
+      remarks: isCleared
+        ? 'All fees fully settled. Candidate is fully cleared for all term examinations.'
+        : isMidTermCleared
+        ? 'Mid-Term payment threshold satisfied. Please settle balance before Final Examinations.'
+        : `Payment threshold not met (${percentagePaid}% paid). Examination hall permit is locked until fees are settled.`,
+      issuedAt: new Date().toISOString(),
+    };
 
     return {
       student: {
@@ -901,29 +974,69 @@ export class StudentsService {
         status: student.status,
       },
       enrollment: {
+        classId,
         className: student.enrollments?.[0]?.class?.name || 'Unassigned',
         academicYear: student.enrollments?.[0]?.academicYear?.name || 'Current Session',
+        campusId: student.campusId || null,
       },
       attendance: {
         totalDays: totalAttendance,
         presentDays: presentCount,
         percentage: attendancePercentage,
       },
+      feeSchedule,
+      examClearance,
       fees: {
         totalInvoiced,
         totalPaid,
         balanceDue,
         isSettled: balanceDue <= 0,
+        percentagePaid,
+        examClearance,
         invoicesCount: student.invoices.length,
-        invoices: student.invoices.map((inv) => ({
-          id: inv.id,
-          invoiceNumber: inv.invoiceNumber,
-          totalAmount: inv.totalAmount,
-          paidAmount: inv.paidAmount,
-          balanceAmount: inv.balanceAmount,
-          status: inv.status,
-          dueDate: inv.dueDate,
-        })),
+        invoices: student.invoices.map((inv) => {
+          const rawLineItems =
+            Array.isArray(inv.lineItems) && inv.lineItems.length > 0
+              ? inv.lineItems
+              : Array.isArray(inv.feeStructure?.items)
+              ? inv.feeStructure.items
+              : [{ name: inv.feeStructure?.name || 'Tuition & School Levies', amount: inv.totalAmount }];
+
+          const lineItems = rawLineItems.map((it: any) => ({
+            name: it.name || it.description || 'Fee Item',
+            code: it.code || 'ITEM',
+            category: it.category || 'TUITION',
+            amount: Number(it.amount || 0),
+            isOptional: Boolean(it.isOptional),
+          }));
+
+          const payments = (inv.payments || []).map((p: any) => ({
+            id: p.id,
+            reference: p.reference || p.id,
+            amount: Number(p.amount || 0),
+            paidAt: p.paidAt ? p.paidAt.toISOString().split('T')[0] : p.createdAt.toISOString().split('T')[0],
+            channel: p.provider || 'Online Gateway',
+            status: p.status,
+          }));
+
+          return {
+            id: inv.id,
+            invoiceNumber: inv.invoiceNumber,
+            totalAmount: inv.totalAmount,
+            paidAmount: inv.paidAmount,
+            balanceAmount: inv.balanceAmount,
+            subtotal: inv.subtotal || inv.totalAmount,
+            discountAmount: inv.discountAmount || 0,
+            waiverAmount: inv.waiverAmount || 0,
+            latePenaltyAmount: inv.latePenaltyAmount || 0,
+            currency: inv.currency || currency,
+            status: inv.status,
+            dueDate: inv.dueDate,
+            issuedAt: inv.createdAt,
+            lineItems,
+            payments,
+          };
+        }),
       },
     };
   }

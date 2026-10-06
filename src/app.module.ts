@@ -41,6 +41,7 @@ import { StudentsModule } from './modules/students/students.module.js';
 import { TeachersModule } from './modules/teachers/teachers.module.js';
 import { ParentsModule } from './modules/parents/parents.module.js';
 import { AttendanceModule } from './modules/attendance/attendance.module.js';
+import { StaffAttendanceModule } from './modules/staff-attendance/staff-attendance.module.js';
 import { TimetableModule } from './modules/timetable/timetable.module.js';
 import { HomeworkModule } from './modules/homework/homework.module.js';
 import { ExaminationsModule } from './modules/examinations/examinations.module.js';
@@ -99,6 +100,7 @@ import { WebsiteModule } from './modules/website/website.module.js';
     TeachersModule,
     ParentsModule,
     AttendanceModule,
+    StaffAttendanceModule,
     TimetableModule,
     HomeworkModule,
     ExaminationsModule,

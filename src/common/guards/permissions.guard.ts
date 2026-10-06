@@ -5,7 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { PERMISSIONS_KEY } from '../decorators/permissions.decorator.js';
+import { PERMISSIONS_KEY, REQUIRE_ANY_PERMISSION_KEY } from '../decorators/permissions.decorator.js';
 import { ErrorCodes } from '../constants/error-codes.js';
 
 @Injectable()
@@ -18,7 +18,15 @@ export class PermissionsGuard implements CanActivate {
       [context.getHandler(), context.getClass()],
     );
 
-    if (!requiredPermissions || requiredPermissions.length === 0) {
+    const requiredAnyPermissions = this.reflector.getAllAndOverride<string[]>(
+      REQUIRE_ANY_PERMISSION_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+
+    if (
+      (!requiredPermissions || requiredPermissions.length === 0) &&
+      (!requiredAnyPermissions || requiredAnyPermissions.length === 0)
+    ) {
       return true;
     }
 
@@ -38,8 +46,13 @@ export class PermissionsGuard implements CanActivate {
       return true;
     }
 
+    const allCheckedPermissions = [
+      ...(requiredPermissions || []),
+      ...(requiredAnyPermissions || []),
+    ];
+
     const isPlatformUser = user.scope === 'PLATFORM' || user.tenantId === null || user.tenantId === undefined;
-    const isPlatformPermission = requiredPermissions.some(
+    const isPlatformPermission = allCheckedPermissions.some(
       (perm) => perm.startsWith('platform.') || perm === 'impersonate.user',
     );
 
@@ -64,17 +77,31 @@ export class PermissionsGuard implements CanActivate {
     }
 
     const userPermissions: string[] = user.permissionIds || user.permissions || [];
-    const hasAll =
-      userPermissions.includes('*') ||
-      requiredPermissions.every((perm) => userPermissions.includes(perm));
+    if (userPermissions.includes('*')) {
+      return true;
+    }
 
-    if (!hasAll) {
-      throw new ForbiddenException({
-        code: ErrorCodes.FORBIDDEN,
-        message: 'You do not have the required permissions to perform this action.',
-      });
+    if (requiredPermissions && requiredPermissions.length > 0) {
+      const hasAll = requiredPermissions.every((perm) => userPermissions.includes(perm));
+      if (!hasAll) {
+        throw new ForbiddenException({
+          code: ErrorCodes.FORBIDDEN,
+          message: 'You do not have the required permissions to perform this action.',
+        });
+      }
+    }
+
+    if (requiredAnyPermissions && requiredAnyPermissions.length > 0) {
+      const hasAny = requiredAnyPermissions.some((perm) => userPermissions.includes(perm));
+      if (!hasAny) {
+        throw new ForbiddenException({
+          code: ErrorCodes.FORBIDDEN,
+          message: 'You do not have the required permissions to perform this action.',
+        });
+      }
     }
 
     return true;
   }
 }
+

@@ -1,13 +1,18 @@
 import { Controller, Get, Post, Patch, Delete, Body, Query, Param } from '@nestjs/common';
 import { AcademicsService } from './academics.service.js';
+import { StaffMasterDataService } from '../teachers/services/staff-master-data.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
-import { RequirePermissions } from '../../common/decorators/permissions.decorator.js';
+import { RequirePermissions, RequireAnyPermission } from '../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../common/constants/permissions.js';
 
 @Controller(['api/v1/academics', 'academics'])
 export class AcademicsController {
-  constructor(private readonly academicsService: AcademicsService) {}
+  constructor(
+    private readonly academicsService: AcademicsService,
+    private readonly staffMasterDataService: StaffMasterDataService,
+  ) {}
+
 
   // --- Academic Calendar & Timeline ---
   @Get('calendar')
@@ -252,5 +257,90 @@ export class AcademicsController {
   async initializeDefault(@CurrentTenant() tenant: TenantContext) {
     return this.academicsService.initializeDefaultAcademicSetup(tenant.tenantId);
   }
+
+  // --- Departments (Academic & Master Structure) ---
+  @Get('departments')
+  async listDepartments(@CurrentTenant() tenant: TenantContext) {
+    return this.staffMasterDataService.listDepartments(tenant.tenantId);
+  }
+
+  @Get('departments/:id')
+  async getDepartment(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.staffMasterDataService.getDepartmentById(tenant.tenantId, id);
+  }
+
+  @RequireAnyPermission(SystemPermissions.ACADEMICS_MANAGE, SystemPermissions.TEACHERS_MANAGE)
+  @Post('departments')
+  async createDepartment(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() body: { name: string; code?: string; description?: string; headStaffId?: string },
+  ) {
+    return this.staffMasterDataService.createDepartment(tenant.tenantId, body);
+  }
+
+  @RequireAnyPermission(SystemPermissions.ACADEMICS_MANAGE, SystemPermissions.TEACHERS_MANAGE)
+  @Patch('departments/:id')
+  async updateDepartment(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() body: { name?: string; code?: string; description?: string; headStaffId?: string | null },
+  ) {
+    return this.staffMasterDataService.updateDepartment(tenant.tenantId, id, body);
+  }
+
+  @RequireAnyPermission(SystemPermissions.ACADEMICS_MANAGE, SystemPermissions.TEACHERS_MANAGE)
+  @Delete('departments/:id')
+  async deleteDepartment(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.staffMasterDataService.deleteDepartment(tenant.tenantId, id);
+  }
+
+  // --- Designations & Roles (Academic & Master Structure) ---
+  @Get('designations')
+  async listDesignations(@CurrentTenant() tenant: TenantContext) {
+    return this.staffMasterDataService.listDesignations(tenant.tenantId);
+  }
+
+  @Get('designations/:id')
+  async getDesignation(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.staffMasterDataService.getDesignationById(tenant.tenantId, id);
+  }
+
+  @RequireAnyPermission(SystemPermissions.ACADEMICS_MANAGE, SystemPermissions.TEACHERS_MANAGE)
+  @Post('designations')
+  async createDesignation(
+    @CurrentTenant() tenant: TenantContext,
+    @Body() body: { name: string; code?: string; description?: string; level?: number },
+  ) {
+    return this.staffMasterDataService.createDesignation(tenant.tenantId, body);
+  }
+
+  @RequireAnyPermission(SystemPermissions.ACADEMICS_MANAGE, SystemPermissions.TEACHERS_MANAGE)
+  @Patch('designations/:id')
+  async updateDesignation(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() body: { name?: string; code?: string; description?: string; level?: number },
+  ) {
+    return this.staffMasterDataService.updateDesignation(tenant.tenantId, id, body);
+  }
+
+  @RequireAnyPermission(SystemPermissions.ACADEMICS_MANAGE, SystemPermissions.TEACHERS_MANAGE)
+  @Delete('designations/:id')
+  async deleteDesignation(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.staffMasterDataService.deleteDesignation(tenant.tenantId, id);
+  }
 }
+
 

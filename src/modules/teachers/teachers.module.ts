@@ -8,12 +8,13 @@ import { StaffMasterDataService } from './services/staff-master-data.service.js'
 
 @Module({
   controllers: [
-    TeachersController,
     DepartmentsController,
     DesignationsController,
     StaffRoomsController,
+    TeachersController,
   ],
   providers: [TeachersService, StaffMasterDataService],
   exports: [TeachersService, StaffMasterDataService],
 })
+
 export class TeachersModule {}

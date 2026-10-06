@@ -114,11 +114,49 @@ export class BulkInvoicingService {
       throw new NotFoundException(`Tenant '${tenantId}' not found`);
     }
 
+    // Resolve campusId
+    let campusId = dto.campusId;
+    if (campusId) {
+      const validCampus = await this.prisma.campus.findFirst({ where: { id: campusId, tenantId } });
+      if (!validCampus) campusId = undefined;
+    }
+    if (!campusId) {
+      const firstCampus = await this.prisma.campus.findFirst({ where: { tenantId } });
+      campusId = firstCampus?.id;
+    }
+
+    // Resolve academicYearId
+    let academicYearId = dto.academicYearId;
+    if (academicYearId) {
+      const validAY = await this.prisma.academicYear.findFirst({ where: { id: academicYearId, tenantId } });
+      if (!validAY) academicYearId = undefined;
+    }
+    if (!academicYearId) {
+      const currentAY = await this.prisma.academicYear.findFirst({ where: { tenantId, isCurrent: true } });
+      academicYearId = currentAY?.id || (await this.prisma.academicYear.findFirst({ where: { tenantId } }))?.id;
+    }
+
+    // Resolve termId
+    let termId = dto.termId;
+    if (termId) {
+      const validTerm = await this.prisma.term.findFirst({ where: { id: termId, tenantId } });
+      if (!validTerm) termId = undefined;
+    }
+    if (!termId && academicYearId) {
+      const firstTerm = await this.prisma.term.findFirst({ where: { tenantId, academicYearId } });
+      termId = firstTerm?.id;
+    }
+
+    // Resolve dueDate
+    const dueDate = dto.dueDate ? new Date(dto.dueDate) : new Date(Date.now() + 30 * 86400000);
+
     const studentWhere: any = {
       tenantId,
-      campusId: dto.campusId,
       status: 'ACTIVE',
     };
+    if (campusId) {
+      studentWhere.campusId = campusId;
+    }
     if (dto.classIds?.length) {
       studentWhere.enrollments = {
         some: {
@@ -131,6 +169,7 @@ export class BulkInvoicingService {
     const students = await this.prisma.student.findMany({
       where: studentWhere,
       include: {
+        campus: true,
         enrollments: {
           where: { status: 'ACTIVE' },
           include: { class: true },
@@ -150,21 +189,21 @@ export class BulkInvoicingService {
     const currentTotalInvoices = await this.prisma.invoice.count({ where: { tenantId } });
 
     for (const student of students) {
-      const existing = await this.findExistingInvoice(tenantId, student.id, dto.academicYearId, dto.termId);
+      const existing = await this.findExistingInvoice(tenantId, student.id, academicYearId || '', termId || '');
       if (existing) {
         invoicesSkipped++;
         continue;
       }
 
-      const feeStructure = await this.resolveFeeStructure(tenantId, dto, student);
+      const feeStructure = await this.resolveFeeStructure(tenantId, { ...dto, campusId, academicYearId }, student);
       const items = feeStructure?.items || [
-        { name: feeStructure?.name || 'Term Tuition & Levies', code: 'TUI', amount: feeStructure?.amount || 150000, category: 'TUITION', isOptional: false },
+        { name: feeStructure?.name || 'Term Tuition & Levies', code: 'TUI', amount: feeStructure?.amount || 100000, category: 'TUITION', isOptional: false },
       ];
 
       const baseFee = FeeCalculator.evaluate({
         items: items as any,
         currency,
-        dueDate: dto.dueDate || feeStructure?.dueDate,
+        dueDate: dueDate || feeStructure?.dueDate,
         lateFeePercentage: feeStructure?.lateFeePercentage,
         lateFeeGraceDays: feeStructure?.lateFeeGraceDays,
         earlyBirdDiscountPercentage: feeStructure?.earlyBirdDiscountPercentage,
@@ -192,7 +231,6 @@ export class BulkInvoicingService {
       const invoiceId = `inv_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
       const invoiceNumber = `INV-${new Date().getFullYear()}-${(currentTotalInvoices + createdInvoices.length + 1).toString().padStart(4, '0')}`;
       const classId = student.enrollments?.[0]?.classId || null;
-      const dueDate = new Date(dto.dueDate);
 
       const invoiceRecord: any = {
         id: invoiceId,
@@ -202,8 +240,8 @@ export class BulkInvoicingService {
         admissionNumber: student.admissionNumber,
         feeStructureId: feeStructure?.id || null,
         classId,
-        academicYearId: dto.academicYearId,
-        termId: dto.termId,
+        academicYearId: academicYearId || null,
+        termId: termId || null,
         invoiceNumber,
         subtotal: baseFee.subtotal,
         discountAmount: totalDiscounts,
@@ -248,9 +286,43 @@ export class BulkInvoicingService {
           },
         });
 
-        const storageKey = `tenants/${tenantId}/invoices/${dto.academicYearId}/${dto.termId}/${invoiceId}.html`;
-        const presigned = await this.storageProvider.generatePresignedDownload(storageKey, `${invoiceNumber}.html`);
-        invoiceRecord.downloadUrl = presigned.downloadUrl;
+        // Dispatch In-App Parent Alert
+        try {
+          const studentParents = await this.prisma.studentParent.findMany({
+            where: { studentId: student.id, student: { tenantId } },
+            include: { parent: { include: { user: true } } },
+          });
+
+          for (const sp of studentParents) {
+            const parentUserId = sp.parent?.userId || sp.parent?.user?.id;
+            if (parentUserId) {
+              await this.prisma.inAppInboxItem.create({
+                data: {
+                  id: `inb_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                  tenantId,
+                  recipientUserId: parentUserId,
+                  title: `New Fee Invoice: ${invoiceNumber}`,
+                  message: `A term fee invoice of ${currency} ${finalTotal.toLocaleString()} has been published for ${student.firstName} ${student.lastName}. Due date: ${dueDate.toLocaleDateString()}.`,
+                  category: 'ACADEMIC',
+                  severity: 'INFO',
+                  actionUrl: '/parent',
+                  actionLabel: 'View & Pay Invoice',
+                  isRead: false,
+                },
+              });
+            }
+          }
+        } catch (inboxErr) {
+          this.logger.warn(`Could not dispatch in-app inbox notice: ${inboxErr}`);
+        }
+
+        try {
+          const storageKey = `tenants/${tenantId}/invoices/${academicYearId || 'session'}/${termId || 'term'}/${invoiceId}.html`;
+          const presigned = await this.storageProvider.generatePresignedDownload(storageKey, `${invoiceNumber}.html`);
+          invoiceRecord.downloadUrl = presigned.downloadUrl;
+        } catch (e) {
+          // presigned download optional
+        }
 
         if (dto.notifyParents && this.queueService) {
           const parent = await this.getParentForStudent(student.id, studentParentMap, tenantId);
@@ -260,7 +332,7 @@ export class BulkInvoicingService {
               recipientEmail: parent?.email || 'parent@school.edu.ng',
               title: `New School Invoice ${invoiceNumber}`,
               message: `Invoice ${invoiceNumber} for ${student.firstName} is now available.`,
-              downloadUrl: presigned.downloadUrl,
+              downloadUrl: invoiceRecord.downloadUrl,
             },
           });
         }
@@ -272,9 +344,9 @@ export class BulkInvoicingService {
     return {
       jobId: `job_bulk_inv_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
       tenantId,
-      campusId: dto.campusId,
-      academicYearId: dto.academicYearId,
-      termId: dto.termId,
+      campusId,
+      academicYearId,
+      termId,
       totalStudents: students.length,
       invoicesCreated: createdInvoices.length,
       invoicesSkipped,
@@ -340,17 +412,42 @@ export class BulkInvoicingService {
     }
 
     const studentClassId = student.enrollments?.[0]?.classId;
-    return this.prisma.feeStructure.findFirst({
+    const gradeLevel = student.enrollments?.[0]?.class?.gradeLevel;
+
+    // Try finding exact class match first
+    if (studentClassId) {
+      const exactClassStructure = await this.prisma.feeStructure.findFirst({
+        where: {
+          tenantId,
+          classId: studentClassId,
+          status: 'ACTIVE',
+        },
+      });
+      if (exactClassStructure) return exactClassStructure;
+    }
+
+    // Try finding grade level match
+    if (gradeLevel) {
+      const gradeStructure = await this.prisma.feeStructure.findFirst({
+        where: {
+          tenantId,
+          applicableGradeLevel: gradeLevel,
+          status: 'ACTIVE',
+        },
+      });
+      if (gradeStructure) return gradeStructure;
+    }
+
+    // Try finding general school structure
+    const generalStructure = await this.prisma.feeStructure.findFirst({
       where: {
         tenantId,
-        campusId: dto.campusId,
-        academicYearId: dto.academicYearId,
-        OR: [
-          { classId: studentClassId },
-          { classId: null },
-        ],
+        status: 'ACTIVE',
       },
+      orderBy: { createdAt: 'desc' },
     });
+
+    return generalStructure;
   }
 
   private calculateSiblingDiscountForStudent(

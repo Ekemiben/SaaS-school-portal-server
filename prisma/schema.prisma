@@ -216,6 +216,11 @@ model Tenant {
   communicationCampaigns       CommunicationCampaign[]
   communicationRecipientLogs   CommunicationRecipientLog[]
   inAppInboxItems              InAppInboxItem[]
+  staffAttendanceRecords       StaffAttendanceRecord[]
+  staffAttendanceLocations     StaffAttendanceLocation[]
+  staffAttendanceDevices       StaffAttendanceDevice[]
+  staffAttendanceConfig        StaffAttendanceConfig?
+  staffAttendanceCorrections   StaffAttendanceCorrection[]
 
   @@index([slug])
   @@index([status])
@@ -303,6 +308,9 @@ model Campus {
   purchaseOrders              PurchaseOrder[]
   staffRooms                  StaffRoom[]
   examinationHalls            ExaminationHall[]
+  staffAttendanceLocations    StaffAttendanceLocation[]
+  staffAttendanceDevices      StaffAttendanceDevice[]
+  staffAttendanceRecords      StaffAttendanceRecord[]
 
   @@unique([tenantId, code])
   @@index([tenantId])
@@ -330,8 +338,10 @@ model User {
   staffProfile   Staff?
   parentProfile  Parent?
   mfaSecret      MfaSecret?
-  resetTokens    PasswordResetToken[]
-  inboxItems     InAppInboxItem[]
+  resetTokens               PasswordResetToken[]
+  inboxItems                InAppInboxItem[]
+  requestedStaffCorrections StaffAttendanceCorrection[] @relation("StaffCorrectionRequester")
+  reviewedStaffCorrections  StaffAttendanceCorrection[] @relation("StaffCorrectionReviewer")
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -527,8 +537,10 @@ model Staff {
   staffRoom                      StaffRoom?      @relation("StaffRoomStaff", fields: [staffRoomId], references: [id], onDelete: SetNull)
   headedDepartments              Department[]    @relation("StaffDepartmentHead")
   teacherProfile                 TeacherProfile?
-  chiefInvigilationSchedules     ExamSchedule[]  @relation("StaffChiefInvigilator")
-  assistantInvigilationSchedules ExamSchedule[]  @relation("StaffAssistantInvigilator")
+  chiefInvigilationSchedules     ExamSchedule[]            @relation("StaffChiefInvigilator")
+  assistantInvigilationSchedules ExamSchedule[]            @relation("StaffAssistantInvigilator")
+  attendanceRecords              StaffAttendanceRecord[]
+  lockedDevices                  StaffAttendanceDevice[]
 
   @@unique([tenantId, employeeNumber])
   @@index([tenantId])
@@ -3560,5 +3572,207 @@ model PublicAdmissionInquiry {
 
   @@index([tenantId])
   @@index([tenantId, status])
+}
+
+// ==========================================
+// STAFF CLOCKING & ATTENDANCE MODULE MODELS
+// ==========================================
+
+enum StaffAttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  HALF_DAY
+  EARLY_DEPARTURE
+  ON_LEAVE
+  EXCUSED
+}
+
+enum StaffClockInStatus {
+  ON_TIME
+  LATE
+  GRACE_PERIOD
+  EXEMPT
+}
+
+enum StaffClockOutStatus {
+  NORMAL
+  EARLY_DEPARTURE
+  OVERTIME
+}
+
+enum StaffAttendanceDeviceType {
+  KIOSK
+  PERSONAL_MOBILE
+  ADMIN_CONSOLE
+}
+
+enum StaffAttendanceDeviceStatus {
+  ACTIVE
+  PENDING_APPROVAL
+  REVOKED
+}
+
+enum StaffCorrectionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model StaffAttendanceLocation {
+  id           String   @id @default(uuid())
+  tenantId     String
+  campusId     String?
+  name         String
+  code         String?
+  latitude     Float
+  longitude    Float
+  radiusMeters Int      @default(100)
+  isActive     Boolean  @default(true)
+  isDefault    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant              Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campus              Campus?                 @relation(fields: [campusId], references: [id], onDelete: SetNull)
+  devices             StaffAttendanceDevice[]
+  clockInRecords      StaffAttendanceRecord[] @relation("ClockInLocation")
+  clockOutRecords     StaffAttendanceRecord[] @relation("ClockOutLocation")
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([tenantId, campusId])
+  @@index([tenantId, isActive])
+}
+
+model StaffAttendanceDevice {
+  id                String                      @id @default(uuid())
+  tenantId          String
+  campusId          String?
+  locationId        String?
+  deviceFingerprint String
+  deviceName        String
+  deviceType        StaffAttendanceDeviceType   @default(PERSONAL_MOBILE)
+  status            StaffAttendanceDeviceStatus @default(ACTIVE)
+  kioskTokenHash    String?
+  lockedStaffId     String?
+  lockedUntil       DateTime?
+  lastSeenAt        DateTime?
+  lastIpAddress     String?
+  userAgent         String?
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+
+  tenant          Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campus          Campus?                  @relation(fields: [campusId], references: [id], onDelete: SetNull)
+  location        StaffAttendanceLocation? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  lockedStaff     Staff?                   @relation(fields: [lockedStaffId], references: [id], onDelete: SetNull)
+  clockInRecords  StaffAttendanceRecord[]  @relation("ClockInDevice")
+  clockOutRecords StaffAttendanceRecord[]  @relation("ClockOutDevice")
+
+  @@unique([tenantId, deviceFingerprint])
+  @@index([tenantId])
+  @@index([tenantId, campusId])
+  @@index([tenantId, status])
+  @@index([tenantId, lockedStaffId])
+}
+
+model StaffAttendanceConfig {
+  id                          String   @id @default(uuid())
+  tenantId                    String   @unique
+  expectedClockInTime         String   @default("08:00")
+  lateThresholdTime           String   @default("08:30")
+  halfDayThresholdTime        String   @default("12:00")
+  expectedClockOutTime        String   @default("16:00")
+  gracePeriodMinutes          Int      @default(15)
+  requireGps                  Boolean  @default(true)
+  requireDeviceApproval       Boolean  @default(false)
+  personalDeviceLockHours     Int      @default(12)
+  maxAllowedGpsAccuracyMeters Int      @default(100)
+  autoClockOutTime            String?  @default("23:59")
+  allowKioskMode              Boolean  @default(true)
+  allowMobileSelfClock        Boolean  @default(true)
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+model StaffAttendanceRecord {
+  id                     String                @id @default(uuid())
+  tenantId               String
+  campusId               String?
+  staffId                String
+  date                   String
+  clockInTime            DateTime?
+  clockOutTime           DateTime?
+  clockInLocationId      String?
+  clockOutLocationId     String?
+  clockInDeviceId        String?
+  clockOutDeviceId       String?
+  clockInLatitude        Float?
+  clockInLongitude       Float?
+  clockInAccuracy        Float?
+  clockOutLatitude       Float?
+  clockOutLongitude      Float?
+  clockOutAccuracy       Float?
+  clockInDistanceMeters  Float?
+  clockOutDistanceMeters Float?
+  status                 StaffAttendanceStatus @default(PRESENT)
+  clockInStatus          StaffClockInStatus    @default(ON_TIME)
+  clockOutStatus         StaffClockOutStatus?
+  isManualEntry          Boolean               @default(false)
+  notes                  String?               @db.Text
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+
+  tenant           Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campus           Campus?                     @relation(fields: [campusId], references: [id], onDelete: SetNull)
+  staff            Staff                       @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  clockInLocation  StaffAttendanceLocation?    @relation("ClockInLocation", fields: [clockInLocationId], references: [id], onDelete: SetNull)
+  clockOutLocation StaffAttendanceLocation?    @relation("ClockOutLocation", fields: [clockOutLocationId], references: [id], onDelete: SetNull)
+  clockInDevice    StaffAttendanceDevice?      @relation("ClockInDevice", fields: [clockInDeviceId], references: [id], onDelete: SetNull)
+  clockOutDevice   StaffAttendanceDevice?      @relation("ClockOutDevice", fields: [clockOutDeviceId], references: [id], onDelete: SetNull)
+  corrections      StaffAttendanceCorrection[]
+
+  @@unique([tenantId, staffId, date])
+  @@index([tenantId])
+  @@index([tenantId, date])
+  @@index([tenantId, campusId, date])
+  @@index([tenantId, staffId])
+  @@index([tenantId, status])
+}
+
+model StaffAttendanceCorrection {
+  id                String                @id @default(uuid())
+  tenantId          String
+  recordId          String
+  requestedById     String
+  reviewedById      String?
+  status            StaffCorrectionStatus @default(PENDING)
+  originalClockIn   DateTime?
+  originalClockOut  DateTime?
+  correctedClockIn  DateTime?
+  correctedClockOut DateTime?
+  originalStatus    StaffAttendanceStatus
+  correctedStatus   StaffAttendanceStatus
+  reason            String                @db.Text
+  reviewNotes       String?               @db.Text
+  reviewedAt        DateTime?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  tenant      Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  record      StaffAttendanceRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  requestedBy User                  @relation("StaffCorrectionRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+  reviewedBy  User?                 @relation("StaffCorrectionReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([tenantId, recordId])
+  @@index([tenantId, status])
+  @@index([requestedById])
+  @@index([reviewedById])
 }
 

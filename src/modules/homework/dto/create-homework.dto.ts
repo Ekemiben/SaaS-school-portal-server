@@ -51,6 +51,12 @@ export class CreateHomeworkDto {
   maxMarks: number = 100;
 
   @IsNumber()
+  @Min(1)
+  @Max(1000)
+  @IsOptional()
+  maxScore?: number;
+
+  @IsNumber()
   @Min(0)
   @Max(1000)
   @IsOptional()

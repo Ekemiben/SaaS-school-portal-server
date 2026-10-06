@@ -2,20 +2,18 @@ import { Controller, Get, Post, Patch, Delete, Body, Param } from '@nestjs/commo
 import { StaffMasterDataService } from '../services/staff-master-data.service.js';
 import { CurrentTenant } from '../../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../../common/types/tenant-context.interface.js';
-import { RequirePermissions } from '../../../common/decorators/permissions.decorator.js';
+import { RequireAnyPermission } from '../../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../../common/constants/permissions.js';
 
 @Controller(['api/v1/teachers/designations', 'api/v1/academics/designations', 'teachers/designations', 'academics/designations'])
 export class DesignationsController {
   constructor(private readonly masterDataService: StaffMasterDataService) {}
 
-  @RequirePermissions(SystemPermissions.TEACHERS_VIEW)
   @Get()
   async listDesignations(@CurrentTenant() tenant: TenantContext) {
     return this.masterDataService.listDesignations(tenant.tenantId);
   }
 
-  @RequirePermissions(SystemPermissions.TEACHERS_VIEW)
   @Get(':id')
   async getDesignation(
     @CurrentTenant() tenant: TenantContext,
@@ -24,7 +22,7 @@ export class DesignationsController {
     return this.masterDataService.getDesignationById(tenant.tenantId, id);
   }
 
-  @RequirePermissions(SystemPermissions.TEACHERS_MANAGE)
+  @RequireAnyPermission(SystemPermissions.TEACHERS_MANAGE, SystemPermissions.ACADEMICS_MANAGE)
   @Post()
   async createDesignation(
     @CurrentTenant() tenant: TenantContext,
@@ -33,7 +31,7 @@ export class DesignationsController {
     return this.masterDataService.createDesignation(tenant.tenantId, body);
   }
 
-  @RequirePermissions(SystemPermissions.TEACHERS_MANAGE)
+  @RequireAnyPermission(SystemPermissions.TEACHERS_MANAGE, SystemPermissions.ACADEMICS_MANAGE)
   @Patch(':id')
   async updateDesignation(
     @CurrentTenant() tenant: TenantContext,
@@ -43,7 +41,7 @@ export class DesignationsController {
     return this.masterDataService.updateDesignation(tenant.tenantId, id, body);
   }
 
-  @RequirePermissions(SystemPermissions.TEACHERS_MANAGE)
+  @RequireAnyPermission(SystemPermissions.TEACHERS_MANAGE, SystemPermissions.ACADEMICS_MANAGE)
   @Delete(':id')
   async deleteDesignation(
     @CurrentTenant() tenant: TenantContext,
@@ -52,3 +50,4 @@ export class DesignationsController {
     return this.masterDataService.deleteDesignation(tenant.tenantId, id);
   }
 }
+

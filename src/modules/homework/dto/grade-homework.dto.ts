@@ -11,7 +11,13 @@ import {
 export class GradeHomeworkDto {
   @IsNumber()
   @Min(0)
-  score!: number;
+  @IsOptional()
+  score?: number;
+
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  marksObtained?: number;
 
   @IsString()
   @IsOptional()

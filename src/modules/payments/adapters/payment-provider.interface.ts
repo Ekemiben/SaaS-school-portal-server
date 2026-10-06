@@ -4,6 +4,8 @@ export interface InitializePaymentParams {
   customerEmail: string;
   reference: string;
   callbackUrl?: string;
+  secretKey?: string;
+  publicKey?: string;
   metadata?: Record<string, any>;
 }
 
@@ -29,6 +31,6 @@ export interface VerifyPaymentResult {
 export interface PaymentProviderAdapter {
   readonly name: string;
   initializePayment(params: InitializePaymentParams): Promise<InitializePaymentResult>;
-  verifyPayment(reference: string): Promise<VerifyPaymentResult>;
+  verifyPayment(reference: string, customSecretKey?: string): Promise<VerifyPaymentResult>;
   verifyWebhookSignature(signature: string, rawBody: string | Buffer): boolean;
 }

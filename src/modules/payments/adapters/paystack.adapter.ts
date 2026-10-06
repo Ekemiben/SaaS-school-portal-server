@@ -46,13 +46,19 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
 
   async initializePayment(params: InitializePaymentParams): Promise<InitializePaymentResult> {
     const amountInKobo = Math.round(params.amount * 100);
+    const activeKey = params.secretKey || this.secretKey;
+    const isRealKey = Boolean(
+      activeKey &&
+      !activeKey.includes('mock') &&
+      (activeKey.startsWith('sk_live_') || activeKey.startsWith('sk_test_'))
+    );
 
-    if (this.isConfiguredRealKey) {
+    if (isRealKey) {
       try {
         const response = await fetch('https://api.paystack.co/transaction/initialize', {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${this.secretKey}`,
+            Authorization: `Bearer ${activeKey}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -90,13 +96,20 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
     };
   }
 
-  async verifyPayment(reference: string): Promise<VerifyPaymentResult> {
-    if (this.isConfiguredRealKey) {
+  async verifyPayment(reference: string, customSecretKey?: string): Promise<VerifyPaymentResult> {
+    const activeKey = customSecretKey || this.secretKey;
+    const isRealKey = Boolean(
+      activeKey &&
+      !activeKey.includes('mock') &&
+      (activeKey.startsWith('sk_live_') || activeKey.startsWith('sk_test_'))
+    );
+
+    if (isRealKey) {
       try {
         const response = await fetch(`https://api.paystack.co/transaction/verify/${reference}`, {
           method: 'GET',
           headers: {
-            Authorization: `Bearer ${this.secretKey}`,
+            Authorization: `Bearer ${activeKey}`,
           },
         });
 

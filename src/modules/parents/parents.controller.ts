@@ -69,6 +69,15 @@ export class ParentsController {
     return this.parentsService.getWardHomework(tenant.tenantId, user?.id || user?.sub, studentId);
   }
 
+  @Get('portal/wards/:studentId/study-materials')
+  async getWardStudyMaterials(
+    @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
+    @Param('studentId') studentId: string,
+  ) {
+    return this.parentsService.getWardStudyMaterials(tenant.tenantId, user?.id || user?.sub, studentId);
+  }
+
   @Get('portal/wards/:studentId/medical')
   async getWardMedical(
     @CurrentTenant() tenant: TenantContext,
