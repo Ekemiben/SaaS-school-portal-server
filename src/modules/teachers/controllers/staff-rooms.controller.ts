@@ -2,14 +2,13 @@ import { Controller, Get, Post, Patch, Delete, Body, Param, Query } from '@nestj
 import { StaffMasterDataService } from '../services/staff-master-data.service.js';
 import { CurrentTenant } from '../../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../../common/types/tenant-context.interface.js';
-import { RequirePermissions } from '../../../common/decorators/permissions.decorator.js';
+import { RequireAnyPermission } from '../../../common/decorators/permissions.decorator.js';
 import { SystemPermissions } from '../../../common/constants/permissions.js';
 
 @Controller(['api/v1/teachers/staff-rooms', 'api/v1/academics/staff-rooms', 'teachers/staff-rooms', 'academics/staff-rooms'])
 export class StaffRoomsController {
   constructor(private readonly masterDataService: StaffMasterDataService) {}
 
-  @RequirePermissions(SystemPermissions.TEACHERS_VIEW)
   @Get()
   async listStaffRooms(
     @CurrentTenant() tenant: TenantContext,
@@ -18,7 +17,6 @@ export class StaffRoomsController {
     return this.masterDataService.listStaffRooms(tenant.tenantId, campusId);
   }
 
-  @RequirePermissions(SystemPermissions.TEACHERS_VIEW)
   @Get(':id')
   async getStaffRoom(
     @CurrentTenant() tenant: TenantContext,
@@ -27,7 +25,7 @@ export class StaffRoomsController {
     return this.masterDataService.getStaffRoomById(tenant.tenantId, id);
   }
 
-  @RequirePermissions(SystemPermissions.TEACHERS_MANAGE)
+  @RequireAnyPermission(SystemPermissions.TEACHERS_MANAGE, SystemPermissions.ACADEMICS_MANAGE)
   @Post()
   async createStaffRoom(
     @CurrentTenant() tenant: TenantContext,
@@ -36,7 +34,7 @@ export class StaffRoomsController {
     return this.masterDataService.createStaffRoom(tenant.tenantId, body);
   }
 
-  @RequirePermissions(SystemPermissions.TEACHERS_MANAGE)
+  @RequireAnyPermission(SystemPermissions.TEACHERS_MANAGE, SystemPermissions.ACADEMICS_MANAGE)
   @Patch(':id')
   async updateStaffRoom(
     @CurrentTenant() tenant: TenantContext,
@@ -46,7 +44,7 @@ export class StaffRoomsController {
     return this.masterDataService.updateStaffRoom(tenant.tenantId, id, body);
   }
 
-  @RequirePermissions(SystemPermissions.TEACHERS_MANAGE)
+  @RequireAnyPermission(SystemPermissions.TEACHERS_MANAGE, SystemPermissions.ACADEMICS_MANAGE)
   @Delete(':id')
   async deleteStaffRoom(
     @CurrentTenant() tenant: TenantContext,
@@ -55,3 +53,4 @@ export class StaffRoomsController {
     return this.masterDataService.deleteStaffRoom(tenant.tenantId, id);
   }
 }
+

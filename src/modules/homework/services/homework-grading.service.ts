@@ -44,19 +44,21 @@ export class HomeworkGradingService {
     }
 
     const maxMarks = homework.maxMarks || 100;
-    if (dto.score < 0 || dto.score > maxMarks) {
+    const finalScore = dto.score ?? (dto as any).marksObtained ?? 0;
+    if (finalScore < 0 || finalScore > maxMarks) {
       throw new BadRequestException({
         errorCode: ErrorCodes.VALIDATION_FAILED,
         message: `Score must be between 0 and ${maxMarks}`,
       });
     }
 
-    const calculatedGrade = dto.grade || this.deriveLetterGrade(dto.score, maxMarks);
+    const calculatedGrade = dto.grade || this.deriveLetterGrade(finalScore, maxMarks);
 
     const updated = await this.prisma.homeworkSubmission.update({
       where: { id: submissionId },
       data: {
-        score: dto.score,
+        score: finalScore,
+        marksObtained: finalScore,
         grade: calculatedGrade,
         feedback: dto.feedback || null,
         rubricScores: (dto.rubricScores as any) || null,

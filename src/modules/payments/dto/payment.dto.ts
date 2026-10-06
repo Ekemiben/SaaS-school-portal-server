@@ -92,6 +92,30 @@ export class TenantPaymentConfigDto {
 
   @IsOptional()
   @IsString()
+  environment?: 'LIVE' | 'TEST';
+
+  @IsOptional()
+  @IsString()
+  paystackPublicKey?: string;
+
+  @IsOptional()
+  @IsString()
+  paystackSecretKey?: string;
+
+  @IsOptional()
+  @IsString()
+  flutterwavePublicKey?: string;
+
+  @IsOptional()
+  @IsString()
+  flutterwaveSecretKey?: string;
+
+  @IsOptional()
+  @IsString()
+  webhookSecret?: string;
+
+  @IsOptional()
+  @IsString()
   subaccountCode?: string;
 
   @IsOptional()
@@ -115,6 +139,10 @@ export class TenantPaymentConfigDto {
   @IsOptional()
   @IsBoolean()
   enableBankTransfer?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  autoReconcile?: boolean;
 
   @IsOptional()
   @IsString()

@@ -63,47 +63,98 @@ export class FeesService {
   }
 
   async createFeeStructure(tenantId: string, dto: CreateFeeStructureDto) {
-    const items = dto.items || [];
+    const rawItems = dto.items || [];
+    const items = rawItems.map((it, index) => {
+      const name = (it.name || `Fee Item ${index + 1}`).trim();
+      const code = (it.code || name.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()).substring(0, 15);
+      const amount = Math.max(0, Number(it.amount) || 0);
+      const isOptional = Boolean(it.isOptional);
+      const category = it.category || 'OTHER';
+      return {
+        name,
+        code,
+        amount,
+        isOptional,
+        category,
+        description: it.description || undefined,
+      };
+    });
+
     const calculatedMandatoryAmount = items
       .filter((it) => !it.isOptional)
       .reduce((sum, it) => sum + (Number(it.amount) || 0), 0);
 
     const totalAmount = dto.amount !== undefined ? Number(dto.amount) : calculatedMandatoryAmount;
 
-    // Resolve campusId and academicYearId if not provided
+    // Resolve campusId and academicYearId if not provided or invalid
     let campusId = dto.campusId;
-    if (!campusId) {
-      const firstCampus = await this.prisma.campus.findFirst({ where: { tenantId } });
-      if (firstCampus) campusId = firstCampus.id;
+    if (campusId) {
+      const validCampus = await this.prisma.campus.findFirst({ where: { id: campusId, tenantId } });
+      if (!validCampus) campusId = undefined;
     }
     if (!campusId) {
-      const createdCampus = await this.prisma.campus.create({
-        data: {
-          tenantId,
-          name: 'Main Campus',
-          code: 'MAIN',
-          isMain: true,
-        },
-      });
-      campusId = createdCampus.id;
+      const firstCampus = await this.prisma.campus.findFirst({ where: { tenantId } });
+      if (firstCampus) {
+        campusId = firstCampus.id;
+      } else {
+        const createdCampus = await this.prisma.campus.create({
+          data: {
+            tenantId,
+            name: 'Main Campus',
+            code: 'MAIN',
+            isMain: true,
+          },
+        });
+        campusId = createdCampus.id;
+      }
     }
 
     let academicYearId = dto.academicYearId;
+    if (academicYearId) {
+      const validAY = await this.prisma.academicYear.findFirst({ where: { id: academicYearId, tenantId } });
+      if (!validAY) academicYearId = undefined;
+    }
     if (!academicYearId) {
-      const firstAY = await this.prisma.academicYear.findFirst({ where: { tenantId } });
-      if (firstAY) {
-        academicYearId = firstAY.id;
+      const currentAY = await this.prisma.academicYear.findFirst({ where: { tenantId, isCurrent: true } });
+      if (currentAY) {
+        academicYearId = currentAY.id;
       } else {
-        const createdAY = await this.prisma.academicYear.create({
-          data: {
-            tenantId,
-            name: '2026/2027 Academic Session',
-            startDate: new Date(),
-            endDate: new Date(Date.now() + 365 * 86400000),
-            isCurrent: true,
-          },
-        });
-        academicYearId = createdAY.id;
+        const firstAY = await this.prisma.academicYear.findFirst({ where: { tenantId } });
+        if (firstAY) {
+          academicYearId = firstAY.id;
+        } else {
+          const createdAY = await this.prisma.academicYear.create({
+            data: {
+              tenantId,
+              name: '2026/2027 Academic Session',
+              startDate: new Date(),
+              endDate: new Date(Date.now() + 365 * 86400000),
+              isCurrent: true,
+            },
+          });
+          academicYearId = createdAY.id;
+        }
+      }
+    }
+
+    let termId = dto.termId || null;
+    if (termId) {
+      const validTerm = await this.prisma.term.findFirst({ where: { id: termId, tenantId } });
+      if (!validTerm) termId = null;
+    }
+
+    let classId = dto.classId || null;
+    let applicableGradeLevel = dto.applicableGradeLevel || null;
+    let className: string | null = null;
+    if (classId) {
+      const validClass = await this.prisma.class.findFirst({ where: { id: classId, tenantId } });
+      if (validClass) {
+        className = validClass.name;
+        if (!applicableGradeLevel) {
+          applicableGradeLevel = validClass.gradeLevel;
+        }
+      } else {
+        classId = null;
       }
     }
 
@@ -115,10 +166,10 @@ export class FeesService {
         tenantId,
         campusId,
         academicYearId,
-        termId: dto.termId || null,
-        classId: dto.classId || null,
+        termId,
+        classId,
         name: dto.name,
-        code: dto.code || dto.name.toUpperCase().replace(/\s+/g, '_'),
+        code: dto.code || dto.name.toUpperCase().replace(/[^A-Z0-9]/g, '_').substring(0, 20),
         description: dto.description || null,
         amount: totalAmount,
         currency: dto.currency || 'NGN',
@@ -130,12 +181,22 @@ export class FeesService {
         earlyBirdCutoffDate: dto.earlyBirdCutoffDate ? new Date(dto.earlyBirdCutoffDate) : null,
         status: 'ACTIVE',
         dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
-        applicableGradeLevel: dto.applicableGradeLevel || null,
+        applicableGradeLevel,
+      },
+      include: {
+        class: true,
+        term: true,
+        academicYear: true,
+        campus: true,
       },
     });
 
     return {
       ...created,
+      className: created.class?.name || created.applicableGradeLevel || className || 'All Classes',
+      termName: created.term?.name || null,
+      sessionName: created.academicYear?.name || null,
+      campusName: created.campus?.name || null,
       items: Array.isArray(created.items) ? created.items : items,
     };
   }
@@ -147,8 +208,42 @@ export class FeesService {
     if (dto.name) updateData.name = dto.name;
     if (dto.code) updateData.code = dto.code;
     if (dto.description !== undefined) updateData.description = dto.description;
-    if (dto.termId !== undefined) updateData.termId = dto.termId;
-    if (dto.classId !== undefined) updateData.classId = dto.classId;
+    
+    if (dto.campusId !== undefined) {
+      if (dto.campusId) {
+        const validCampus = await this.prisma.campus.findFirst({ where: { id: dto.campusId, tenantId } });
+        if (validCampus) updateData.campusId = dto.campusId;
+      }
+    }
+
+    if (dto.academicYearId !== undefined) {
+      if (dto.academicYearId) {
+        const validAY = await this.prisma.academicYear.findFirst({ where: { id: dto.academicYearId, tenantId } });
+        if (validAY) updateData.academicYearId = dto.academicYearId;
+      }
+    }
+
+    if (dto.termId !== undefined) {
+      if (dto.termId) {
+        const validTerm = await this.prisma.term.findFirst({ where: { id: dto.termId, tenantId } });
+        updateData.termId = validTerm ? dto.termId : null;
+      } else {
+        updateData.termId = null;
+      }
+    }
+
+    if (dto.classId !== undefined) {
+      if (dto.classId) {
+        const validClass = await this.prisma.class.findFirst({ where: { id: dto.classId, tenantId } });
+        updateData.classId = validClass ? dto.classId : null;
+        if (validClass && !dto.applicableGradeLevel) {
+          updateData.applicableGradeLevel = validClass.gradeLevel;
+        }
+      } else {
+        updateData.classId = null;
+      }
+    }
+
     if (dto.applicableGradeLevel !== undefined) updateData.applicableGradeLevel = dto.applicableGradeLevel;
     if (dto.targetAudience !== undefined) updateData.targetAudience = dto.targetAudience;
     if (dto.currency !== undefined) updateData.currency = dto.currency;
@@ -160,20 +255,40 @@ export class FeesService {
       updateData.earlyBirdCutoffDate = dto.earlyBirdCutoffDate ? new Date(dto.earlyBirdCutoffDate) : null;
     }
     if (dto.items) {
-      updateData.items = dto.items;
-      updateData.amount = dto.items
+      const normalizedItems = dto.items.map((it, index) => ({
+        name: (it.name || `Fee Item ${index + 1}`).trim(),
+        code: (it.code || it.name?.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase() || `ITEM_${index + 1}`).substring(0, 15),
+        amount: Math.max(0, Number(it.amount) || 0),
+        isOptional: Boolean(it.isOptional),
+        category: it.category || 'OTHER',
+        description: it.description || undefined,
+      }));
+      updateData.items = normalizedItems;
+      updateData.amount = normalizedItems
         .filter((it) => !it.isOptional)
         .reduce((sum, it) => sum + (Number(it.amount) || 0), 0);
+    } else if (dto.amount !== undefined) {
+      updateData.amount = Number(dto.amount);
     }
     updateData.updatedAt = new Date();
 
     const updated = await this.prisma.feeStructure.update({
       where: { id },
       data: updateData,
+      include: {
+        class: true,
+        term: true,
+        academicYear: true,
+        campus: true,
+      },
     });
 
     return {
       ...updated,
+      className: updated.class?.name || updated.applicableGradeLevel || 'All Classes',
+      termName: updated.term?.name || null,
+      sessionName: updated.academicYear?.name || null,
+      campusName: updated.campus?.name || null,
       items: Array.isArray(updated.items) ? updated.items : dto.items || [],
     };
   }

@@ -20,17 +20,33 @@ export class StaffMasterDataService {
   // ==========================================
 
   async listDepartments(tenantId: string) {
-    return this.prisma.department.findMany({
+    const departments = await this.prisma.department.findMany({
       where: { tenantId },
       include: {
         headStaff: {
           select: { id: true, firstName: true, lastName: true, employeeNumber: true, email: true },
         },
-        _count: { select: { staff: true } },
+        _count: { select: { staff: true, legacyTeachers: true } },
       },
       orderBy: { name: 'asc' },
     });
+
+    return Promise.all(
+      departments.map(async (dept) => {
+        if (!dept.headStaff && dept.headStaffId) {
+          const teacherHead = await this.prisma.teacher.findFirst({
+            where: { id: dept.headStaffId, tenantId },
+            select: { id: true, firstName: true, lastName: true, employeeNumber: true, email: true },
+          });
+          if (teacherHead) {
+            return { ...dept, headStaff: teacherHead };
+          }
+        }
+        return dept;
+      }),
+    );
   }
+
 
   async getDepartmentById(tenantId: string, id: string) {
     const dept = await this.prisma.department.findFirst({
@@ -171,7 +187,7 @@ export class StaffMasterDataService {
   async listDesignations(tenantId: string) {
     return this.prisma.designation.findMany({
       where: { tenantId },
-      include: { _count: { select: { staff: true } } },
+      include: { _count: { select: { staff: true, legacyTeachers: true } } },
       orderBy: [{ level: 'asc' }, { name: 'asc' }],
     });
   }
@@ -289,11 +305,12 @@ export class StaffMasterDataService {
       },
       include: {
         campus: { select: { id: true, name: true, code: true } },
-        _count: { select: { staff: true } },
+        _count: { select: { staff: true, legacyTeachers: true } },
       },
       orderBy: { name: 'asc' },
     });
   }
+
 
   async getStaffRoomById(tenantId: string, id: string) {
     const room = await this.prisma.staffRoom.findFirst({

@@ -32,14 +32,19 @@ export class FlutterwavePaymentAdapter implements PaymentProviderAdapter {
   }
 
   async initializePayment(params: InitializePaymentParams): Promise<InitializePaymentResult> {
-    const isProd = process.env.NODE_ENV === 'production' && !this.secretKey.includes('mock');
+    const activeKey = params.secretKey || this.secretKey;
+    const isRealKey = Boolean(
+      activeKey &&
+      !activeKey.includes('mock') &&
+      activeKey.startsWith('FLWSECK')
+    );
 
-    if (isProd) {
+    if (isRealKey) {
       try {
         const response = await fetch('https://api.flutterwave.com/v3/payments', {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${this.secretKey}`,
+            Authorization: `Bearer ${activeKey}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -78,15 +83,20 @@ export class FlutterwavePaymentAdapter implements PaymentProviderAdapter {
     };
   }
 
-  async verifyPayment(reference: string): Promise<VerifyPaymentResult> {
-    const isProd = process.env.NODE_ENV === 'production' && !this.secretKey.includes('mock');
+  async verifyPayment(reference: string, customSecretKey?: string): Promise<VerifyPaymentResult> {
+    const activeKey = customSecretKey || this.secretKey;
+    const isRealKey = Boolean(
+      activeKey &&
+      !activeKey.includes('mock') &&
+      activeKey.startsWith('FLWSECK')
+    );
 
-    if (isProd) {
+    if (isRealKey) {
       try {
         const response = await fetch(
           `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${reference}`,
           {
-            headers: { Authorization: `Bearer ${this.secretKey}` },
+            headers: { Authorization: `Bearer ${activeKey}` },
           },
         );
 

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Req } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Req, NotFoundException } from '@nestjs/common';
 import { TeachersService } from './teachers.service.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
 import type { TenantContext } from '../../common/types/tenant-context.interface.js';
@@ -25,8 +25,12 @@ export class TeachersController {
     @CurrentTenant() tenant: TenantContext,
     @Param('id') id: string,
   ) {
+    if (id === 'departments' || id === 'designations' || id === 'staff-rooms') {
+      throw new NotFoundException(`Invalid staff ID "${id}".`);
+    }
     return this.teachersService.findById(tenant.tenantId, id);
   }
+
 
   @RequirePermissions(SystemPermissions.TEACHERS_MANAGE)
   @Post()

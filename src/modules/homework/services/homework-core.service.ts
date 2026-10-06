@@ -55,7 +55,7 @@ export class HomeworkCoreService {
         title: dto.title,
         description: dto.description,
         dueDate,
-        maxMarks: dto.maxMarks ?? 100,
+        maxMarks: dto.maxMarks ?? (dto as any).maxScore ?? 100,
         passingMarks: dto.passingMarks ?? null,
         allowLateSubmissions: dto.allowLateSubmissions ?? true,
         latePenaltyPercent: dto.latePenaltyPercent ?? 0,

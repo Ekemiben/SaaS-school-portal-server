@@ -37,26 +37,46 @@ export class PaymentsService {
     if (paymentConfig) {
       return {
         defaultProvider: paymentConfig.defaultProvider || PaymentGatewayProvider.PAYSTACK,
-        subaccountCode: paymentConfig.subaccountCode,
+        environment: paymentConfig.environment || 'LIVE',
+        paystackPublicKey: paymentConfig.paystackPublicKey || '',
+        paystackSecretKey: paymentConfig.paystackSecretKey || '',
+        flutterwavePublicKey: paymentConfig.flutterwavePublicKey || '',
+        flutterwaveSecretKey: paymentConfig.flutterwaveSecretKey || '',
+        webhookSecret: paymentConfig.webhookSecret || '',
+        subaccountCode: paymentConfig.subaccountCode || '',
         splitPercentage: paymentConfig.splitPercentage ?? 100,
         bearer: paymentConfig.bearer || 'account',
         enableVirtualAccounts: paymentConfig.enableVirtualAccounts ?? true,
         enableCardPayments: paymentConfig.enableCardPayments ?? true,
         enableBankTransfer: paymentConfig.enableBankTransfer ?? true,
-        bankName: paymentConfig.bankName,
-        accountNumber: paymentConfig.accountNumber,
-        accountName: paymentConfig.accountName,
-        paymentInstructions: paymentConfig.paymentInstructions,
+        autoReconcile: paymentConfig.autoReconcile ?? true,
+        bankName: paymentConfig.bankName || '',
+        accountNumber: paymentConfig.accountNumber || '',
+        accountName: paymentConfig.accountName || '',
+        paymentInstructions: paymentConfig.paymentInstructions || '',
       };
     }
 
     return (
       this.tenantConfigs.get(tenantId) || {
         defaultProvider: PaymentGatewayProvider.PAYSTACK,
+        environment: 'LIVE',
+        paystackPublicKey: '',
+        paystackSecretKey: '',
+        flutterwavePublicKey: '',
+        flutterwaveSecretKey: '',
+        webhookSecret: '',
+        subaccountCode: '',
         enableCardPayments: true,
         enableVirtualAccounts: true,
         enableBankTransfer: true,
+        autoReconcile: true,
         splitPercentage: 100,
+        bearer: 'account',
+        bankName: '',
+        accountNumber: '',
+        accountName: '',
+        paymentInstructions: '',
       }
     );
   }
@@ -358,12 +378,23 @@ export class PaymentsService {
     });
 
     const email = dto.customerEmail || 'parent@schoolportal.ng';
+    const secretKey =
+      provider === PaymentGatewayProvider.FLUTTERWAVE
+        ? config.flutterwaveSecretKey
+        : config.paystackSecretKey;
+    const publicKey =
+      provider === PaymentGatewayProvider.FLUTTERWAVE
+        ? config.flutterwavePublicKey
+        : config.paystackPublicKey;
+
     const initParams = {
       amount: dto.amount,
       currency,
       customerEmail: email,
       reference,
       callbackUrl: dto.callbackUrl,
+      secretKey: secretKey || undefined,
+      publicKey: publicKey || undefined,
       metadata: { invoiceId: dto.invoiceId, tenantId, subaccountCode: dto.subaccountCode || config.subaccountCode },
     };
 
@@ -440,12 +471,18 @@ export class PaymentsService {
       return { success: true, message: 'Payment already verified and credited.', payment };
     }
 
+    const config = await this.getGatewayConfig(tenantId);
+    const secretKey =
+      payment.provider === 'FLUTTERWAVE'
+        ? config.flutterwaveSecretKey
+        : config.paystackSecretKey;
+
     const adapter =
       payment.provider === 'FLUTTERWAVE'
         ? this.flutterwaveAdapter
         : this.paystackAdapter;
 
-    const verification = await adapter.verifyPayment(reference);
+    const verification = await adapter.verifyPayment(reference, secretKey || undefined);
     if (!verification.success || verification.status !== 'successful') {
       await this.prisma.payment.updateMany({
         where: { tenantId, reference },
