@@ -79,6 +79,62 @@ export class DirectEnrollStudentDto {
   @IsString()
   address?: string;
 
+  @IsOptional()
+  @IsString()
+  city?: string;
+
+  @IsOptional()
+  @IsString()
+  stateOfResidence?: string;
+
+  @IsOptional()
+  @IsString()
+  photoUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  stateOfOrigin?: string;
+
+  @IsOptional()
+  @IsString()
+  lgaOfOrigin?: string;
+
+  @IsOptional()
+  @IsString()
+  nationality?: string;
+
+  @IsOptional()
+  @IsString()
+  religion?: string;
+
+  @IsOptional()
+  @IsString()
+  emergencyContactName?: string;
+
+  @IsOptional()
+  @IsString()
+  emergencyContactPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  emergencyContactRelationship?: string;
+
+  @IsOptional()
+  @IsString()
+  genotype?: string;
+
+  @IsOptional()
+  @IsString()
+  allergies?: string;
+
+  @IsOptional()
+  @IsString()
+  medicalConditions?: string;
+
+  @IsOptional()
+  @IsString()
+  previousSchool?: string;
+
   @IsNotEmpty()
   @IsString()
   parentFirstName: string;

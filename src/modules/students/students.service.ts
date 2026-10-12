@@ -94,7 +94,20 @@ export class StudentsService {
       email: s.email,
       phone: s.phone,
       address: s.address,
+      city: s.city,
+      stateOfResidence: s.stateOfResidence,
       photoUrl: s.photoUrl,
+      stateOfOrigin: s.stateOfOrigin,
+      lgaOfOrigin: s.lgaOfOrigin,
+      nationality: s.nationality,
+      religion: s.religion,
+      emergencyContactName: s.emergencyContactName,
+      emergencyContactPhone: s.emergencyContactPhone,
+      emergencyContactRelationship: s.emergencyContactRelationship,
+      genotype: s.genotype,
+      allergies: s.allergies,
+      medicalConditions: s.medicalConditions,
+      previousSchool: s.previousSchool,
       status: s.status,
       classLevel: s.enrollments?.[0]?.class?.name || (s as any).classLevel || 'Unassigned',
       classId: s.enrollments?.[0]?.classId || null,
@@ -164,7 +177,20 @@ export class StudentsService {
       email: s.email,
       phone: s.phone,
       address: s.address,
+      city: s.city,
+      stateOfResidence: s.stateOfResidence,
       photoUrl: s.photoUrl,
+      stateOfOrigin: s.stateOfOrigin,
+      lgaOfOrigin: s.lgaOfOrigin,
+      nationality: s.nationality,
+      religion: s.religion,
+      emergencyContactName: s.emergencyContactName,
+      emergencyContactPhone: s.emergencyContactPhone,
+      emergencyContactRelationship: s.emergencyContactRelationship,
+      genotype: s.genotype,
+      allergies: s.allergies,
+      medicalConditions: s.medicalConditions,
+      previousSchool: s.previousSchool,
       status: s.status,
       classLevel: s.enrollments?.[0]?.class?.name || (s as any).classLevel || 'Unassigned',
       classId: s.enrollments?.[0]?.classId || null,
@@ -305,6 +331,20 @@ export class StudentsService {
         email: data.email ? data.email.toLowerCase().trim() : null,
         phone: data.phone ? data.phone.trim() : null,
         address: data.address || data.guardianAddress || null,
+        city: data.city ? data.city.trim() : null,
+        stateOfResidence: data.stateOfResidence ? data.stateOfResidence.trim() : null,
+        photoUrl: data.photoUrl ? data.photoUrl.trim() : null,
+        stateOfOrigin: data.stateOfOrigin ? data.stateOfOrigin.trim() : null,
+        lgaOfOrigin: data.lgaOfOrigin ? data.lgaOfOrigin.trim() : null,
+        nationality: data.nationality ? data.nationality.trim() : 'Nigerian',
+        religion: data.religion ? data.religion.trim() : null,
+        emergencyContactName: data.emergencyContactName ? data.emergencyContactName.trim() : null,
+        emergencyContactPhone: data.emergencyContactPhone ? data.emergencyContactPhone.trim() : null,
+        emergencyContactRelationship: data.emergencyContactRelationship ? data.emergencyContactRelationship.trim() : null,
+        genotype: data.genotype ? data.genotype.trim() : null,
+        allergies: data.allergies ? data.allergies.trim() : null,
+        medicalConditions: data.medicalConditions ? data.medicalConditions.trim() : null,
+        previousSchool: data.previousSchool ? data.previousSchool.trim() : null,
         status: studentStatus,
       },
       include: {
@@ -687,7 +727,20 @@ export class StudentsService {
       email: createdStudent.email,
       phone: createdStudent.phone,
       address: createdStudent.address,
+      city: createdStudent.city,
+      stateOfResidence: createdStudent.stateOfResidence,
       photoUrl: createdStudent.photoUrl,
+      stateOfOrigin: createdStudent.stateOfOrigin,
+      lgaOfOrigin: createdStudent.lgaOfOrigin,
+      nationality: createdStudent.nationality,
+      religion: createdStudent.religion,
+      emergencyContactName: createdStudent.emergencyContactName,
+      emergencyContactPhone: createdStudent.emergencyContactPhone,
+      emergencyContactRelationship: createdStudent.emergencyContactRelationship,
+      genotype: createdStudent.genotype,
+      allergies: createdStudent.allergies,
+      medicalConditions: createdStudent.medicalConditions,
+      previousSchool: createdStudent.previousSchool,
       status: createdStudent.status,
       classLevel: classRecord?.name || targetClassLevel || 'Unassigned',
       classId: classRecord?.id || null,
@@ -719,6 +772,20 @@ export class StudentsService {
     if (data.email !== undefined) updateData.email = data.email ? data.email.toLowerCase().trim() : null;
     if (data.phone !== undefined) updateData.phone = data.phone ? data.phone.trim() : null;
     if (data.address !== undefined) updateData.address = data.address || null;
+    if (data.city !== undefined) updateData.city = data.city ? data.city.trim() : null;
+    if (data.stateOfResidence !== undefined) updateData.stateOfResidence = data.stateOfResidence ? data.stateOfResidence.trim() : null;
+    if (data.photoUrl !== undefined) updateData.photoUrl = data.photoUrl ? data.photoUrl.trim() : null;
+    if (data.stateOfOrigin !== undefined) updateData.stateOfOrigin = data.stateOfOrigin ? data.stateOfOrigin.trim() : null;
+    if (data.lgaOfOrigin !== undefined) updateData.lgaOfOrigin = data.lgaOfOrigin ? data.lgaOfOrigin.trim() : null;
+    if (data.nationality !== undefined) updateData.nationality = data.nationality ? data.nationality.trim() : 'Nigerian';
+    if (data.religion !== undefined) updateData.religion = data.religion ? data.religion.trim() : null;
+    if (data.emergencyContactName !== undefined) updateData.emergencyContactName = data.emergencyContactName ? data.emergencyContactName.trim() : null;
+    if (data.emergencyContactPhone !== undefined) updateData.emergencyContactPhone = data.emergencyContactPhone ? data.emergencyContactPhone.trim() : null;
+    if (data.emergencyContactRelationship !== undefined) updateData.emergencyContactRelationship = data.emergencyContactRelationship ? data.emergencyContactRelationship.trim() : null;
+    if (data.genotype !== undefined) updateData.genotype = data.genotype ? data.genotype.trim() : null;
+    if (data.allergies !== undefined) updateData.allergies = data.allergies ? data.allergies.trim() : null;
+    if (data.medicalConditions !== undefined) updateData.medicalConditions = data.medicalConditions ? data.medicalConditions.trim() : null;
+    if (data.previousSchool !== undefined) updateData.previousSchool = data.previousSchool ? data.previousSchool.trim() : null;
     if (data.status) {
       const s = data.status.toUpperCase();
       if (['ACTIVE', 'INACTIVE', 'SUSPENDED', 'GRADUATED', 'TRANSFERRED'].includes(s)) {
@@ -752,7 +819,20 @@ export class StudentsService {
       email: updated.email,
       phone: updated.phone,
       address: updated.address,
+      city: updated.city,
+      stateOfResidence: updated.stateOfResidence,
       photoUrl: updated.photoUrl,
+      stateOfOrigin: updated.stateOfOrigin,
+      lgaOfOrigin: updated.lgaOfOrigin,
+      nationality: updated.nationality,
+      religion: updated.religion,
+      emergencyContactName: updated.emergencyContactName,
+      emergencyContactPhone: updated.emergencyContactPhone,
+      emergencyContactRelationship: updated.emergencyContactRelationship,
+      genotype: updated.genotype,
+      allergies: updated.allergies,
+      medicalConditions: updated.medicalConditions,
+      previousSchool: updated.previousSchool,
       status: updated.status,
       classLevel: updated.enrollments?.[0]?.class?.name || (updated as any).classLevel || 'Unassigned',
       classId: updated.enrollments?.[0]?.classId || null,
@@ -970,6 +1050,15 @@ export class StudentsService {
         gender: student.gender,
         dateOfBirth: student.dateOfBirth,
         photoUrl: student.photoUrl,
+        address: student.address,
+        stateOfOrigin: student.stateOfOrigin,
+        lgaOfOrigin: student.lgaOfOrigin,
+        nationality: student.nationality,
+        religion: student.religion,
+        bloodGroup: student.bloodGroup,
+        genotype: student.genotype,
+        emergencyContactName: student.emergencyContactName,
+        emergencyContactPhone: student.emergencyContactPhone,
         campus: student.campus?.name || 'Main Campus',
         status: student.status,
       },

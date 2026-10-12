@@ -1,6 +1,8 @@
 import { NestFactory } from '@nestjs/core';
 import cookieParser from 'cookie-parser';
+import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
+import path from 'path';
 import { AppModule } from './app.module.js';
 import { CustomValidationPipe } from './common/pipes/validation.pipe.js';
 
@@ -8,6 +10,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
 
   app.use(cookieParser());
+  app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
   app.useGlobalPipes(new CustomValidationPipe());
 
   // Security Headers Middleware (Section 94 ARCHITECTURE.md)

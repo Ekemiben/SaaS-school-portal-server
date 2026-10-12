@@ -156,8 +156,19 @@ export class ReportCardRenderer {
         <div class="verify-code">Verification Code: ${data.metadata.verificationCode}</div>
         <div>Issued on ${data.metadata.issuedAt}</div>
       </div>
-      <div>
-        <div class="sig-line">Principal / Administrator</div>
+      <div style="display: flex; gap: 24px; align-items: flex-end;">
+        ${data.school.schoolStampUrl ? `
+          <div style="text-align: center;">
+            <img src="${data.school.schoolStampUrl}" alt="Official Stamp" style="max-height: 55px; max-width: 90px; object-fit: contain; display: block; margin: 0 auto 4px;" />
+            <div style="font-size: 10px; color: #64748b; font-weight: 600;">OFFICIAL STAMP</div>
+          </div>
+        ` : ''}
+        <div style="text-align: center;">
+          ${data.school.principalSignatureUrl ? `
+            <img src="${data.school.principalSignatureUrl}" alt="Principal Signature" style="max-height: 40px; max-width: 120px; object-fit: contain; display: block; margin: 0 auto 2px;" />
+          ` : ''}
+          <div class="sig-line" style="${data.school.principalSignatureUrl ? 'margin-top: 4px;' : 'margin-top: 28px;'}">Principal / Administrator</div>
+        </div>
       </div>
     </div>
   </div>

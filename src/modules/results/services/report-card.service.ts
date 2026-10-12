@@ -110,6 +110,8 @@ export class ReportCardService {
         name: tenant?.name || 'School Name',
         slug: tenant?.slug || 'school',
         logoUrl: tenant?.logoUrl || undefined,
+        principalSignatureUrl: tenant?.principalSignatureUrl || undefined,
+        schoolStampUrl: tenant?.schoolStampUrl || undefined,
         primaryColor: tenant?.primaryColor || '#1e3a8a',
         secondaryColor: tenant?.secondaryColor || '#0ea5e9',
         campusName: campus?.name,

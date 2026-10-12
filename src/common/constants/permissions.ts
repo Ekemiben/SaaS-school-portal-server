@@ -29,6 +29,12 @@ export const SystemPermissions = {
   STUDENTS_UPDATE: 'students.update',
   STUDENTS_DELETE: 'students.delete',
 
+  // Admissions & Student Transitions
+  ADMISSIONS_VIEW: 'admissions.view',
+  ADMISSIONS_MANAGE: 'admissions.manage',
+  TRANSITIONS_VIEW: 'transitions.view',
+  TRANSITIONS_MANAGE: 'transitions.manage',
+
   // Parents
   PARENTS_VIEW: 'parents.view',
   PARENTS_MANAGE: 'parents.manage',

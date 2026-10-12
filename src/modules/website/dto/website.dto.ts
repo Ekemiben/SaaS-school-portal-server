@@ -110,6 +110,14 @@ export class UpdateWebsiteConfigDto {
 
   @IsOptional()
   @IsString()
+  principalSignatureUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  schoolStampUrl?: string;
+
+  @IsOptional()
+  @IsString()
   heroTitle?: string;
 
   @IsOptional()
@@ -127,6 +135,18 @@ export class UpdateWebsiteConfigDto {
   @IsOptional()
   @IsString()
   heroImageUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  logoUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  faviconUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  aboutImageUrl?: string;
 
   @IsOptional()
   @IsString()

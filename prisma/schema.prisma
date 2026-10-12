@@ -95,9 +95,11 @@ model Tenant {
   id             String       @id @default(uuid())
   name           String
   slug           String       @unique
-  logoUrl        String?
-  faviconUrl     String?
-  primaryColor   String?      @default("#0f172a")
+  logoUrl               String?
+  faviconUrl            String?
+  principalSignatureUrl String?
+  schoolStampUrl        String?
+  primaryColor          String?      @default("#0f172a")
   secondaryColor String?      @default("#3b82f6")
   timezone       String       @default("UTC")
   locale         String       @default("en")
@@ -221,6 +223,15 @@ model Tenant {
   staffAttendanceDevices       StaffAttendanceDevice[]
   staffAttendanceConfig        StaffAttendanceConfig?
   staffAttendanceCorrections   StaffAttendanceCorrection[]
+  transitionConfigs            TransitionConfig[]
+  transitionApplications       TransitionApplication[]
+  transitionBenefits           TransitionBenefit[]
+  transitionScholarships       TransitionScholarship[]
+  transitionEvents             TransitionEvent[]
+  transitionEventRsvps         TransitionEventRsvp[]
+  transitionInquiries          TransitionInquiry[]
+  transitionShowcases          TransitionShowcaseItem[]
+  transitionReasons            TransitionReason[]
 
   @@index([slug])
   @@index([status])
@@ -311,6 +322,7 @@ model Campus {
   staffAttendanceLocations    StaffAttendanceLocation[]
   staffAttendanceDevices      StaffAttendanceDevice[]
   staffAttendanceRecords      StaffAttendanceRecord[]
+  transitionEvents            TransitionEvent[]
 
   @@unique([tenantId, code])
   @@index([tenantId])
@@ -342,6 +354,8 @@ model User {
   inboxItems                InAppInboxItem[]
   requestedStaffCorrections StaffAttendanceCorrection[] @relation("StaffCorrectionRequester")
   reviewedStaffCorrections  StaffAttendanceCorrection[] @relation("StaffCorrectionReviewer")
+  reviewedTransitionApps    TransitionApplication[]     @relation("TransitionReviewer")
+  assignedTransitionInquiries TransitionInquiry[]       @relation("InquiryAssignee")
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -429,11 +443,24 @@ model Student {
   bloodGroup      String?
   email           String?
   phone           String?
-  address         String?
-  photoUrl        String?
-  status          StudentStatus @default(ACTIVE)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  address                      String?
+  city                         String?
+  stateOfResidence             String?
+  photoUrl                     String?
+  stateOfOrigin                String?
+  lgaOfOrigin                  String?
+  nationality                  String?       @default("Nigerian")
+  religion                     String?
+  emergencyContactName         String?
+  emergencyContactPhone        String?
+  emergencyContactRelationship String?
+  genotype                     String?
+  allergies                    String?
+  medicalConditions            String?
+  previousSchool               String?
+  status                       StudentStatus @default(ACTIVE)
+  createdAt                    DateTime      @default(now())
+  updatedAt                    DateTime      @updatedAt
 
   tenant                  Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   campus                  Campus                       @relation(fields: [campusId], references: [id], onDelete: Cascade)
@@ -462,6 +489,9 @@ model Student {
   bookIssues              BookIssue[]
   bookReservations        BookReservation[]
   libraryFines            LibraryFine[]
+  transitionApplications  TransitionApplication[]
+  transitionEventRsvps    TransitionEventRsvp[]
+  transitionInquiries     TransitionInquiry[]
 
   @@unique([tenantId, admissionNumber])
   @@index([tenantId])
@@ -487,6 +517,9 @@ model Parent {
   tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user     User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
   students StudentParent[]
+  transitionApplications TransitionApplication[]
+  transitionEventRsvps   TransitionEventRsvp[]
+  transitionInquiries    TransitionInquiry[]
 
   @@index([tenantId])
   @@index([tenantId, phone])
@@ -523,11 +556,30 @@ model Staff {
   departmentId     String?
   designationId    String?
   staffRoomId      String?
-  employmentStatus String    @default("ACTIVE") // ACTIVE, ON_LEAVE, SUSPENDED, TERMINATED
-  joiningDate      DateTime? @default(now())
-  isActive         Boolean   @default(true)
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  employmentStatus      String    @default("ACTIVE") // ACTIVE, ON_LEAVE, SUSPENDED, TERMINATED
+  joiningDate           DateTime? @default(now())
+  isActive              Boolean   @default(true)
+  photoUrl              String?
+  address               String?
+  city                  String?
+  stateOfResidence      String?
+  stateOfOrigin         String?
+  lgaOfOrigin           String?
+  nationality           String?   @default("Nigerian")
+  maritalStatus         String?
+  religion              String?
+  qualification         String?
+  specialization        String?
+  trcnNumber            String?
+  bankName              String?
+  accountNumber         String?
+  accountName           String?
+  nextOfKinName         String?
+  nextOfKinPhone        String?
+  nextOfKinRelationship String?
+  nextOfKinAddress      String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   tenant                         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   campus                         Campus          @relation(fields: [campusId], references: [id], onDelete: Cascade)
@@ -588,6 +640,10 @@ model Teacher {
   departmentId   String?
   designationId  String?
   staffRoomId    String?
+  photoUrl       String?
+  address        String?
+  stateOfOrigin  String?
+  lgaOfOrigin    String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -692,6 +748,8 @@ model AcademicYear {
   admissionInquiries          AdmissionInquiry[]
   admissionApplications       AdmissionApplication[]
   admissionOffers             AdmissionOffer[]
+  transitionConfigs           TransitionConfig[]
+  transitionApplications      TransitionApplication[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -749,6 +807,10 @@ model Class {
   meritAwards         MeritAward[]
   academicSummaries   AcademicSummary[]
   feeStructures       FeeStructure[]
+  sourceTransitionConfigs TransitionConfig[]      @relation("ConfigSourceClass")
+  targetTransitionConfigs TransitionConfig[]      @relation("ConfigTargetClass")
+  sourceTransitionApps    TransitionApplication[] @relation("AppSourceClass")
+  targetTransitionApps    TransitionApplication[] @relation("AppTargetClass")
 
   @@unique([tenantId, campusId, academicYearId, name])
   @@index([tenantId])
@@ -1074,8 +1136,9 @@ model FeeStructure {
   academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
   term         Term?        @relation(fields: [termId], references: [id], onDelete: SetNull)
   class        Class?       @relation(fields: [classId], references: [id], onDelete: SetNull)
-  invoices     Invoice[]
-  feeWaivers   FeeWaiver[]
+  invoices           Invoice[]
+  feeWaivers         FeeWaiver[]
+  transitionBenefits TransitionBenefit[]
 
   @@index([tenantId])
   @@index([tenantId, campusId])
@@ -3420,10 +3483,15 @@ model WebsiteConfig {
   aboutMission      String?  @db.Text
   aboutVision       String?  @db.Text
   aboutValues       String?  @db.Text
-  principalName     String?
-  principalTitle    String?  @default("Principal")
-  principalMessage  String?  @db.Text
-  principalPhotoUrl String?
+  aboutImageUrl     String?
+  logoUrl           String?
+  faviconUrl        String?
+  principalName         String?
+  principalTitle        String?  @default("Principal")
+  principalMessage      String?  @db.Text
+  principalPhotoUrl     String?
+  principalSignatureUrl String?
+  schoolStampUrl        String?
   heroTitle         String?
   heroSubtitle      String?
   heroCtaText       String?  @default("Apply Now")
@@ -3775,4 +3843,300 @@ model StaffAttendanceCorrection {
   @@index([requestedById])
   @@index([reviewedById])
 }
+
+// ==========================================
+// STUDENT CONTINUITY & TRANSITION ENUMS
+// ==========================================
+
+enum TransitionStatus {
+  ELIGIBLE
+  EXPRESSED_INTEREST
+  APPLICATION_SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  OFFER_ACCEPTED
+  CONFIRMED
+  NOT_CONTINUING
+  WITHDRAWN
+}
+
+enum TransitionPathway {
+  STANDARD_CONTINUATION
+  SCHOLARSHIP_TRACK
+  ACCELERATED
+  SPECIAL_NEEDS_SUPPORT
+  BOARDING
+  DAY_STUDENT
+}
+
+enum TransitionEventType {
+  ORIENTATION
+  OPEN_DAY
+  CAMPUS_TOUR
+  TASTER_LESSON
+  PARENT_INFO_SESSION
+  SCHOLARSHIP_EXAM
+}
+
+enum RsvpStatus {
+  ATTENDING
+  NOT_ATTENDING
+  MAYBE
+  CHECKED_IN
+  NO_SHOW
+}
+
+enum ShowcaseCategory {
+  CURRICULUM
+  SUBJECT_HIGHLIGHT
+  FACILITY
+  CLUB_AND_ACTIVITY
+  FACULTY_SPOTLIGHT
+  ACHIEVEMENT
+  TESTIMONIAL
+}
+
+enum InquiryStatus {
+  OPEN
+  IN_PROGRESS
+  ANSWERED
+  CLOSED
+}
+
+// ==========================================
+// STUDENT CONTINUITY & TRANSITION MODELS
+// ==========================================
+
+model TransitionConfig {
+  id                      String    @id @default(uuid())
+  tenantId                String
+  academicYearId          String
+  sourceClassId           String
+  targetClassId           String
+  applicationStartDate    DateTime?
+  applicationEndDate      DateTime?
+  earlyBirdDeadline       DateTime?
+  earlyBirdDiscountPercent Float?   @default(0)
+  autoApproveEligible     Boolean   @default(false)
+  minAttendancePercent    Float?
+  minAcademicAverage      Float?
+  requireEntranceExam     Boolean   @default(false)
+  isActive                Boolean   @default(true)
+  settings                Json?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Restrict)
+  sourceClass  Class        @relation("ConfigSourceClass", fields: [sourceClassId], references: [id], onDelete: Restrict)
+  targetClass  Class        @relation("ConfigTargetClass", fields: [targetClassId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, academicYearId, sourceClassId, targetClassId])
+  @@index([tenantId])
+  @@index([tenantId, academicYearId])
+}
+
+model TransitionApplication {
+  id                  String            @id @default(uuid())
+  tenantId            String
+  studentId           String
+  parentId            String?
+  academicYearId      String
+  sourceClassId       String
+  targetClassId       String
+  pathway             TransitionPathway @default(STANDARD_CONTINUATION)
+  status              TransitionStatus  @default(ELIGIBLE)
+  scholarshipId       String?
+  reasonId            String?
+  notContinuingReason String?           @db.Text
+  intendedDestination String?
+  parentNotes         String?           @db.Text
+  internalNotes       String?           @db.Text
+  discountPercentage  Float?            @default(0)
+  waiverAmount        Float?            @default(0)
+  isEarlyBird         Boolean           @default(false)
+  submittedAt         DateTime?
+  reviewedAt          DateTime?
+  reviewedById        String?
+  confirmedAt         DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  tenant       Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  student      Student                @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  parent       Parent?                @relation(fields: [parentId], references: [id], onDelete: SetNull)
+  academicYear AcademicYear           @relation(fields: [academicYearId], references: [id], onDelete: Restrict)
+  sourceClass  Class                  @relation("AppSourceClass", fields: [sourceClassId], references: [id], onDelete: Restrict)
+  targetClass  Class                  @relation("AppTargetClass", fields: [targetClassId], references: [id], onDelete: Restrict)
+  scholarship  TransitionScholarship? @relation(fields: [scholarshipId], references: [id], onDelete: SetNull)
+  reason       TransitionReason?      @relation(fields: [reasonId], references: [id], onDelete: SetNull)
+  reviewedBy   User?                  @relation("TransitionReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, studentId, academicYearId])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, academicYearId])
+  @@index([studentId])
+  @@index([parentId])
+}
+
+model TransitionBenefit {
+  id              String   @id @default(uuid())
+  tenantId        String
+  title           String
+  description     String?  @db.Text
+  discountPercent Float?   @default(0)
+  fixedDiscount   Float?   @default(0)
+  feeStructureId  String?
+  isAutomatic     Boolean  @default(false)
+  criteria        Json?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  feeStructure FeeStructure? @relation(fields: [feeStructureId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([tenantId, isActive])
+}
+
+model TransitionScholarship {
+  id              String    @id @default(uuid())
+  tenantId        String
+  name            String
+  description     String?   @db.Text
+  criteria        String?   @db.Text
+  coveragePercent Float?    @default(0)
+  slotsAvailable  Int?
+  slotsClaimed    Int       @default(0)
+  deadline        DateTime?
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  tenant       Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  applications TransitionApplication[]
+
+  @@index([tenantId])
+  @@index([tenantId, isActive])
+}
+
+model TransitionEvent {
+  id          String              @id @default(uuid())
+  tenantId    String
+  campusId    String?
+  title       String
+  description String?             @db.Text
+  eventType   TransitionEventType @default(ORIENTATION)
+  eventDate   DateTime
+  startTime   String?
+  endTime     String?
+  location    String?
+  virtualLink String?
+  capacity    Int?
+  bannerUrl   String?
+  isPublished Boolean             @default(true)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  tenant Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campus Campus?               @relation(fields: [campusId], references: [id], onDelete: SetNull)
+  rsvps  TransitionEventRsvp[]
+
+  @@index([tenantId])
+  @@index([tenantId, eventDate])
+  @@index([tenantId, isPublished])
+}
+
+model TransitionEventRsvp {
+  id          String     @id @default(uuid())
+  tenantId    String
+  eventId     String
+  parentId    String
+  studentId   String?
+  status      RsvpStatus @default(ATTENDING)
+  guestCount  Int        @default(1)
+  notes       String?    @db.Text
+  checkedInAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  event   TransitionEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  parent  Parent          @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  student Student?        @relation(fields: [studentId], references: [id], onDelete: SetNull)
+
+  @@unique([eventId, parentId, studentId])
+  @@index([tenantId])
+  @@index([eventId])
+  @@index([parentId])
+}
+
+model TransitionInquiry {
+  id           String        @id @default(uuid())
+  tenantId     String
+  parentId     String
+  studentId    String?
+  subject      String
+  question     String        @db.Text
+  response     String?       @db.Text
+  status       InquiryStatus @default(OPEN)
+  assignedToId String?
+  respondedAt  DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  parent     Parent   @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  student    Student? @relation(fields: [studentId], references: [id], onDelete: SetNull)
+  assignedTo User?    @relation("InquiryAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([parentId])
+}
+
+model TransitionShowcaseItem {
+  id          String           @id @default(uuid())
+  tenantId    String
+  category    ShowcaseCategory @default(CURRICULUM)
+  title       String
+  subtitle    String?
+  description String?          @db.Text
+  imageUrl    String?
+  videoUrl    String?
+  badgeText   String?
+  order       Int              @default(0)
+  isFeatured  Boolean          @default(false)
+  isActive    Boolean          @default(true)
+  metadata    Json?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, category])
+  @@index([tenantId, isActive])
+}
+
+model TransitionReason {
+  id          String   @id @default(uuid())
+  tenantId    String
+  code        String
+  label       String
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant       Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  applications TransitionApplication[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([tenantId, isActive])
+}
+
 

@@ -70,6 +70,8 @@ export interface ReportCardRenderData {
     name: string;
     slug: string;
     logoUrl?: string;
+    principalSignatureUrl?: string;
+    schoolStampUrl?: string;
     primaryColor?: string;
     secondaryColor?: string;
     campusName?: string;

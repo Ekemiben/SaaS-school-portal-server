@@ -33,6 +33,73 @@ export class CreateTeacherDto {
   @IsString()
   fullName?: string;
 
+  @IsOptional()
+  @IsString()
+  middleName?: string;
+
+  @IsOptional()
+  @IsString()
+  photoUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  gender?: string;
+
+  @IsOptional()
+  dateOfBirth?: string | Date;
+
+  @IsOptional()
+  @IsString()
+  address?: string;
+
+  @IsOptional()
+  @IsString()
+  city?: string;
+
+  @IsOptional()
+  @IsString()
+  stateOfResidence?: string;
+
+  @IsOptional()
+  @IsString()
+  stateOfOrigin?: string;
+
+  @IsOptional()
+  @IsString()
+  lgaOfOrigin?: string;
+
+  @IsOptional()
+  @IsString()
+  nationality?: string;
+
+  @IsOptional()
+  @IsString()
+  maritalStatus?: string;
+
+  @IsOptional()
+  @IsString()
+  religion?: string;
+
+  @IsOptional()
+  @IsString()
+  trcnNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  nextOfKinName?: string;
+
+  @IsOptional()
+  @IsString()
+  nextOfKinPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  nextOfKinRelationship?: string;
+
+  @IsOptional()
+  @IsString()
+  nextOfKinAddress?: string;
+
   @IsEmail()
   email!: string;
 
