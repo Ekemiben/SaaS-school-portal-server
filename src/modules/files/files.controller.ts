@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Delete, Param, Body, Query, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Param, Body, Query, HttpCode, HttpStatus, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { FilesService } from './files.service.js';
 import { PresignUploadDto } from './dto/file-upload.dto.js';
 import { CurrentTenant } from '../../common/decorators/current-tenant.decorator.js';
@@ -8,7 +9,7 @@ import { RequirePermissions } from '../../common/decorators/permissions.decorato
 import { SystemPermissions } from '../../common/constants/permissions.js';
 import { ListFilesDto } from './dto/list-files.dto.js';
 
-@Controller('api/v1/files')
+@Controller(['files', 'api/v1/files'])
 export class FilesController {
   constructor(private readonly filesService: FilesService) {}
 
@@ -23,6 +24,26 @@ export class FilesController {
       limit: query.limit,
       offset: query.offset,
     });
+  }
+
+  @Post('upload')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 15 * 1024 * 1024 } }))
+  async uploadFile(
+    @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
+    @UploadedFile() file: any,
+    @Body('category') category?: string,
+  ) {
+    return this.filesService.saveUploadedFile(tenant.tenantId, user?.id || 'sys_user', file, category);
+  }
+
+  @Post('upload-image')
+  async uploadImage(
+    @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
+    @Body() body: any,
+  ) {
+    return this.filesService.uploadDirectImage(tenant.tenantId, user?.id || 'sys_user', body);
   }
 
   @RequirePermissions(SystemPermissions.FILES_MANAGE)

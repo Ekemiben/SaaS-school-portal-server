@@ -96,6 +96,8 @@ export class WebsiteService {
         slug: true,
         logoUrl: true,
         faviconUrl: true,
+        principalSignatureUrl: true,
+        schoolStampUrl: true,
         primaryColor: true,
         secondaryColor: true,
         timezone: true,
@@ -114,8 +116,11 @@ export class WebsiteService {
     return {
       schoolName: tenant.name,
       slug: tenant.slug,
-      logoUrl: tenant.logoUrl,
-      faviconUrl: tenant.faviconUrl,
+      logoUrl: config?.logoUrl || tenant.logoUrl,
+      faviconUrl: config?.faviconUrl || tenant.faviconUrl,
+      principalSignatureUrl: config?.principalSignatureUrl || tenant.principalSignatureUrl || '',
+      schoolStampUrl: config?.schoolStampUrl || tenant.schoolStampUrl || '',
+      aboutImageUrl: config?.aboutImageUrl || '',
       primaryColor: tenant.primaryColor || '#0f172a',
       secondaryColor: tenant.secondaryColor || '#3b82f6',
       colorPalette: theme.colorPalette,
@@ -394,6 +399,27 @@ export class WebsiteService {
     }
     if (dto.colorAssignments !== undefined) {
       data.colorAssignments = dto.colorAssignments as any;
+    }
+
+    if (
+      dto.logoUrl !== undefined ||
+      dto.faviconUrl !== undefined ||
+      dto.principalSignatureUrl !== undefined ||
+      dto.schoolStampUrl !== undefined
+    ) {
+      await this.prisma.tenant.update({
+        where: { id: tenantId },
+        data: {
+          ...(dto.logoUrl !== undefined && { logoUrl: dto.logoUrl ? dto.logoUrl.trim() : null }),
+          ...(dto.faviconUrl !== undefined && { faviconUrl: dto.faviconUrl ? dto.faviconUrl.trim() : null }),
+          ...(dto.principalSignatureUrl !== undefined && {
+            principalSignatureUrl: dto.principalSignatureUrl ? dto.principalSignatureUrl.trim() : null,
+          }),
+          ...(dto.schoolStampUrl !== undefined && {
+            schoolStampUrl: dto.schoolStampUrl ? dto.schoolStampUrl.trim() : null,
+          }),
+        },
+      }).catch(() => {});
     }
 
     const updated = (await this.prisma.websiteConfig.upsert({

@@ -99,6 +99,23 @@ export class TeachersService {
       assignedClass,
       assignedClassId,
       subjectsTaught: subjects,
+      photoUrl: s.photoUrl || null,
+      address: s.address || null,
+      city: s.city || null,
+      stateOfResidence: s.stateOfResidence || null,
+      stateOfOrigin: s.stateOfOrigin || null,
+      lgaOfOrigin: s.lgaOfOrigin || null,
+      nationality: s.nationality || 'Nigerian',
+      maritalStatus: s.maritalStatus || null,
+      religion: s.religion || null,
+      trcnNumber: s.teacherProfile?.trcnNumber || s.trcnNumber || null,
+      bankName: s.bankName || null,
+      accountNumber: s.accountNumber || null,
+      accountName: s.accountName || null,
+      nextOfKinName: s.nextOfKinName || null,
+      nextOfKinPhone: s.nextOfKinPhone || null,
+      nextOfKinRelationship: s.nextOfKinRelationship || null,
+      nextOfKinAddress: s.nextOfKinAddress || null,
       officeLocation: officeLocationName,
       staffRoomId: s.staffRoomId || null,
       createdAt: s.createdAt,
@@ -380,6 +397,25 @@ export class TeachersService {
             employmentStatus: isActive ? 'ACTIVE' : 'ON_LEAVE',
             joiningDate: data.dateJoined ? new Date(data.dateJoined) : new Date(),
             isActive,
+            photoUrl: data.photoUrl ? data.photoUrl.trim() : null,
+            address: data.address ? data.address.trim() : null,
+            city: data.city ? data.city.trim() : null,
+            stateOfResidence: data.stateOfResidence ? data.stateOfResidence.trim() : null,
+            stateOfOrigin: data.stateOfOrigin ? data.stateOfOrigin.trim() : null,
+            lgaOfOrigin: data.lgaOfOrigin ? data.lgaOfOrigin.trim() : null,
+            nationality: data.nationality ? data.nationality.trim() : 'Nigerian',
+            maritalStatus: data.maritalStatus ? data.maritalStatus.trim() : null,
+            religion: data.religion ? data.religion.trim() : null,
+            qualification: data.qualification ? data.qualification.trim() : null,
+            specialization: data.specialization ? data.specialization.trim() : null,
+            trcnNumber: data.trcnNumber ? data.trcnNumber.trim() : null,
+            bankName: data.bankName ? data.bankName.trim() : null,
+            accountNumber: data.accountNumber ? data.accountNumber.trim() : null,
+            accountName: data.accountName ? data.accountName.trim() : null,
+            nextOfKinName: data.nextOfKinName ? data.nextOfKinName.trim() : null,
+            nextOfKinPhone: data.nextOfKinPhone ? data.nextOfKinPhone.trim() : null,
+            nextOfKinRelationship: data.nextOfKinRelationship ? data.nextOfKinRelationship.trim() : null,
+            nextOfKinAddress: data.nextOfKinAddress ? data.nextOfKinAddress.trim() : null,
           },
           include: {
             campus: true,
@@ -398,6 +434,7 @@ export class TeachersService {
             staffId: newStaff?.id || id,
             specialization: data.specialization || data.department || null,
             qualification: data.qualification || null,
+            trcnNumber: data.trcnNumber ? data.trcnNumber.trim() : null,
           },
         });
       }
@@ -417,6 +454,10 @@ export class TeachersService {
             departmentId,
             designationId,
             staffRoomId,
+            photoUrl: data.photoUrl ? data.photoUrl.trim() : null,
+            address: data.address ? data.address.trim() : null,
+            stateOfOrigin: data.stateOfOrigin ? data.stateOfOrigin.trim() : null,
+            lgaOfOrigin: data.lgaOfOrigin ? data.lgaOfOrigin.trim() : null,
             specialization: data.specialization || data.department || null,
             qualification: data.qualification || null,
             joiningDate: data.dateJoined ? new Date(data.dateJoined) : new Date(),
@@ -634,6 +675,11 @@ export class TeachersService {
       }
     }
 
+    if (data.photoUrl !== undefined) updateData.photoUrl = data.photoUrl ? data.photoUrl.trim() : null;
+    if (data.address !== undefined) updateData.address = data.address ? data.address.trim() : null;
+    if (data.stateOfOrigin !== undefined) updateData.stateOfOrigin = data.stateOfOrigin ? data.stateOfOrigin.trim() : null;
+    if (data.lgaOfOrigin !== undefined) updateData.lgaOfOrigin = data.lgaOfOrigin ? data.lgaOfOrigin.trim() : null;
+
     const updated = await this.prisma.$transaction(async (tx) => {
       const res = await tx.teacher.update({
         where: { id: teacherId },
@@ -647,6 +693,39 @@ export class TeachersService {
           classSubjects: { include: { subject: true } },
         },
       });
+
+      if (tx.staff?.updateMany) {
+        const staffUpdateData: any = {
+          ...updateData,
+          ...(data.middleName !== undefined && { middleName: data.middleName ? data.middleName.trim() : null }),
+          ...(data.gender !== undefined && { gender: data.gender || null }),
+          ...(data.dateOfBirth !== undefined && { dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : null }),
+          ...(data.city !== undefined && { city: data.city ? data.city.trim() : null }),
+          ...(data.stateOfResidence !== undefined && { stateOfResidence: data.stateOfResidence ? data.stateOfResidence.trim() : null }),
+          ...(data.nationality !== undefined && { nationality: data.nationality ? data.nationality.trim() : 'Nigerian' }),
+          ...(data.maritalStatus !== undefined && { maritalStatus: data.maritalStatus ? data.maritalStatus.trim() : null }),
+          ...(data.religion !== undefined && { religion: data.religion ? data.religion.trim() : null }),
+          ...(data.trcnNumber !== undefined && { trcnNumber: data.trcnNumber ? data.trcnNumber.trim() : null }),
+          ...(data.bankName !== undefined && { bankName: data.bankName ? data.bankName.trim() : null }),
+          ...(data.accountNumber !== undefined && { accountNumber: data.accountNumber ? data.accountNumber.trim() : null }),
+          ...(data.accountName !== undefined && { accountName: data.accountName ? data.accountName.trim() : null }),
+          ...(data.nextOfKinName !== undefined && { nextOfKinName: data.nextOfKinName ? data.nextOfKinName.trim() : null }),
+          ...(data.nextOfKinPhone !== undefined && { nextOfKinPhone: data.nextOfKinPhone ? data.nextOfKinPhone.trim() : null }),
+          ...(data.nextOfKinRelationship !== undefined && { nextOfKinRelationship: data.nextOfKinRelationship ? data.nextOfKinRelationship.trim() : null }),
+          ...(data.nextOfKinAddress !== undefined && { nextOfKinAddress: data.nextOfKinAddress ? data.nextOfKinAddress.trim() : null }),
+        };
+        await tx.staff.updateMany({
+          where: { tenantId, id: teacherId },
+          data: staffUpdateData,
+        });
+      }
+
+      if (data.trcnNumber !== undefined && tx.teacherProfile?.updateMany) {
+        await tx.teacherProfile.updateMany({
+          where: { tenantId, staffId: teacherId },
+          data: { trcnNumber: data.trcnNumber ? data.trcnNumber.trim() : null },
+        });
+      }
 
       if (hasFinancialData) {
         const basicSalary = data.basicSalary !== undefined ? Number(data.basicSalary) : 0;

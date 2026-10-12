@@ -4,6 +4,8 @@ import { CloudflareR2StorageProvider } from './storage.provider.js';
 import { ALLOWED_MIME_TYPES, ALLOWED_FILE_CATEGORIES, CATEGORY_SIZE_LIMITS, FileCategory } from './storage.constants.js';
 import { PresignUploadDto } from './dto/file-upload.dto.js';
 import { randomUUID } from 'crypto';
+import fs from 'fs';
+import path from 'path';
 
 export interface RegisterFileInput {
   originalName: string;
@@ -195,5 +197,92 @@ export class FilesService {
     });
 
     return { success: true, message: 'File asset deleted successfully' };
+  }
+
+  async saveUploadedFile(
+    tenantId: string,
+    userId: string,
+    file: any,
+    categoryName?: string,
+  ) {
+    if (!file || (!file.buffer && !file.data)) {
+      throw new BadRequestException('No valid file content received');
+    }
+
+    const buffer = file.buffer || file.data;
+    const category: FileCategory = (ALLOWED_FILE_CATEGORIES.includes(categoryName as any)
+      ? categoryName
+      : 'images') as FileCategory;
+
+    const fileId = `file_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+    const originalName = file.originalname || file.name || 'uploaded_image.png';
+    const sanitizedFileName = originalName.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 100);
+    const storageKey = `tenants/${tenantId}/${category}/${randomUUID().substring(0, 8)}-${sanitizedFileName}`;
+
+    // Ensure uploads directory exists on disk
+    const uploadsDir = path.join(process.cwd(), 'uploads', 'tenants', tenantId, category);
+    fs.mkdirSync(uploadsDir, { recursive: true });
+
+    const localFilename = `${fileId}_${sanitizedFileName}`;
+    const localFilePath = path.join(uploadsDir, localFilename);
+    fs.writeFileSync(localFilePath, buffer);
+
+    const relativeUrl = `/uploads/tenants/${tenantId}/${category}/${localFilename}`;
+
+    const fileData = await this.prisma.fileAsset.create({
+      data: {
+        id: fileId,
+        tenantId,
+        storageKey,
+        originalName,
+        mimeType: file.mimetype || 'image/png',
+        sizeBytes: buffer.length,
+        category,
+        uploadedByUserId: userId,
+      },
+    });
+
+    return {
+      file: fileData,
+      fileId,
+      storageKey,
+      url: relativeUrl,
+      downloadUrl: relativeUrl,
+    };
+  }
+
+  async uploadDirectImage(
+    tenantId: string,
+    userId: string,
+    body: { base64Data?: string; dataUrl?: string; filename?: string; category?: string },
+  ) {
+    const raw = body.dataUrl || body.base64Data;
+    if (!raw) {
+      throw new BadRequestException('Image data is required (dataUrl or base64Data)');
+    }
+
+    let mimeType = 'image/png';
+    let base64String = raw;
+
+    const match = raw.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+    if (match) {
+      mimeType = match[1];
+      base64String = match[2];
+    }
+
+    const buffer = Buffer.from(base64String, 'base64');
+    const ext = mimeType.split('/')[1] || 'png';
+    const originalName = body.filename || `image_${Date.now()}.${ext}`;
+
+    return this.saveUploadedFile(
+      tenantId,
+      userId,
+      {
+        originalname: originalName,
+        mimetype: mimeType,
+        buffer,
+      },
+      body.category || 'images',
+    );
   }
 }

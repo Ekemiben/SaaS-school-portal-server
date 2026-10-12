@@ -9,8 +9,12 @@ import {
   Param,
   Req,
   ForbiddenException,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { WebsiteService } from './website.service.js';
+import { FilesService } from '../files/files.service.js';
 import {
   UpdateWebsiteConfigDto,
   CreatePublicPageDto,
@@ -30,7 +34,10 @@ import { SystemPermissions } from '../../common/constants/permissions.js';
 @Controller(['admin/website', 'api/v1/admin/website'])
 @RequirePermissions(SystemPermissions.WEBSITE_MANAGE)
 export class WebsiteAdminController {
-  constructor(private readonly websiteService: WebsiteService) {}
+  constructor(
+    private readonly websiteService: WebsiteService,
+    private readonly filesService: FilesService,
+  ) {}
 
   private getTenantId(req: any): string {
     const user = req.user;
@@ -39,6 +46,29 @@ export class WebsiteAdminController {
       throw new ForbiddenException('Tenant context is required to access website administration');
     }
     return tenantId;
+  }
+
+  // --- Image & Asset Upload ---
+  @Post('upload-asset')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 15 * 1024 * 1024 } }))
+  async uploadAsset(
+    @Req() req: any,
+    @UploadedFile() file: any,
+    @Body('category') category?: string,
+  ) {
+    const tenantId = this.getTenantId(req);
+    const userId = req.user?.id || 'sys_admin';
+    return this.filesService.saveUploadedFile(tenantId, userId, file, category || 'website');
+  }
+
+  @Post('upload-base64')
+  async uploadBase64Asset(@Req() req: any, @Body() body: any) {
+    const tenantId = this.getTenantId(req);
+    const userId = req.user?.id || 'sys_admin';
+    return this.filesService.uploadDirectImage(tenantId, userId, {
+      ...body,
+      category: body?.category || 'website',
+    });
   }
 
   // --- Website Configuration ---
