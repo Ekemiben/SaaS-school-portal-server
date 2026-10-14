@@ -1,9 +1,9 @@
 export const storageConfig = () => ({
   storage: {
-    provider: process.env.STORAGE_PROVIDER || 'cloudflare-r2',
+    provider: process.env.STORAGE_PROVIDER || 's3',
     endpoint: process.env.STORAGE_ENDPOINT || process.env.CLOUDFLARE_R2_ENDPOINT || undefined,
-    bucket: process.env.STORAGE_BUCKET || process.env.CLOUDFLARE_R2_BUCKET || 'school-saas-documents',
-    region: process.env.STORAGE_REGION || process.env.CLOUDFLARE_R2_REGION || 'auto',
+    bucket: process.env.STORAGE_BUCKET || process.env.CLOUDFLARE_R2_BUCKET || 'extensive-bucket',
+    region: process.env.STORAGE_REGION || process.env.CLOUDFLARE_R2_REGION || 'eu-north-1',
     accessKeyId: process.env.STORAGE_ACCESS_KEY_ID || process.env.CLOUDFLARE_R2_ACCESS_KEY_ID || '',
     secretAccessKey: process.env.STORAGE_SECRET_ACCESS_KEY || process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY || '',
     publicDomain: process.env.STORAGE_PUBLIC_DOMAIN || process.env.CLOUDFLARE_R2_PUBLIC_DOMAIN || undefined,

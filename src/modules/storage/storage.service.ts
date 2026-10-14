@@ -7,10 +7,30 @@ import type {
   StorageFileMetadata,
   StorageProviderType,
 } from './storage.interface.js';
-import { StorageValidator } from './storage.validator.js';
+import { StorageValidator, type SchoolImageCategory } from './storage.validator.js';
 import { S3StorageAdapter } from './adapters/s3.storage-adapter.js';
 import { GCSStorageAdapter } from './adapters/gcs.storage-adapter.js';
 import { MemoryStorageAdapter } from './adapters/memory.storage-adapter.js';
+
+export interface UploadSchoolImageOptions {
+  schoolId: string;
+  schoolSlug: string;
+  category: string;
+  rawFileName: string;
+  buffer: Buffer;
+  declaredMimeType?: string;
+  entityId?: string;
+  userId?: string;
+}
+
+export interface UploadSchoolImageResult {
+  storageKey: string;
+  uniqueFileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  category: SchoolImageCategory;
+  publicUrl?: string;
+}
 
 @Injectable()
 export class StorageService implements OnModuleInit {
@@ -85,6 +105,106 @@ export class StorageService implements OnModuleInit {
     return this.adapter;
   }
 
+  /**
+   * Constructs the public URL for publicly accessible website images
+   */
+  getPublicUrl(storageKey: string): string {
+    if (this.config.endpoint) {
+      return `${this.config.endpoint.replace(/\/+$/, '')}/${this.config.bucket}/${storageKey}`;
+    }
+    return `https://${this.config.bucket}.s3.${this.config.region}.amazonaws.com/${storageKey}`;
+  }
+
+  /**
+   * Multi-Tenant School Image Upload Pipeline:
+   * 1. Resolves category to mandatory allowlist ('staff-image' | 'student-image' | 'website-image')
+   * 2. Inspects binary magic bytes to strictly ensure valid image content
+   * 3. Generates collision-resistant unique filename
+   * 4. Builds isolated S3 key: {school-storage-identifier}/{category}/{unique-filename}
+   * 5. Uploads directly to S3 bucket with isolated tenant metadata
+   */
+  async uploadSchoolImage(options: UploadSchoolImageOptions): Promise<UploadSchoolImageResult> {
+    const category = StorageValidator.resolveImageCategory(options.category);
+    const { mimeType, extension } = StorageValidator.detectAndValidateImageSignature(
+      options.buffer,
+      options.declaredMimeType,
+    );
+
+    const schoolIdentifier = (options.schoolSlug || options.schoolId || 'default-school')
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9-]/g, '');
+
+    const uniqueFileName = StorageValidator.generateUniqueImageFilename(
+      category,
+      extension,
+      options.entityId,
+      options.rawFileName,
+    );
+
+    const storageKey = StorageValidator.buildSchoolImageKey(
+      schoolIdentifier,
+      category,
+      uniqueFileName,
+    );
+
+    this.logger.log(
+      `Uploading school image to S3: bucket=[${this.config.bucket}], key=[${storageKey}], size=[${options.buffer.length}B], mime=[${mimeType}]`,
+    );
+
+    await this.adapter.uploadBuffer(storageKey, options.buffer, mimeType, {
+      school_id: options.schoolId,
+      school_slug: schoolIdentifier,
+      category,
+      uploaded_by: options.userId || 'system',
+    });
+
+    const publicUrl = category === 'website-image' ? this.getPublicUrl(storageKey) : undefined;
+
+    return {
+      storageKey,
+      uniqueFileName,
+      mimeType,
+      sizeBytes: options.buffer.length,
+      category,
+      publicUrl,
+    };
+  }
+
+  async getSchoolImageDownloadUrl(
+    schoolIdentifier: string | { tenantId?: string; slug?: string },
+    storageKey: string,
+    customExpiresSeconds?: number,
+  ): Promise<string> {
+    StorageValidator.validateTenantAccess(schoolIdentifier, storageKey);
+    const tenantId =
+      typeof schoolIdentifier === 'string'
+        ? schoolIdentifier
+        : schoolIdentifier.tenantId || schoolIdentifier.slug || '';
+
+    return this.adapter.getDownloadPresignedUrl({
+      tenantId,
+      key: storageKey,
+      expiresInSeconds: customExpiresSeconds || this.config.presignedUrlExpiresSeconds,
+    });
+  }
+
+  async getSchoolImageBuffer(
+    schoolIdentifier: string | { tenantId?: string; slug?: string },
+    storageKey: string,
+  ): Promise<{ buffer: Buffer; mimeType: string; size: number }> {
+    StorageValidator.validateTenantAccess(schoolIdentifier, storageKey);
+    return this.adapter.downloadBuffer(storageKey);
+  }
+
+  async deleteSchoolImage(
+    schoolIdentifier: string | { tenantId?: string; slug?: string },
+    storageKey: string,
+  ): Promise<boolean> {
+    StorageValidator.validateTenantAccess(schoolIdentifier, storageKey);
+    return this.adapter.deleteObject(storageKey);
+  }
+
   async getUploadPresignedUrl(
     tenantId: string,
     category: string,
@@ -141,24 +261,33 @@ export class StorageService implements OnModuleInit {
   }
 
   async downloadBuffer(
-    tenantId: string,
+    tenantId: string | { tenantId?: string; slug?: string },
     storageKey: string,
   ): Promise<{ buffer: Buffer; mimeType: string; size: number }> {
     StorageValidator.validateTenantAccess(tenantId, storageKey);
     return this.adapter.downloadBuffer(storageKey);
   }
 
-  async deleteObject(tenantId: string, storageKey: string): Promise<boolean> {
+  async deleteObject(
+    tenantId: string | { tenantId?: string; slug?: string },
+    storageKey: string,
+  ): Promise<boolean> {
     StorageValidator.validateTenantAccess(tenantId, storageKey);
     return this.adapter.deleteObject(storageKey);
   }
 
-  async objectExists(tenantId: string, storageKey: string): Promise<boolean> {
+  async objectExists(
+    tenantId: string | { tenantId?: string; slug?: string },
+    storageKey: string,
+  ): Promise<boolean> {
     StorageValidator.validateTenantAccess(tenantId, storageKey);
     return this.adapter.objectExists(storageKey);
   }
 
-  async getMetadata(tenantId: string, storageKey: string): Promise<StorageFileMetadata | null> {
+  async getMetadata(
+    tenantId: string | { tenantId?: string; slug?: string },
+    storageKey: string,
+  ): Promise<StorageFileMetadata | null> {
     StorageValidator.validateTenantAccess(tenantId, storageKey);
     return this.adapter.getMetadata(storageKey);
   }
