@@ -58,17 +58,19 @@ export class WebsiteAdminController {
   ) {
     const tenantId = this.getTenantId(req);
     const userId = req.user?.id || 'sys_admin';
-    return this.filesService.saveUploadedFile(tenantId, userId, file, category || 'website');
+    const slug = req.tenantContext?.slug || req.tenant?.slug;
+    return this.filesService.saveUploadedFile(tenantId, userId, file, category || 'website-image', slug);
   }
 
   @Post('upload-base64')
   async uploadBase64Asset(@Req() req: any, @Body() body: any) {
     const tenantId = this.getTenantId(req);
     const userId = req.user?.id || 'sys_admin';
+    const slug = req.tenantContext?.slug || req.tenant?.slug;
     return this.filesService.uploadDirectImage(tenantId, userId, {
       ...body,
-      category: body?.category || 'website',
-    });
+      category: body?.category || 'website-image',
+    }, slug);
   }
 
   // --- Website Configuration ---

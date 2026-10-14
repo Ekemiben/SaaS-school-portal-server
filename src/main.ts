@@ -7,7 +7,26 @@ import { AppModule } from './app.module.js';
 import { CustomValidationPipe } from './common/pipes/validation.pipe.js';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { rawBody: true });
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
+
+  // Support large JSON payloads (images, bulk data) with rawBody capture for webhooks
+  app.use(
+    express.json({
+      limit: '50mb',
+      verify: (req: any, _res: any, buf: Buffer) => {
+        req.rawBody = buf;
+      },
+    }),
+  );
+  app.use(
+    express.urlencoded({
+      limit: '50mb',
+      extended: true,
+      verify: (req: any, _res: any, buf: Buffer) => {
+        req.rawBody = buf;
+      },
+    }),
+  );
 
   app.use(cookieParser());
   app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
