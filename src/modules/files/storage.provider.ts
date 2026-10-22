@@ -149,6 +149,11 @@ export class CloudflareR2StorageProvider implements OnModuleInit {
       const response = await this.s3Client.send(command);
       return { uploadId: response.UploadId || 'upload_init', storageKey };
     }
+
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('Cloudflare R2 Storage credentials must be configured in production.');
+    }
+
     return { uploadId: `mock_mp_${Date.now()}`, storageKey };
   }
 
@@ -167,6 +172,11 @@ export class CloudflareR2StorageProvider implements OnModuleInit {
       const uploadUrl = await getSignedUrl(this.s3Client, command, { expiresIn: this.uploadExpiresIn });
       return { uploadUrl, partNumber };
     }
+
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('Cloudflare R2 Storage credentials must be configured in production.');
+    }
+
     const mockEndpoint = this.endpoint || 'https://mock.r2.cloudflarestorage.com';
     return {
       uploadUrl: `${mockEndpoint}/${this.bucket}/${storageKey}?uploadId=${uploadId}&partNumber=${partNumber}`,
@@ -191,6 +201,11 @@ export class CloudflareR2StorageProvider implements OnModuleInit {
       const response = await this.s3Client.send(command);
       return { location: response.Location };
     }
+
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('Cloudflare R2 Storage credentials must be configured in production.');
+    }
+
     return { location: `https://storage.r2.dev/${storageKey}` };
   }
 

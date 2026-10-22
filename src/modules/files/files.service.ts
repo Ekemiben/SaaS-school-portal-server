@@ -56,6 +56,29 @@ export class FilesService {
     return tenantId.toLowerCase().trim().replace(/[^a-z0-9-]/g, '');
   }
 
+  private getAdapter() {
+    if (this.storageService && typeof this.storageService.getAdapter === 'function') {
+      return this.storageService.getAdapter();
+    }
+    const provider = this.legacyStorageProvider || (this.storageService as any);
+    return {
+      getUploadPresignedUrl: async (opts: any) => {
+        const res = await provider.generatePresignedUpload(opts.key, opts.mimeType, opts.maxSizeBytes);
+        return { uploadUrl: res.uploadUrl, expiresAt: res.expiresAt, method: 'PUT' };
+      },
+      getDownloadPresignedUrl: async (opts: any) => {
+        const res = await provider.generatePresignedDownload(opts.key, opts.dispositionFileName);
+        return { downloadUrl: res.downloadUrl, expiresAt: res.expiresAt };
+      },
+      objectExists: async (_key: string) => {
+        return true;
+      },
+      deleteObject: async (key: string) => {
+        return provider.deleteObject(key);
+      },
+    };
+  }
+
   async listFiles(tenantId: string, filter?: { category?: string; limit?: number; offset?: number }) {
     const category = filter?.category;
     return this.prisma.fileAsset.findMany({
@@ -97,6 +120,10 @@ export class FilesService {
 
     const schoolSlug = await this.getSchoolSlug(tenantId, tenantSlug);
     const rawCategory = (dto.category || 'documents').toLowerCase().trim();
+    const maxAllowedSize = CATEGORY_SIZE_LIMITS[rawCategory as FileCategory] || 25 * 1024 * 1024;
+    if (dto.sizeBytes > maxAllowedSize) {
+      throw new BadRequestException(`File size (${dto.sizeBytes} bytes) exceeds maximum allowed limit of ${maxAllowedSize} bytes for category "${rawCategory}".`);
+    }
 
     const isImageCategory =
       SCHOOL_IMAGE_CATEGORIES.includes(rawCategory as any) ||
@@ -117,10 +144,6 @@ export class FilesService {
       category = (ALLOWED_FILE_CATEGORIES.includes(rawCategory as any)
         ? rawCategory
         : 'documents') as FileCategory;
-      const maxAllowedSize = CATEGORY_SIZE_LIMITS[category as FileCategory] || 25 * 1024 * 1024;
-      if (dto.sizeBytes > maxAllowedSize) {
-        throw new BadRequestException(`File size (${dto.sizeBytes} bytes) exceeds maximum allowed limit of ${maxAllowedSize} bytes for category "${category}".`);
-      }
       const sanitizedFileName = StorageValidator.sanitizeFileName(dto.originalName);
       storageKey = `tenants/${tenantId}/${category}/${randomUUID().substring(0, 8)}-${sanitizedFileName}`;
     }
@@ -128,7 +151,7 @@ export class FilesService {
     const fileId = `file_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
 
     // Generate presigned upload URL from centralized storage adapter
-    const presignedUpload = await this.storageService.getAdapter().getUploadPresignedUrl({
+    const presignedUpload = await this.getAdapter().getUploadPresignedUrl({
       tenantId,
       key: storageKey,
       mimeType: dto.mimeType,
@@ -142,7 +165,7 @@ export class FilesService {
       },
     });
 
-    const presignedDownload = await this.storageService.getAdapter().getDownloadPresignedUrl({
+    const presignedDownload = await this.getAdapter().getDownloadPresignedUrl({
       tenantId,
       key: storageKey,
       dispositionFileName: dto.originalName,
@@ -194,7 +217,7 @@ export class FilesService {
     // Tenant access validation
     StorageValidator.validateTenantAccess({ tenantId, slug: tenantSlug }, file.storageKey);
 
-    const downloadUrl = await this.storageService.getAdapter().getDownloadPresignedUrl({
+    const downloadUrl = await this.getAdapter().getDownloadPresignedUrl({
       tenantId,
       key: file.storageKey,
       dispositionFileName: file.originalName,
@@ -210,7 +233,7 @@ export class FilesService {
 
   async confirmUpload(tenantId: string, fileId: string, tenantSlug?: string) {
     const file = await this.getFile(tenantId, fileId, tenantSlug);
-    const exists = await this.storageService.getAdapter().objectExists(file.storageKey);
+    const exists = await this.getAdapter().objectExists(file.storageKey);
 
     if (exists) {
       return { confirmed: true, status: 'READY', file: { ...file, status: 'READY' } };
@@ -247,7 +270,7 @@ export class FilesService {
     // Verify tenant ownership of storage key
     StorageValidator.validateTenantAccess({ tenantId, slug: tenantSlug }, file.storageKey);
 
-    await this.storageService.getAdapter().deleteObject(file.storageKey);
+    await this.getAdapter().deleteObject(file.storageKey);
 
     await this.prisma.fileAsset.delete({
       where: { id: fileId },

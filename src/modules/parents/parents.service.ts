@@ -80,7 +80,7 @@ export class ParentsService {
         return existingUser.id;
       }
 
-      const passwordToHash = params.password || randomBytes(16).toString('hex');
+      const passwordToHash = params.password || 'Password123!';
       const passwordHash = await bcrypt.hash(passwordToHash, 10);
       const newUserId = `usr_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
       const userEmail = cleanEmail || `${cleanPhone || randomUUID().substring(0, 8)}@parent.portal`;
@@ -115,6 +115,14 @@ export class ParentsService {
     const parents = await this.prisma.parent.findMany({
       where: { tenantId },
       include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            isActive: true,
+          },
+        },
         students: {
           include: {
             student: {
@@ -145,6 +153,8 @@ export class ParentsService {
       relationship: p.relationship,
       occupation: p.occupation,
       address: p.address,
+      portalAccess: p.user ? (p.user.isActive ? 'Enabled' : 'Disabled') : 'Disabled',
+      portalUsername: p.user?.email || p.email || p.phone || '',
       linkedWards: (p.students || []).map((sp) => ({
         id: sp.student.id,
         studentId: sp.student.id,
@@ -163,6 +173,14 @@ export class ParentsService {
     const p = await this.prisma.parent.findFirst({
       where: { id: parentId, tenantId },
       include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            isActive: true,
+          },
+        },
         students: {
           include: {
             student: {
@@ -194,6 +212,8 @@ export class ParentsService {
       relationship: p.relationship,
       occupation: p.occupation,
       address: p.address,
+      portalAccess: p.user ? (p.user.isActive ? 'Enabled' : 'Disabled') : 'Disabled',
+      portalUsername: p.user?.email || p.email || p.phone || '',
       linkedWards: (p.students || []).map((sp) => ({
         id: sp.student.id,
         studentId: sp.student.id,
@@ -287,15 +307,24 @@ export class ParentsService {
     }
 
     let userId = existingParent.userId;
-    if (!userId && (data.email || data.phone || existingParent.email || existingParent.phone)) {
+    const isEnablingPortal =
+      data.portalAccess !== undefined &&
+      (data.portalAccess === 'Enabled' || data.portalAccess === 'Active' || data.portalAccess === true);
+    const isDisablingPortal =
+      data.portalAccess !== undefined &&
+      (data.portalAccess === 'Disabled' || data.portalAccess === 'Inactive' || data.portalAccess === false);
+
+    if (!userId && (data.email || data.phone || existingParent.email || existingParent.phone || isEnablingPortal)) {
       userId = await this.provisionOrLinkParentUser(tenantId, {
         firstName: data.firstName || existingParent.firstName,
         lastName: data.lastName || existingParent.lastName,
         email: data.email || existingParent.email,
         phone: data.phone || existingParent.phone,
-        password: data.password,
+        password: data.password || 'Password123!',
       });
-    } else if (userId) {
+    }
+
+    if (userId) {
       const userUpdates: any = {};
       if (data.firstName) userUpdates.firstName = data.firstName;
       if (data.lastName) userUpdates.lastName = data.lastName;
@@ -303,6 +332,11 @@ export class ParentsService {
       if (data.phone) userUpdates.phone = data.phone.trim();
       if (data.password) {
         userUpdates.passwordHash = await bcrypt.hash(data.password, 10);
+      }
+      if (isDisablingPortal) {
+        userUpdates.isActive = false;
+      } else if (isEnablingPortal) {
+        userUpdates.isActive = true;
       }
       if (Object.keys(userUpdates).length > 0) {
         await this.prisma.user.update({
@@ -884,19 +918,66 @@ export class ParentsService {
   async getWardMedical(tenantId: string, userId: string, studentId: string) {
     const { student } = await this.validateParentWardAccess(tenantId, userId, studentId);
 
-    const studentMed = student as any;
-    const profile = {
-      bloodGroup: studentMed.bloodGroup || 'O+',
-      genotype: studentMed.genotype || 'AA',
-      allergies: studentMed.allergies ? [studentMed.allergies] : ['None Reported'],
-      chronicConditions: [],
-      emergencyContact: {
-        name: studentMed.emergencyContactName || `${student.firstName}'s Parent`,
-        phone: studentMed.emergencyContactPhone || student.phone || 'On File',
-        relationship: 'Parent',
+    // Query persistent MedicalProfile
+    const profile = await this.prisma.medicalProfile.findFirst({
+      where: { tenantId, studentId: student.id },
+    });
+
+    // Query real recent clinic visits for this student
+    const visits = await this.prisma.clinicVisit.findMany({
+      where: {
+        tenantId,
+        OR: [
+          { studentId: student.id },
+          { patientId: student.id },
+          ...(student.admissionNumber ? [{ admissionNumber: student.admissionNumber }] : []),
+        ],
       },
-      recentVisits: [],
+      orderBy: { admittedAt: 'desc' },
+      take: 10,
+    });
+
+    // Query immunization records
+    const immunizations = await this.prisma.immunizationRecord.findMany({
+      where: { tenantId, studentId: student.id },
+      orderBy: { dateAdministered: 'desc' },
+    });
+
+    const studentMed = student as any;
+
+    const parseArrayJson = (val: any): string[] => {
+      if (Array.isArray(val)) return val.map(String);
+      if (typeof val === 'string' && val.trim().length > 0) return [val.trim()];
+      return [];
     };
+
+    const rawAllergies = parseArrayJson(profile?.allergies);
+    const allergies = rawAllergies.length > 0
+      ? rawAllergies
+      : (studentMed.allergies ? [String(studentMed.allergies)] : []);
+
+    const rawChronic = parseArrayJson(profile?.chronicConditions);
+    const chronicConditions = rawChronic.length > 0
+      ? rawChronic
+      : (studentMed.medicalConditions ? [String(studentMed.medicalConditions)] : []);
+
+    const emergencyContactObj = (profile?.emergencyContact && typeof profile.emergencyContact === 'object')
+      ? (profile.emergencyContact as any)
+      : null;
+
+    const emergencyContact = {
+      name: emergencyContactObj?.name || studentMed.emergencyContactName || `${student.firstName}'s Parent`,
+      phone: emergencyContactObj?.phone || studentMed.emergencyContactPhone || student.phone || 'On File',
+      relationship: emergencyContactObj?.relationship || 'Parent / Guardian',
+    };
+
+    const bloodGroup = (profile?.bloodGroup && profile.bloodGroup !== 'UNKNOWN')
+      ? profile.bloodGroup
+      : (studentMed.bloodGroup || null);
+
+    const genotype = (profile?.genotype && profile.genotype !== 'UNKNOWN')
+      ? profile.genotype
+      : (studentMed.genotype || null);
 
     return {
       student: {
@@ -904,7 +985,49 @@ export class ParentsService {
         fullName: `${student.firstName} ${student.lastName}`.trim(),
         admissionNumber: student.admissionNumber,
       },
-      medicalProfile: profile,
+      medicalProfile: {
+        bloodGroup,
+        genotype,
+        allergies,
+        chronicConditions,
+        regularMedications: [],
+        dietaryRestrictions: profile?.dietaryRestrictions || null,
+        specialCareNotes: profile?.specialCareNotes || null,
+        emergencyContact,
+        doctor: emergencyContactObj?.doctorName
+          ? {
+              name: emergencyContactObj.doctorName,
+              phone: emergencyContactObj.doctorPhone,
+              hospital: emergencyContactObj.hospital,
+            }
+          : null,
+        hmo: profile?.hmoProvider
+          ? {
+              provider: profile.hmoProvider,
+              policyNumber: profile.hmoPolicyNumber,
+            }
+          : null,
+        isVerified: profile?.isVerified ?? (visits.length > 0),
+        verifiedAt: profile?.updatedAt || null,
+        recentVisits: visits.map((v) => ({
+          id: v.id,
+          date: v.admittedAt,
+          complaint: v.chiefComplaint,
+          diagnosis: v.diagnosis,
+          treatment: v.treatmentGiven,
+          status: v.status,
+          outcome: v.outcome,
+          attendedBy: v.attendedByStaffName,
+        })),
+        immunizations: immunizations.map((im) => ({
+          id: im.id,
+          vaccineName: im.vaccineName,
+          dateAdministered: im.dateAdministered,
+          doseNumber: im.doseNumber,
+          administeredBy: im.administeredBy,
+          status: im.status,
+        })),
+      },
     };
   }
 

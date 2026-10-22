@@ -698,4 +698,79 @@ export class CommunicationsService {
 
     return { success: true, threadId };
   }
+
+  async getSupportTickets(tenantId: string) {
+    const threads = await this.prisma.communicationThread.findMany({
+      where: {
+        tenantId,
+        subject: { startsWith: '[SUPPORT:' },
+      },
+      include: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return threads.map((t) => {
+      const match = t.subject.match(/^\[SUPPORT:\s*([^\]]+)\](?:\[PRIORITY:\s*([^\]]+)\])?\s*(.*)$/);
+      const category = match ? match[1].trim() : 'General Support';
+      const priority = match && match[2] ? match[2].trim() : 'MEDIUM';
+      const cleanSubject = match && match[3] ? match[3].trim() : t.subject;
+      const initialMessage = t.messages[0]?.content || '';
+
+      return {
+        id: t.id,
+        subject: cleanSubject,
+        category,
+        priority,
+        status: t.messages.length > 1 ? 'RESOLVED' : 'OPEN',
+        createdAt: t.createdAt.toISOString(),
+        resolvedAt: t.messages.length > 1 ? t.lastMessageAt.toISOString() : '-',
+        description: initialMessage,
+        messageCount: t.messages.length,
+      };
+    });
+  }
+
+  async createSupportTicket(
+    tenantId: string,
+    userId: string,
+    dto: { subject: string; category?: string; priority?: string; description: string },
+  ) {
+    const category = dto.category || 'General Support';
+    const priority = dto.priority || 'MEDIUM';
+    const fullSubject = `[SUPPORT: ${category}][PRIORITY: ${priority}] ${dto.subject}`;
+
+    const thread = await this.prisma.communicationThread.create({
+      data: {
+        tenantId,
+        subject: fullSubject,
+        createdById: userId,
+        participantIds: [userId, 'SUPPORT_DESK'],
+        lastMessageAt: new Date(),
+        messages: {
+          create: {
+            senderId: userId,
+            senderType: 'USER',
+            content: dto.description,
+            readBy: [userId],
+          },
+        },
+      },
+      include: { messages: true },
+    });
+
+    return {
+      id: thread.id,
+      subject: dto.subject,
+      category,
+      priority,
+      status: 'OPEN',
+      createdAt: thread.createdAt.toISOString(),
+      resolvedAt: '-',
+      description: dto.description,
+    };
+  }
 }

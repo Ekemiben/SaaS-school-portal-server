@@ -440,8 +440,8 @@ export class StudentsService {
               },
               update: {},
             });
-          } else {
-            const passwordHash = await bcrypt.hash(randomUUID(), 10);
+            const initialParentPassword = data.guardianPassword || data.password || 'Password123!';
+            const passwordHash = await bcrypt.hash(initialParentPassword, 10);
             const newUserId = `usr_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
             const userEmail = emailClean || `${phoneClean || randomUUID().substring(0, 8)}@parent.portal`;
             const createdUser = await this.prisma.user.create({
@@ -614,8 +614,8 @@ export class StudentsService {
       });
 
       if (!existingStudentUser && studentRole) {
-        const randomSecret = randomBytes(16).toString('hex');
-        const passHash = await bcrypt.hash(randomSecret, 10);
+        const studentPassword = data.studentPassword || data.password || 'Password123!';
+        const passHash = await bcrypt.hash(studentPassword, 10);
         await this.prisma.user.create({
           data: {
             id: `usr_stu_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
@@ -687,10 +687,10 @@ export class StudentsService {
         });
 
         if (!existingParentUser && parentRole) {
-          const randomSecret = randomBytes(16).toString('hex');
-          const passHash = await bcrypt.hash(randomSecret, 10);
+          const parentPassword = data.guardianPassword || data.password || 'Password123!';
+          const passHash = await bcrypt.hash(parentPassword, 10);
           const nameParts = (data.guardianName || 'Guardian').trim().split(/\s+/);
-          await this.prisma.user.create({
+          const createdParentUser = await this.prisma.user.create({
             data: {
               id: `usr_par_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
               tenantId,
@@ -705,6 +705,22 @@ export class StudentsService {
               },
             },
           });
+          const targetParent = await this.prisma.parent.findFirst({
+            where: {
+              tenantId,
+              OR: [
+                ...(parentEmail ? [{ email: parentEmail }] : []),
+                ...(phoneClean ? [{ phone: phoneClean }] : []),
+                { students: { some: { studentId: createdStudent.id } } },
+              ],
+            },
+          });
+          if (targetParent && !targetParent.userId) {
+            await this.prisma.parent.update({
+              where: { id: targetParent.id },
+              data: { userId: createdParentUser.id },
+            }).catch(() => {});
+          }
         }
       }
     } catch (e: any) {

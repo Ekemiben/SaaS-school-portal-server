@@ -21,16 +21,10 @@ export interface MedicalAlertBadge {
 @Injectable()
 export class MedicalProfileService {
   private readonly logger = new Logger(MedicalProfileService.name);
-  private readonly profiles = new Map<string, any>(); // key: `${tenantId}:${studentId}`
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly storageProvider: CloudflareR2StorageProvider,
   ) {}
-
-  private profileKey(tenantId: string, studentId: string): string {
-    return `${tenantId}:${studentId}`;
-  }
 
   async getMedicalProfile(tenantId: string, studentId: string) {
     const student = await this.prisma.student.findFirst({
@@ -46,31 +40,60 @@ export class MedicalProfileService {
       throw new NotFoundException('Student not found');
     }
 
-    const key = this.profileKey(tenantId, studentId);
-    let profile = this.profiles.get(key);
+    let profile = await this.prisma.medicalProfile.findFirst({
+      where: { studentId, tenantId },
+    });
 
     if (!profile) {
-      // Return empty default profile structure
-      profile = {
-        id: `med_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
-        tenantId,
-        studentId,
-        bloodGroup: BloodGroup.UNKNOWN,
-        genotype: Genotype.UNKNOWN,
-        vitals: null,
-        emergencyContact: null,
-        chronicConditions: [],
-        allergies: [],
-        immunizations: [],
-        hmoProvider: null,
-        hmoPolicyNumber: null,
-        dietaryRestrictions: null,
-        specialCareNotes: null,
-        documents: [],
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-      this.profiles.set(key, profile);
+      // Default to student baseline medical fields if available
+      const bloodGroup = (student.bloodGroup as any) || BloodGroup.UNKNOWN;
+      const genotype = (student.genotype as any) || Genotype.UNKNOWN;
+      const emergencyContact = student.emergencyContactName
+        ? {
+            primaryContactName: student.emergencyContactName,
+            relationship: student.emergencyContactRelationship || 'Parent/Guardian',
+            primaryPhone: student.emergencyContactPhone || '',
+          }
+        : null;
+      const chronicConditions = student.medicalConditions
+        ? [
+            {
+              conditionName: student.medicalConditions,
+              severity: 'MEDIUM',
+              managementProtocol: 'Follow registered physician guidance',
+            },
+          ]
+        : [];
+      const allergies = student.allergies
+        ? [
+            {
+              allergen: student.allergies,
+              severity: AllergySeverity.MODERATE,
+              reactionSymptoms: 'Allergic reaction reported',
+              emergencyTreatment: 'Administer prescribed antihistamine and alert school nurse',
+            },
+          ]
+        : [];
+
+      profile = await this.prisma.medicalProfile.create({
+        data: {
+          id: `med_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
+          tenantId,
+          studentId,
+          bloodGroup,
+          genotype,
+          vitals: undefined,
+          emergencyContact: emergencyContact ? (emergencyContact as any) : undefined,
+          chronicConditions: (chronicConditions as any) || [],
+          allergies: (allergies as any) || [],
+          immunizations: [],
+          hmoProvider: null,
+          hmoPolicyNumber: null,
+          dietaryRestrictions: null,
+          specialCareNotes: null,
+          documents: [],
+        },
+      });
     }
 
     const alerts = this.evaluateMedicalAlerts(profile);
@@ -103,45 +126,71 @@ export class MedicalProfileService {
       throw new NotFoundException('Student not found');
     }
 
-    const key = this.profileKey(tenantId, studentId);
-    const existing = this.profiles.get(key);
+    const existing = await this.prisma.medicalProfile.findFirst({
+      where: { studentId, tenantId },
+    });
 
     // Calculate BMI if height and weight are provided
-    let vitals = dto.vitals || existing?.vitals;
+    let vitals = dto.vitals || (existing?.vitals as any);
     if (vitals?.heightCm && vitals?.weightKg) {
       const heightM = vitals.heightCm / 100;
       const bmi = Number((vitals.weightKg / (heightM * heightM)).toFixed(1));
       vitals = { ...vitals, bmi, recordedAt: vitals.recordedAt || new Date().toISOString() };
     }
 
-    const profileData = {
-      id: existing?.id || `med_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
-      tenantId,
-      studentId,
-      bloodGroup: dto.bloodGroup || existing?.bloodGroup || BloodGroup.UNKNOWN,
-      genotype: dto.genotype || existing?.genotype || Genotype.UNKNOWN,
-      vitals: vitals || null,
-      emergencyContact: dto.emergencyContact || existing?.emergencyContact || null,
-      chronicConditions: dto.chronicConditions ?? existing?.chronicConditions ?? [],
-      allergies: dto.allergies ?? existing?.allergies ?? [],
-      immunizations: dto.immunizations ?? existing?.immunizations ?? [],
-      hmoProvider: dto.hmoProvider ?? existing?.hmoProvider ?? null,
-      hmoPolicyNumber: dto.hmoPolicyNumber ?? existing?.hmoPolicyNumber ?? null,
-      dietaryRestrictions: dto.dietaryRestrictions ?? existing?.dietaryRestrictions ?? null,
-      specialCareNotes: dto.specialCareNotes ?? existing?.specialCareNotes ?? null,
-      documents: existing?.documents || [],
-      lastUpdatedByUserId: updatedByUserId,
-      createdAt: existing?.createdAt || new Date(),
-      updatedAt: new Date(),
-    };
+    const profile = await this.prisma.medicalProfile.upsert({
+      where: { studentId },
+      create: {
+        id: `med_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
+        tenantId,
+        studentId,
+        bloodGroup: dto.bloodGroup || student.bloodGroup || BloodGroup.UNKNOWN,
+        genotype: dto.genotype || student.genotype || Genotype.UNKNOWN,
+        vitals: vitals ? (vitals as any) : undefined,
+        emergencyContact: dto.emergencyContact ? (dto.emergencyContact as any) : undefined,
+        chronicConditions: (dto.chronicConditions as any) || [],
+        allergies: (dto.allergies as any) || [],
+        immunizations: (dto.immunizations as any) || [],
+        hmoProvider: dto.hmoProvider || null,
+        hmoPolicyNumber: dto.hmoPolicyNumber || null,
+        dietaryRestrictions: dto.dietaryRestrictions || null,
+        specialCareNotes: dto.specialCareNotes || null,
+        documents: [],
+        lastUpdatedByUserId: updatedByUserId,
+      },
+      update: {
+        bloodGroup: dto.bloodGroup || undefined,
+        genotype: dto.genotype || undefined,
+        vitals: vitals !== undefined ? (vitals as any) : undefined,
+        emergencyContact: dto.emergencyContact !== undefined ? (dto.emergencyContact as any) : undefined,
+        chronicConditions: dto.chronicConditions !== undefined ? (dto.chronicConditions as any) : undefined,
+        allergies: dto.allergies !== undefined ? (dto.allergies as any) : undefined,
+        immunizations: dto.immunizations !== undefined ? (dto.immunizations as any) : undefined,
+        hmoProvider: dto.hmoProvider !== undefined ? dto.hmoProvider : undefined,
+        hmoPolicyNumber: dto.hmoPolicyNumber !== undefined ? dto.hmoPolicyNumber : undefined,
+        dietaryRestrictions: dto.dietaryRestrictions !== undefined ? dto.dietaryRestrictions : undefined,
+        specialCareNotes: dto.specialCareNotes !== undefined ? dto.specialCareNotes : undefined,
+        lastUpdatedByUserId: updatedByUserId,
+      },
+    });
 
-    this.profiles.set(key, profileData);
+    // Synchronize quick lookup fields on student table
+    if (profile.bloodGroup || profile.genotype) {
+      await this.prisma.student.update({
+        where: { id: studentId },
+        data: {
+          bloodGroup: profile.bloodGroup || undefined,
+          genotype: profile.genotype || undefined,
+        },
+      });
+    }
+
     return this.getMedicalProfile(tenantId, studentId);
   }
 
   async addAllergy(tenantId: string, studentId: string, dto: CreateAllergyDto) {
     const profile = await this.getMedicalProfile(tenantId, studentId);
-    const existingAllergies = profile.allergies || [];
+    const existingAllergies = (profile.allergies as any[]) || [];
 
     // Filter duplicate allergen
     const filtered = existingAllergies.filter(
@@ -150,20 +199,41 @@ export class MedicalProfileService {
     filtered.push(dto);
 
     return this.upsertMedicalProfile(tenantId, studentId, {
-      ...profile,
-      allergies: filtered,
+      studentId,
+      bloodGroup: (profile.bloodGroup as BloodGroup) || BloodGroup.UNKNOWN,
+      genotype: (profile.genotype as Genotype) || Genotype.UNKNOWN,
+      vitals: profile.vitals as any,
+      emergencyContact: profile.emergencyContact as any,
+      chronicConditions: (profile.chronicConditions as any) || [],
+      allergies: filtered as any,
+      immunizations: (profile.immunizations as any) || [],
+      hmoProvider: profile.hmoProvider || undefined,
+      hmoPolicyNumber: profile.hmoPolicyNumber || undefined,
+      dietaryRestrictions: profile.dietaryRestrictions || undefined,
+      specialCareNotes: profile.specialCareNotes || undefined,
     });
   }
 
   async removeAllergy(tenantId: string, studentId: string, allergen: string) {
     const profile = await this.getMedicalProfile(tenantId, studentId);
-    const filtered = (profile.allergies || []).filter(
+    const existingAllergies = (profile.allergies as any[]) || [];
+    const filtered = existingAllergies.filter(
       (a: any) => a.allergen.toLowerCase() !== allergen.toLowerCase(),
     );
 
     return this.upsertMedicalProfile(tenantId, studentId, {
-      ...profile,
-      allergies: filtered,
+      studentId,
+      bloodGroup: (profile.bloodGroup as BloodGroup) || BloodGroup.UNKNOWN,
+      genotype: (profile.genotype as Genotype) || Genotype.UNKNOWN,
+      vitals: profile.vitals as any,
+      emergencyContact: profile.emergencyContact as any,
+      chronicConditions: (profile.chronicConditions as any) || [],
+      allergies: filtered as any,
+      immunizations: (profile.immunizations as any) || [],
+      hmoProvider: profile.hmoProvider || undefined,
+      hmoPolicyNumber: profile.hmoPolicyNumber || undefined,
+      dietaryRestrictions: profile.dietaryRestrictions || undefined,
+      specialCareNotes: profile.specialCareNotes || undefined,
     });
   }
 
@@ -173,7 +243,7 @@ export class MedicalProfileService {
       ? await this.prisma.class.findFirst({ where: { id: profile.student.classId, tenantId } })
       : null;
 
-    const criticalAllergies = (profile.allergies || []).filter(
+    const criticalAllergies = ((profile.allergies as any[]) || []).filter(
       (a: any) => a.severity === AllergySeverity.SEVERE || a.severity === AllergySeverity.LIFE_THREATENING,
     );
 
@@ -216,9 +286,9 @@ export class MedicalProfileService {
           bloodGroup: profile.bloodGroup,
           genotype: profile.genotype,
           alerts: profile.alerts,
-          allergiesCount: profile.allergies?.length || 0,
-          chronicConditions: profile.chronicConditions?.map((c: any) => c.conditionName) || [],
-          emergencyPhone: profile.emergencyContact?.primaryPhone || 'N/A',
+          allergiesCount: ((profile.allergies as any[]) || []).length,
+          chronicConditions: ((profile.chronicConditions as any[]) || []).map((c: any) => c.conditionName),
+          emergencyPhone: (profile.emergencyContact as any)?.primaryPhone || 'N/A',
         });
       }
     }
@@ -235,7 +305,7 @@ export class MedicalProfileService {
     const alerts: MedicalAlertBadge[] = [];
 
     // 1. Evaluate Allergies
-    for (const allergy of profile.allergies || []) {
+    for (const allergy of (profile.allergies as any[]) || []) {
       const isHigh =
         allergy.severity === AllergySeverity.LIFE_THREATENING ||
         allergy.severity === AllergySeverity.SEVERE ||
@@ -251,7 +321,7 @@ export class MedicalProfileService {
     }
 
     // 2. Evaluate Chronic Conditions
-    for (const cond of profile.chronicConditions || []) {
+    for (const cond of (profile.chronicConditions as any[]) || []) {
       const isHigh = cond.severity === 'SEVERE' || cond.requiresClinicEmergencyProtocol;
       alerts.push({
         type: 'CHRONIC_CONDITION',

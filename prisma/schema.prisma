@@ -232,6 +232,12 @@ model Tenant {
   transitionInquiries          TransitionInquiry[]
   transitionShowcases          TransitionShowcaseItem[]
   transitionReasons            TransitionReason[]
+  medicalProfiles              MedicalProfile[]
+  clinicVisits                 ClinicVisit[]
+  medicationDispensations      MedicationDispensation[]
+  healthIncidents              HealthIncident[]
+  immunizationRecords          ImmunizationRecord[]
+  fitnessCertificates          FitnessCertificate[]
 
   @@index([slug])
   @@index([status])
@@ -492,6 +498,12 @@ model Student {
   transitionApplications  TransitionApplication[]
   transitionEventRsvps    TransitionEventRsvp[]
   transitionInquiries     TransitionInquiry[]
+  medicalProfile          MedicalProfile?
+  clinicVisits            ClinicVisit[]
+  medicationDispensations MedicationDispensation[]
+  healthIncidents         HealthIncident[]
+  immunizationRecords     ImmunizationRecord[]
+  fitnessCertificates     FitnessCertificate[]
 
   @@unique([tenantId, admissionNumber])
   @@index([tenantId])
@@ -4138,5 +4150,187 @@ model TransitionReason {
   @@index([tenantId])
   @@index([tenantId, isActive])
 }
+
+model MedicalProfile {
+  id                  String   @id @default(uuid())
+  tenantId            String
+  studentId           String   @unique
+  bloodGroup          String?  @default("UNKNOWN")
+  genotype            String?  @default("UNKNOWN")
+  vitals              Json?
+  emergencyContact    Json?
+  chronicConditions   Json?
+  allergies           Json?
+  immunizations       Json?
+  hmoProvider         String?
+  hmoPolicyNumber     String?
+  dietaryRestrictions String?
+  specialCareNotes    String?
+  documents           Json?
+  isVerified          Boolean  @default(false)
+  lastUpdatedByUserId String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([studentId])
+}
+
+model ClinicVisit {
+  id                  String    @id @default(uuid())
+  tenantId            String
+  studentId           String?
+  patientType         String    @default("STUDENT")
+  patientId           String?
+  patientName         String?
+  admissionNumber     String?
+  class               String?
+  visitType           String    @default("ROUTINE_CHECKUP")
+  chiefComplaint      String
+  symptoms            Json?
+  vitals              Json?
+  temperature         String?
+  bloodGroup          String?
+  allergies           String?
+  diagnosis           String?
+  treatmentGiven      String?
+  outcome             String    @default("RESTING_IN_SICKBAY")
+  status              String    @default("Under Observation")
+  sickbayBedNumber    String?
+  attendedByStaffId   String?
+  attendedByStaffName String?
+  admittedAt          DateTime  @default(now())
+  dischargedAt        DateTime?
+  dischargeNotes      String?
+  parentNotified      Boolean   @default(false)
+  notes               String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  tenant                  Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  student                 Student?                 @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  medicationDispensations MedicationDispensation[]
+
+  @@index([tenantId])
+  @@index([studentId])
+  @@index([tenantId, studentId])
+  @@index([tenantId, admittedAt])
+}
+
+model MedicationDispensation {
+  id                      String   @id @default(uuid())
+  tenantId                String
+  visitId                 String?
+  studentId               String
+  studentName             String?
+  admissionNumber         String?
+  medicationName          String
+  dosage                  String
+  quantityDispensed       Int      @default(1)
+  route                   String   @default("ORAL")
+  administeredAt          DateTime @default(now())
+  administeredByStaffName String?
+  parentConsentVerified   Boolean  @default(true)
+  batchNumber             String?
+  notes                   String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  tenant  Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  student Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  visit   ClinicVisit? @relation(fields: [visitId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([studentId])
+  @@index([visitId])
+}
+
+model HealthIncident {
+  id                         String   @id @default(uuid())
+  tenantId                   String
+  studentId                  String
+  studentName                String?
+  admissionNumber            String?
+  incidentType               String
+  severity                   String   @default("MINOR")
+  location                   String?
+  occurredAt                 DateTime @default(now())
+  description                String   @db.Text
+  witnessStaffNames          Json?
+  immediateFirstAidGiven     String?
+  isHospitalReferralRequired Boolean  @default(false)
+  hospitalName               String?
+  ambulanceCalled            Boolean  @default(false)
+  escortStaffName            String?
+  followUpActions            String?
+  loggedByStaffId            String?
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([studentId])
+  @@index([tenantId, severity])
+}
+
+model ImmunizationRecord {
+  id               String   @id @default(uuid())
+  tenantId         String
+  studentId        String
+  vaccineType      String?
+  vaccineName      String
+  requiredDoses    Int      @default(1)
+  doseNumber       Int      @default(1)
+  dateAdministered DateTime @default(now())
+  administeredBy   String?
+  batchNumber      String?
+  status           String   @default("ADMINISTERED")
+  documentFileId   String?
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([studentId])
+  @@index([tenantId, studentId])
+}
+
+model FitnessCertificate {
+  id                   String   @id @default(uuid())
+  tenantId             String
+  studentId            String
+  studentName          String?
+  verificationCode     String   @unique
+  certificateType      String   @default("SPORTS_CLEARANCE")
+  fitnessStatus        String   @default("FIT_TO_PARTICIPATE")
+  examiningPhysician   String
+  medicalLicenseNumber String
+  clinicOrHospitalName String
+  examinationDate      DateTime
+  validUntil           DateTime
+  activityRestrictions Json?
+  accommodations       Json?
+  clinicalNotes        String?
+  documentFileId       String?
+  isRevoked            Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([studentId])
+  @@index([verificationCode])
+}
+
 
 

@@ -64,6 +64,7 @@ export const CATEGORY_LIMITS: Record<StorageCategory, { maxSizeBytes: number; al
     allowedMimes: [
       'application/pdf',
       'text/csv',
+      'text/plain',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     ],
   },

@@ -16,13 +16,19 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
     const maxConnections = parseInt(process.env.DB_MAX_CONNECTIONS || '20', 10);
     const idleTimeoutMs = parseInt(process.env.DB_IDLE_TIMEOUT_MS || '30000', 10);
-    const connectionTimeoutMs = parseInt(process.env.DB_CONNECTION_TIMEOUT_MS || '5000', 10);
+    const connectionTimeoutMs = parseInt(process.env.DB_CONNECTION_TIMEOUT_MS || '15000', 10);
 
     const pool = new pg.Pool({
       connectionString,
       max: maxConnections,
       idleTimeoutMillis: idleTimeoutMs,
       connectionTimeoutMillis: connectionTimeoutMs,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000,
+    });
+
+    pool.on('error', (err: any) => {
+      this.logger.warn(`PostgreSQL pool background client notice: ${err?.message}`);
     });
 
     const adapter = new PrismaPg(pool);

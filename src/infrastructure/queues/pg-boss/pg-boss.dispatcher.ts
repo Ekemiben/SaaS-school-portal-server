@@ -51,8 +51,11 @@ export class PgBossDispatcher implements IJobDispatcher {
       retryLimit: options?.retryLimit ?? 3,
       retryDelay: options?.retryDelay ?? 2,
       retryBackoff: options?.retryBackoff ?? true,
-      priority: options?.priority,
     };
+
+    if (typeof options?.priority === 'number') {
+      sendOptions.priority = options.priority;
+    }
 
     if (options?.delay && options.delay > 0) {
       sendOptions.startAfter = options.delay;

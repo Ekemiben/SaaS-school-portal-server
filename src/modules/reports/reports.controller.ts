@@ -18,8 +18,12 @@ export class ReportsController {
 
   @RequirePermissions(SystemPermissions.REPORTS_VIEW)
   @Get('financial')
-  async getFinancialSummary(@CurrentTenant() tenant: TenantContext) {
-    return this.reportsService.getFinancialSummary(tenant.tenantId);
+  async getFinancialSummary(
+    @CurrentTenant() tenant: TenantContext,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    return this.reportsService.getFinancialSummary(tenant.tenantId, startDate, endDate);
   }
 
   @RequirePermissions(SystemPermissions.REPORTS_VIEW)
@@ -27,8 +31,10 @@ export class ReportsController {
   async getAcademicSummary(
     @CurrentTenant() tenant: TenantContext,
     @Query('examinationId') examinationId?: string,
+    @Query('termId') termId?: string,
+    @Query('academicYearId') academicYearId?: string,
   ) {
-    return this.reportsService.getAcademicSummary(tenant.tenantId, examinationId);
+    return this.reportsService.getAcademicSummary(tenant.tenantId, examinationId, termId, academicYearId);
   }
 
   @RequirePermissions(SystemPermissions.REPORTS_VIEW)

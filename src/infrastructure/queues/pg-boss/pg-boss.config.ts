@@ -10,13 +10,22 @@ export interface PgBossModuleOptions {
 }
 
 export const createPgBossConfig = (configService: ConfigService): ConstructorOptions => {
-  const databaseUrl = configService.get<string>('database.url') || process.env.DATABASE_URL || '';
+  // Use direct unpooled connection for LISTEN/NOTIFY and advisory locks if available
+  const databaseUrl =
+    process.env.DATABASE_URL_UNPOOLED ||
+    configService.get<string>('database.url') ||
+    process.env.DATABASE_URL ||
+    '';
   const schema = configService.get<string>('queues.schema') || process.env.PG_BOSS_SCHEMA || 'pgboss';
 
   return {
     connectionString: databaseUrl,
     schema,
     max: 10,
+    connectionTimeoutMillis: 15000,
+    notifyHeartbeatIntervalMs: 30000,
+    notifyHeartbeatTimeoutMs: 15000,
+    notifyKeepAliveInitialDelayMs: 10000,
     retentionHours: 24,
     monitorStateIntervalSeconds: 30,
   } as ConstructorOptions;

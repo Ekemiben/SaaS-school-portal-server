@@ -1,5 +1,6 @@
 import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR, APP_FILTER } from '@nestjs/core';
+import { ConfigModule } from '@nestjs/config';
 
 // Core and Database
 import { PrismaModule } from './database/prisma.module.js';
@@ -74,6 +75,10 @@ import { TransitionModule } from './modules/transition/transition.module.js';
 
 @Module({
   imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: ['.env', '.env.local'],
+    }),
     WebsiteModule,
     TransitionModule,
     AiModule,

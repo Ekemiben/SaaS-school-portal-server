@@ -34,15 +34,19 @@ export class PaymentsService {
       select: { features: true, name: true, currency: true },
     });
     const paymentConfig = (tenant?.features as any)?.paymentConfig;
+    const envPublicKey = process.env.PAYSTACK_PUBLIC_KEY || '';
+    const envSecretKey = process.env.PAYSTACK_SECRET_KEY || '';
+    const detectedEnv = (envSecretKey.startsWith('sk_test_') || envPublicKey.startsWith('pk_test_')) ? 'TEST' : 'LIVE';
+
     if (paymentConfig) {
       return {
         defaultProvider: paymentConfig.defaultProvider || PaymentGatewayProvider.PAYSTACK,
-        environment: paymentConfig.environment || 'LIVE',
-        paystackPublicKey: paymentConfig.paystackPublicKey || '',
-        paystackSecretKey: paymentConfig.paystackSecretKey || '',
+        environment: paymentConfig.environment || detectedEnv,
+        paystackPublicKey: paymentConfig.paystackPublicKey || envPublicKey,
+        paystackSecretKey: paymentConfig.paystackSecretKey || envSecretKey,
         flutterwavePublicKey: paymentConfig.flutterwavePublicKey || '',
         flutterwaveSecretKey: paymentConfig.flutterwaveSecretKey || '',
-        webhookSecret: paymentConfig.webhookSecret || '',
+        webhookSecret: paymentConfig.webhookSecret || envSecretKey,
         subaccountCode: paymentConfig.subaccountCode || '',
         splitPercentage: paymentConfig.splitPercentage ?? 100,
         bearer: paymentConfig.bearer || 'account',
@@ -60,12 +64,12 @@ export class PaymentsService {
     return (
       this.tenantConfigs.get(tenantId) || {
         defaultProvider: PaymentGatewayProvider.PAYSTACK,
-        environment: 'LIVE',
-        paystackPublicKey: '',
-        paystackSecretKey: '',
+        environment: detectedEnv,
+        paystackPublicKey: envPublicKey,
+        paystackSecretKey: envSecretKey,
         flutterwavePublicKey: '',
         flutterwaveSecretKey: '',
-        webhookSecret: '',
+        webhookSecret: envSecretKey,
         subaccountCode: '',
         enableCardPayments: true,
         enableVirtualAccounts: true,
@@ -494,7 +498,6 @@ export class PaymentsService {
     // Underpayment Check
     if (
       verification.amount !== undefined &&
-      !(verification.rawPayload as any)?.isDevSimulation &&
       Number(verification.amount) < Number(payment.amount)
     ) {
       throw new BadRequestException(
@@ -514,7 +517,11 @@ export class PaymentsService {
     }
 
     const paidAt = verification.paidAt ? new Date(verification.paidAt) : new Date();
-    const transactionId = (verification as any).transactionId || (verification.rawPayload as any)?.id || (verification.rawPayload as any)?.transaction_id || `TXN_${randomUUID().substring(0, 10).toUpperCase()}`;
+    const rawTxnId =
+      (verification as any).transactionId ??
+      (verification.rawPayload as any)?.id ??
+      (verification.rawPayload as any)?.transaction_id;
+    const transactionId = rawTxnId ? String(rawTxnId) : `TXN_${randomUUID().substring(0, 10).toUpperCase()}`;
     const channel = verification.channel || (payment.metadata as any)?.channel || 'CARD';
 
     await this.prisma.$transaction(async (tx) => {
@@ -592,14 +599,18 @@ export class PaymentsService {
 
     // Queue parent receipt notification
     if (this.queueService) {
-      await this.queueService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
-        tenantId,
-        data: {
-          title: `Payment Receipt: ${payment.reference}`,
-          message: `Payment of ${payment.currency} ${payment.amount} received successfully.`,
-          paymentId: payment.id,
-        },
-      });
+      try {
+        await this.queueService.dispatch(QUEUES.NOTIFICATIONS, JOB_TYPES.SEND_EMAIL, {
+          tenantId,
+          data: {
+            title: `Payment Receipt: ${payment.reference}`,
+            message: `Payment of ${payment.currency} ${payment.amount} received successfully.`,
+            paymentId: payment.id,
+          },
+        });
+      } catch (err: any) {
+        this.logger.warn(`Could not dispatch email notification job: ${err.message}`);
+      }
     }
 
     // Cross-Module Trigger: In-App Inbox Notification for Linked Parent(s)

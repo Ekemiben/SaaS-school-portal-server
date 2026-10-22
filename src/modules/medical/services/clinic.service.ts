@@ -21,9 +21,6 @@ import { randomUUID } from 'crypto';
 @Injectable()
 export class ClinicService {
   private readonly logger = new Logger(ClinicService.name);
-  private readonly visits = new Map<string, any>();
-  private readonly dispensations = new Map<string, any>();
-  private readonly incidents = new Map<string, any>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -65,39 +62,39 @@ export class ClinicService {
 
     const visitId = `vst_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
     const outcome = (dto as any).status === 'Discharged' ? VisitOutcome.DISCHARGED_TO_CLASS : (dto.outcome || VisitOutcome.RESTING_IN_SICKBAY);
-    const record = {
-      id: visitId,
-      tenantId,
-      patientType: dto.patientType || PatientType.STUDENT,
-      patientId: dto.patientId || (dto as any).studentId || 'std_demo',
-      patientName,
-      student: patientName,
-      studentId: admissionNumber,
-      admissionNumber,
-      class: (dto as any).class || 'JSS 1A',
-      visitType: dto.visitType || VisitType.ROUTINE_CHECKUP,
-      chiefComplaint: (dto as any).complaint || dto.chiefComplaint,
-      complaint: (dto as any).complaint || dto.chiefComplaint,
-      symptoms: dto.symptoms || [],
-      vitals: dto.vitals || { temperature: (dto as any).temperature || 37.0 },
-      temperature: (dto as any).temperature || '37.0°C',
-      bloodGroup: (dto as any).bloodGroup || 'O+',
-      allergies: (dto as any).allergies || 'None Reported',
-      diagnosis: dto.diagnosis || (dto as any).diagnosis || null,
-      treatmentGiven: dto.treatmentGiven || null,
-      outcome,
-      status: outcome === VisitOutcome.DISCHARGED_TO_CLASS ? 'Discharged' : 'Under Observation',
-      sickbayBedNumber: dto.sickbayBedNumber || null,
-      attendedByStaffId: dto.attendedByStaffId || staffId || null,
-      attendedByStaffName: (dto as any).officer || (dto as any).attendedBy || dto.attendedByStaffName || 'Nurse Mary (RN)',
-      officer: (dto as any).officer || (dto as any).attendedBy || dto.attendedByStaffName || 'Nurse Mary (RN)',
-      admittedAt: new Date(),
-      dischargedAt: outcome === VisitOutcome.DISCHARGED_TO_CLASS ? new Date() : null,
-      parentNotified: (dto as any).parentNotified ?? true,
-      createdAt: new Date(),
-    };
+    const status = outcome === VisitOutcome.DISCHARGED_TO_CLASS ? 'Discharged' : 'Under Observation';
+    const admittedAt = new Date();
+    const dischargedAt = outcome === VisitOutcome.DISCHARGED_TO_CLASS ? new Date() : null;
 
-    this.visits.set(visitId, record);
+    const record = await this.prisma.clinicVisit.create({
+      data: {
+        id: visitId,
+        tenantId,
+        studentId: dto.patientType === PatientType.STUDENT ? (dto.patientId || null) : null,
+        patientType: dto.patientType || PatientType.STUDENT,
+        patientId: dto.patientId || (dto as any).studentId || 'std_demo',
+        patientName,
+        admissionNumber,
+        class: (dto as any).class || 'JSS 1A',
+        visitType: dto.visitType || VisitType.ROUTINE_CHECKUP,
+        chiefComplaint: (dto as any).complaint || dto.chiefComplaint,
+        symptoms: dto.symptoms || [],
+        vitals: (dto.vitals as any) || { temperature: (dto as any).temperature || 37.0 },
+        temperature: (dto as any).temperature || '37.0°C',
+        bloodGroup: (dto as any).bloodGroup || 'O+',
+        allergies: (dto as any).allergies || 'None Reported',
+        diagnosis: dto.diagnosis || (dto as any).diagnosis || null,
+        treatmentGiven: dto.treatmentGiven || null,
+        outcome,
+        status,
+        sickbayBedNumber: dto.sickbayBedNumber || null,
+        attendedByStaffId: dto.attendedByStaffId || staffId || null,
+        attendedByStaffName: (dto as any).officer || (dto as any).attendedBy || dto.attendedByStaffName || 'Nurse Mary (RN)',
+        admittedAt,
+        dischargedAt,
+        parentNotified: (dto as any).parentNotified ?? true,
+      },
+    });
 
     // Cross-Module Trigger: Create In-App Inbox Notification for Linked Parent(s)
     if (record.parentNotified && (dto.patientType === PatientType.STUDENT || !dto.patientType)) {
@@ -125,7 +122,7 @@ export class ClinicService {
                 category: 'HEALTH_UPDATE',
                 priority: 'HIGH',
                 title: `School Clinic Visit: ${patientName}`,
-                message: `${patientName} visited the clinic today for "${record.complaint}". Status: ${record.status}. Attended by: ${record.officer}.`,
+                message: `${patientName} visited the clinic today for "${(record as any).chiefComplaint}". Status: ${record.status}. Attended by: ${record.attendedByStaffName}.`,
                 actionUrl: '/parent',
                 isRead: false,
               },
@@ -152,17 +149,27 @@ export class ClinicService {
   }
 
   async dischargePatient(tenantId: string, visitId: string, dto?: DischargePatientDto) {
-    const visit = this.visits.get(visitId);
-    if (!visit || visit.tenantId !== tenantId) {
+    const visit = await this.prisma.clinicVisit.findFirst({
+      where: { id: visitId, tenantId },
+    });
+    if (!visit) {
       throw new NotFoundException('Clinic visit record not found');
     }
 
-    visit.outcome = dto?.outcome || 'DISCHARGED_TO_CLASS';
-    visit.status = 'Discharged';
-    visit.dischargedAt = dto?.dischargedAt ? new Date(dto.dischargedAt) : new Date();
-    visit.dischargeNotes = dto?.dischargeNotes || null;
-    this.visits.set(visitId, visit);
-    return this.enrichVisit(visit);
+    const outcome = dto?.outcome || 'DISCHARGED_TO_CLASS';
+    const dischargedAt = dto?.dischargedAt ? new Date(dto.dischargedAt) : new Date();
+
+    const updated = await this.prisma.clinicVisit.update({
+      where: { id: visitId },
+      data: {
+        outcome,
+        status: 'Discharged',
+        dischargedAt,
+        dischargeNotes: dto?.dischargeNotes || null,
+      },
+    });
+
+    return this.enrichVisit(updated);
   }
 
   private enrichVisit(v: any) {
@@ -170,34 +177,46 @@ export class ClinicService {
       ...v,
       student: v.patientName || v.student || 'Student',
       studentId: v.admissionNumber || v.studentId || v.patientId,
-      class: v.class || v.patientClass || 'JSS 1A',
+      class: v.class || v.patientClass || 'General',
       complaint: v.chiefComplaint || v.complaint || 'General Checkup',
       temperature: v.vitals?.temperature ? `${v.vitals.temperature}°C` : (v.temperature || '37.0°C'),
-      bloodGroup: v.bloodGroup || 'O+',
+      bloodGroup: v.bloodGroup || null,
       allergies: v.allergies || 'None Reported',
       diagnosis: v.diagnosis || 'Under medical observation',
-      date: v.admittedAt ? new Date(v.admittedAt).toISOString().split('T')[0] : (v.date || '2025-09-08'),
-      officer: v.attendedByStaffName || v.officer || 'Nurse Mary (RN)',
+      date: v.admittedAt ? new Date(v.admittedAt).toISOString().split('T')[0] : (v.date || new Date().toISOString().split('T')[0]),
+      officer: v.attendedByStaffName || v.officer || 'School Nurse',
       status: v.outcome === 'DISCHARGED_TO_CLASS' ? 'Discharged' : (v.status || 'Under Observation'),
       parentNotified: v.parentNotified ?? true,
     };
   }
 
   async listClinicVisits(tenantId: string, filters: ClinicVisitFilterDto = {}) {
-    let result = Array.from(this.visits.values()).filter((v: any) => v.tenantId === tenantId);
+    const where: any = { tenantId };
 
-    if (filters.patientType) result = result.filter((v: any) => v.patientType === filters.patientType);
-    if (filters.visitType) result = result.filter((v: any) => v.visitType === filters.visitType);
-    if (filters.outcome) result = result.filter((v: any) => v.outcome === filters.outcome);
-    if (filters.patientId) result = result.filter((v: any) => v.patientId === filters.patientId);
+    if (filters.patientType) where.patientType = filters.patientType;
+    if (filters.visitType) where.visitType = filters.visitType;
+    if (filters.outcome) where.outcome = filters.outcome;
+    if (filters.patientId) {
+      where.OR = [
+        { patientId: filters.patientId },
+        { studentId: filters.patientId },
+        { admissionNumber: filters.patientId },
+      ];
+    }
 
-    const sorted = result.sort((a, b) => new Date(b.admittedAt || b.date).getTime() - new Date(a.admittedAt || a.date).getTime());
-    return sorted.map((v) => this.enrichVisit(v));
+    const visits = await this.prisma.clinicVisit.findMany({
+      where,
+      orderBy: { admittedAt: 'desc' },
+    });
+
+    return visits.map((v) => this.enrichVisit(v));
   }
 
   async getClinicVisit(tenantId: string, visitId: string) {
-    const visit = this.visits.get(visitId);
-    if (!visit || visit.tenantId !== tenantId) {
+    const visit = await this.prisma.clinicVisit.findFirst({
+      where: { id: visitId, tenantId },
+    });
+    if (!visit) {
       throw new NotFoundException('Clinic visit record not found');
     }
     return this.enrichVisit(visit);
@@ -213,33 +232,37 @@ export class ClinicService {
     }
 
     const dispId = `dsp_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const record = {
-      id: dispId,
-      tenantId,
-      visitId: dto.visitId || null,
-      studentId: dto.studentId,
-      studentName: `${student.firstName} ${student.lastName}`,
-      admissionNumber: student.admissionNumber,
-      medicationName: dto.medicationName,
-      dosage: dto.dosage,
-      quantityDispensed: dto.quantityDispensed,
-      route: dto.route,
-      administeredAt: new Date(dto.administeredAt),
-      administeredByStaffName: dto.administeredByStaffName,
-      parentConsentVerified: dto.parentConsentVerified,
-      batchNumber: dto.batchNumber || null,
-      notes: dto.notes || null,
-      createdAt: new Date(),
-    };
+    const record = await this.prisma.medicationDispensation.create({
+      data: {
+        id: dispId,
+        tenantId,
+        visitId: dto.visitId || null,
+        studentId: dto.studentId,
+        studentName: `${student.firstName} ${student.lastName}`,
+        admissionNumber: student.admissionNumber,
+        medicationName: dto.medicationName,
+        dosage: dto.dosage,
+        quantityDispensed: dto.quantityDispensed ?? 1,
+        route: dto.route || 'ORAL',
+        administeredAt: new Date(dto.administeredAt),
+        administeredByStaffName: dto.administeredByStaffName,
+        parentConsentVerified: dto.parentConsentVerified ?? true,
+        batchNumber: dto.batchNumber || null,
+        notes: dto.notes || null,
+      },
+    });
 
-    this.dispensations.set(dispId, record);
     return record;
   }
 
   async listMedicationDispensations(tenantId: string, studentId?: string) {
-    let list = Array.from(this.dispensations.values()).filter((d: any) => d.tenantId === tenantId);
-    if (studentId) list = list.filter((d: any) => d.studentId === studentId);
-    return list.sort((a, b) => new Date(b.administeredAt).getTime() - new Date(a.administeredAt).getTime());
+    const where: any = { tenantId };
+    if (studentId) where.studentId = studentId;
+
+    return this.prisma.medicationDispensation.findMany({
+      where,
+      orderBy: { administeredAt: 'desc' },
+    });
   }
 
   // --- First Aid & Critical Incidents ---
@@ -257,29 +280,28 @@ export class ClinicService {
     }
 
     const incidentId = `inc_${randomUUID().replace(/-/g, '').substring(0, 10)}`;
-    const record = {
-      id: incidentId,
-      tenantId,
-      studentId: dto.studentId,
-      studentName: `${student.firstName} ${student.lastName}`,
-      admissionNumber: student.admissionNumber,
-      incidentType: dto.incidentType,
-      severity: dto.severity,
-      location: dto.location,
-      occurredAt: new Date(dto.occurredAt),
-      description: dto.description,
-      witnessStaffNames: dto.witnessStaffNames || [],
-      immediateFirstAidGiven: dto.immediateFirstAidGiven,
-      isHospitalReferralRequired: dto.isHospitalReferralRequired,
-      hospitalName: dto.hospitalName || null,
-      ambulanceCalled: !!dto.ambulanceCalled,
-      escortStaffName: dto.escortStaffName || null,
-      followUpActions: dto.followUpActions || null,
-      loggedByStaffId: loggedByStaffId || null,
-      createdAt: new Date(),
-    };
-
-    this.incidents.set(incidentId, record);
+    const record = await this.prisma.healthIncident.create({
+      data: {
+        id: incidentId,
+        tenantId,
+        studentId: dto.studentId,
+        studentName: `${student.firstName} ${student.lastName}`,
+        admissionNumber: student.admissionNumber,
+        incidentType: dto.incidentType,
+        severity: dto.severity || 'MINOR',
+        location: dto.location || null,
+        occurredAt: new Date(dto.occurredAt),
+        description: dto.description,
+        witnessStaffNames: dto.witnessStaffNames || [],
+        immediateFirstAidGiven: dto.immediateFirstAidGiven || null,
+        isHospitalReferralRequired: !!dto.isHospitalReferralRequired,
+        hospitalName: dto.hospitalName || null,
+        ambulanceCalled: !!dto.ambulanceCalled,
+        escortStaffName: dto.escortStaffName || null,
+        followUpActions: dto.followUpActions || null,
+        loggedByStaffId: loggedByStaffId || null,
+      },
+    });
 
     // If major/critical or referred to hospital, dispatch immediate parent notification
     if (dto.notifyParents && this.queueService) {
@@ -302,20 +324,25 @@ export class ClinicService {
   }
 
   async listHealthIncidents(tenantId: string, filters: HealthIncidentFilterDto = {}) {
-    let list = Array.from(this.incidents.values()).filter((i: any) => i.tenantId === tenantId);
+    const where: any = { tenantId };
 
-    if (filters.severity) list = list.filter((i: any) => i.severity === filters.severity);
-    if (filters.location) list = list.filter((i: any) => i.location === filters.location);
-    if (filters.studentId) list = list.filter((i: any) => i.studentId === filters.studentId);
+    if (filters.severity) where.severity = filters.severity;
+    if (filters.location) where.location = filters.location;
+    if (filters.studentId) where.studentId = filters.studentId;
 
-    return list.sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime());
+    return this.prisma.healthIncident.findMany({
+      where,
+      orderBy: { occurredAt: 'desc' },
+    });
   }
 
   // --- Clinic Analytics & Sickbay Utilization ---
   async getClinicAnalytics(tenantId: string) {
-    const visits = Array.from(this.visits.values()).filter((v: any) => v.tenantId === tenantId);
-    const incidents = Array.from(this.incidents.values()).filter((i: any) => i.tenantId === tenantId);
-    const dispensations = Array.from(this.dispensations.values()).filter((d: any) => d.tenantId === tenantId);
+    const [visits, incidents, dispensations] = await Promise.all([
+      this.prisma.clinicVisit.findMany({ where: { tenantId } }),
+      this.prisma.healthIncident.findMany({ where: { tenantId } }),
+      this.prisma.medicationDispensation.findMany({ where: { tenantId } }),
+    ]);
 
     const outcomesCount = {
       [VisitOutcome.DISCHARGED_TO_CLASS]: 0,
@@ -342,7 +369,9 @@ export class ClinicService {
       tenantId,
       totalVisits: visits.length,
       totalIncidents: incidents.length,
-      criticalIncidentsCount: incidents.filter((i: any) => i.severity === IncidentSeverity.CRITICAL_EMERGENCY || i.severity === IncidentSeverity.MAJOR).length,
+      criticalIncidentsCount: incidents.filter(
+        (i: any) => i.severity === IncidentSeverity.CRITICAL_EMERGENCY || i.severity === IncidentSeverity.MAJOR,
+      ).length,
       totalMedicationsDispensed: dispensations.length,
       outcomesBreakdown: outcomesCount,
       topComplaints,

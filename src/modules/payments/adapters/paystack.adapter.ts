@@ -1,4 +1,4 @@
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../../database/prisma.service.js';
 import crypto, { randomUUID } from 'crypto';
@@ -23,7 +23,7 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
     return (
       this.configService.get<string>('PAYSTACK_SECRET_KEY') ||
       process.env.PAYSTACK_SECRET_KEY ||
-      'sk_test_mock_paystack_secret_key'
+      ''
     );
   }
 
@@ -87,9 +87,9 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
       }
     }
 
-    // Fallback for testing & local development
+    // Fallback URL if secret key is unconfigured or initialize failed
     return {
-      authorizationUrl: `https://checkout.paystack.com/${params.reference}`,
+      authorizationUrl: `https://checkout.paystack.com/${encodeURIComponent(params.reference)}`,
       accessCode: `pstk_acc_${randomUUID().substring(0, 8)}`,
       reference: params.reference,
       provider: 'paystack',
@@ -106,7 +106,7 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
 
     if (isRealKey) {
       try {
-        const response = await fetch(`https://api.paystack.co/transaction/verify/${reference}`, {
+        const response = await fetch(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
           method: 'GET',
           headers: {
             Authorization: `Bearer ${activeKey}`,
@@ -116,50 +116,51 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
         const data: any = await response.json();
         if (data.status && data.data) {
           const tx = data.data;
+          const isSuccessful = tx.status === 'success';
           return {
-            success: tx.status === 'success',
-            reference: tx.reference,
-            amount: tx.amount / 100, // convert kobo to NGN
-            currency: tx.currency,
-            status: tx.status === 'success' ? 'successful' : tx.status === 'failed' ? 'failed' : 'abandoned',
+            success: isSuccessful,
+            reference: tx.reference || reference,
+            amount: Number(tx.amount || 0) / 100, // convert kobo to NGN
+            currency: tx.currency || 'NGN',
+            status: isSuccessful ? 'successful' : tx.status === 'failed' ? 'failed' : 'abandoned',
             paidAt: tx.paid_at ? new Date(tx.paid_at) : undefined,
             channel: tx.channel,
-            gatewayResponse: tx.gateway_response,
+            gatewayResponse: tx.gateway_response || data.message || 'Transaction processed',
             rawPayload: tx,
+          };
+        } else {
+          return {
+            success: false,
+            reference,
+            amount: 0,
+            currency: 'NGN',
+            status: 'failed',
+            gatewayResponse: data?.message || 'Paystack payment verification unconfirmed',
+            rawPayload: data,
           };
         }
       } catch (err: any) {
         this.logger.error(`Paystack verify API error: ${err?.message}`);
+        return {
+          success: false,
+          reference,
+          amount: 0,
+          currency: 'NGN',
+          status: 'failed',
+          gatewayResponse: `Paystack API connection error: ${err?.message}`,
+          rawPayload: null,
+        };
       }
     }
 
-    // Look up actual payment/invoice amount from Prisma DB
-    let simulatedAmount = 150000;
-    let simulatedCurrency = 'NGN';
-
-    if (this.prisma) {
-      try {
-        const dbPayment = await this.prisma.payment.findUnique({
-          where: { reference },
-          include: { invoice: true },
-        });
-        if (dbPayment) {
-          simulatedAmount = dbPayment.amount || dbPayment.invoice?.totalAmount || 150000;
-          simulatedCurrency = dbPayment.currency || 'NGN';
-        }
-      } catch {}
-    }
-
     return {
-      success: true,
+      success: false,
       reference,
-      amount: simulatedAmount,
-      currency: simulatedCurrency,
-      status: 'successful',
-      paidAt: new Date(),
-      channel: 'card',
-      gatewayResponse: 'Successful (Development Mode)',
-      rawPayload: { reference, status: 'success', channel: 'card', amount: simulatedAmount * 100, isDevSimulation: true },
+      amount: 0,
+      currency: 'NGN',
+      status: 'failed',
+      gatewayResponse: 'Paystack secret key is not configured or invalid',
+      rawPayload: null,
     };
   }
 
@@ -197,15 +198,22 @@ export class PaystackPaymentAdapter implements PaymentProviderAdapter {
         }
       } catch (err: any) {
         this.logger.error(`Paystack DVA error: ${err?.message}`);
+        if (process.env.NODE_ENV === 'production') {
+          throw new BadRequestException(`Paystack dedicated virtual account creation failed: ${err?.message}`);
+        }
       }
     }
 
-    // Virtual NUBAN simulation
+    if (process.env.NODE_ENV === 'production') {
+      throw new BadRequestException('Dedicated Virtual Account creation requires active Paystack credentials in production.');
+    }
+
+    // Virtual NUBAN simulation for development / staging sandbox
     const mockNuban = `99${Math.floor(10000000 + Math.random() * 90000000)}`;
     return {
       accountNumber: mockNuban,
       accountName: `${params.customerName} (School Fees)`,
-      bankName: 'Wema Bank (Paystack DVA)',
+      bankName: 'Wema Bank (Paystack DVA Sandbox)',
       bankCode: '035',
       reference: params.reference,
       currency: 'NGN',

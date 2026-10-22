@@ -16,7 +16,19 @@ export class AuditController {
     @Query('limit') limit?: number,
     @Query('search') search?: string,
     @Query('action') action?: string,
+    @Query('resourceType') resourceType?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('status') status?: string,
   ) {
-    return this.auditService.list(tenant.tenantId, { limit, search, action });
+    return this.auditService.list(tenant.tenantId, {
+      limit,
+      search,
+      action,
+      resourceType,
+      startDate,
+      endDate,
+      status,
+    });
   }
 }

@@ -18,7 +18,6 @@ export interface SchoolMedicalPolicy {
 @Injectable()
 export class MedicalPolicyService {
   private readonly logger = new Logger(MedicalPolicyService.name);
-  private readonly fallbackPolicies = new Map<string, SchoolMedicalPolicy>();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -35,31 +34,25 @@ export class MedicalPolicyService {
   }
 
   async getPolicy(tenantId: string): Promise<SchoolMedicalPolicy> {
+    const defaultPolicy = this.getDefaultPolicy(tenantId);
     try {
-      const setting = await (this.prisma as any).setting?.findFirst({
-        where: { tenantId, key: 'MEDICAL_POLICY' },
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { features: true },
       });
-      if (setting && setting.value) {
-        const parsed = JSON.parse(setting.value);
+
+      const features = (tenant?.features as Record<string, any>) || {};
+      if (features.medicalPolicy) {
         return {
+          ...defaultPolicy,
+          ...features.medicalPolicy,
           tenantId,
-          sportsClearance: parsed.sportsClearance || PolicyRequirementLevel.OPTIONAL,
-          hostelClearance: parsed.hostelClearance || PolicyRequirementLevel.OPTIONAL,
-          admissionClearance: parsed.admissionClearance || PolicyRequirementLevel.OPTIONAL,
-          annualScreening: parsed.annualScreening || PolicyRequirementLevel.OPTIONAL,
-          immunizationTracking: parsed.immunizationTracking || PolicyRequirementLevel.OPTIONAL,
-          updatedAt: setting.updatedAt ? new Date(setting.updatedAt).toISOString() : new Date().toISOString(),
         };
       }
-    } catch {
-      // fallback
+    } catch (err: any) {
+      this.logger.warn(`Could not load medical policy for tenant ${tenantId}: ${err.message}`);
     }
 
-    const cached = this.fallbackPolicies.get(tenantId);
-    if (cached) return cached;
-
-    const defaultPolicy = this.getDefaultPolicy(tenantId);
-    this.fallbackPolicies.set(tenantId, defaultPolicy);
     return defaultPolicy;
   }
 
@@ -79,25 +72,26 @@ export class MedicalPolicyService {
     };
 
     try {
-      await (this.prisma as any).setting?.upsert({
-        where: {
-          tenantId_key: { tenantId, key: 'MEDICAL_POLICY' },
-        },
-        update: {
-          value: JSON.stringify(updated),
-        },
-        create: {
-          tenantId,
-          key: 'MEDICAL_POLICY',
-          value: JSON.stringify(updated),
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { features: true },
+      });
+
+      const features = (tenant?.features as Record<string, any>) || {};
+      await this.prisma.tenant.update({
+        where: { id: tenantId },
+        data: {
+          features: {
+            ...features,
+            medicalPolicy: updated,
+          } as any,
         },
       });
-    } catch {
-      // fallback
+      this.logger.log(`Persisted medical policy to Tenant.features for tenant ${tenantId}`);
+    } catch (err: any) {
+      this.logger.error(`Could not persist medical policy for tenant ${tenantId}: ${err.message}`);
     }
 
-    this.fallbackPolicies.set(tenantId, updated);
-    this.logger.log(`Updated health policy for tenant ${tenantId}`);
     return updated;
   }
 }

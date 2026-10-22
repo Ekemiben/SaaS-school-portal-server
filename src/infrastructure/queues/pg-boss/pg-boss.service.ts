@@ -51,7 +51,17 @@ export class PgBossService implements OnModuleInit, OnModuleDestroy {
     try {
       this.boss = new PgBoss(config);
       this.boss.on('error', (err: any) => {
-        this.logger.error(`pg-boss background engine error: ${err.message}`, err.stack);
+        const msg = err?.message || String(err);
+        if (
+          msg.includes('Connection terminated') ||
+          msg.includes('timeout') ||
+          msg.includes('ECONNRESET') ||
+          msg.includes('closed')
+        ) {
+          this.logger.warn(`pg-boss connection notice (reconnecting automatically): ${msg}`);
+        } else {
+          this.logger.error(`pg-boss background engine error: ${msg}`, err?.stack);
+        }
       });
 
       await this.boss.start();
@@ -76,6 +86,7 @@ export class PgBossService implements OnModuleInit, OnModuleDestroy {
     options?: any,
   ): Promise<string> {
     if (this.isStarted && this.boss) {
+      await this.boss.createQueue(name).catch(() => {});
       const jobId = await this.boss.send(name, data as any, options);
       if (jobId) {
         return jobId;
@@ -83,7 +94,11 @@ export class PgBossService implements OnModuleInit, OnModuleDestroy {
       return `job_${Date.now()}`;
     }
 
-    // In-memory fallback
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(`pg-boss queue service is disconnected. Enqueue for "${name}" rejected in production.`);
+    }
+
+    // In-memory fallback for local development / test environments
     const mockId = `job_mem_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const storedJob: MemoryJobRecord = {
       id: mockId,
@@ -120,6 +135,7 @@ export class PgBossService implements OnModuleInit, OnModuleDestroy {
     options?: any,
   ): Promise<void> {
     if (this.isStarted && this.boss) {
+      await this.boss.createQueue(queueName).catch(() => {});
       await this.boss.work(queueName, options || {}, async (jobs: any) => {
         const jobList = Array.isArray(jobs) ? jobs : [jobs];
         for (const job of jobList) {
@@ -134,7 +150,11 @@ export class PgBossService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // Fallback registration
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(`pg-boss queue service is disconnected. Worker registration for "${queueName}" rejected in production.`);
+    }
+
+    // Fallback registration for local development / test environments
     const existing = this.memoryWorkers.get(queueName) || [];
     existing.push(handler);
     this.memoryWorkers.set(queueName, existing);
