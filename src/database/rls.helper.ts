@@ -56,15 +56,21 @@ export class RlsHelper {
     const validTenantId = this.validateTenantId(tenantId);
     const sanitizedTenantId = validTenantId.replace(/'/g, "''");
 
-    return this.prisma.$transaction(async (tx: any) => {
-      if (typeof tx.$executeRawUnsafe === 'function') {
-        await tx.$executeRawUnsafe(`SET LOCAL ROLE school_saas_app;`);
-        await tx.$executeRawUnsafe(`SET LOCAL app.current_tenant_id = '${sanitizedTenantId}';`);
-      } else if (typeof tx.$executeRaw === 'function') {
-        await tx.$executeRaw`SET LOCAL ROLE school_saas_app;`;
-      }
-      return callback(tx as unknown as PrismaService);
-    });
+    return this.prisma.$transaction(
+      async (tx: any) => {
+        if (typeof tx.$executeRawUnsafe === 'function') {
+          await tx.$executeRawUnsafe(`SET LOCAL ROLE school_saas_app;`);
+          await tx.$executeRawUnsafe(`SET LOCAL app.current_tenant_id = '${sanitizedTenantId}';`);
+        } else if (typeof tx.$executeRaw === 'function') {
+          await tx.$executeRaw`SET LOCAL ROLE school_saas_app;`;
+        }
+        return callback(tx as unknown as PrismaService);
+      },
+      {
+        maxWait: 15000,
+        timeout: 30000,
+      },
+    );
   }
 
   /**
@@ -74,13 +80,19 @@ export class RlsHelper {
   async withBypassContext<T>(
     callback: (tx: PrismaService) => Promise<T>,
   ): Promise<T> {
-    return this.prisma.$transaction(async (tx: any) => {
-      if (typeof tx.$executeRawUnsafe === 'function') {
-        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on';`);
-      } else if (typeof tx.$executeRaw === 'function') {
-        await tx.$executeRaw`SET LOCAL app.bypass_rls = 'on';`;
-      }
-      return callback(tx as unknown as PrismaService);
-    });
+    return this.prisma.$transaction(
+      async (tx: any) => {
+        if (typeof tx.$executeRawUnsafe === 'function') {
+          await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'on';`);
+        } else if (typeof tx.$executeRaw === 'function') {
+          await tx.$executeRaw`SET LOCAL app.bypass_rls = 'on';`;
+        }
+        return callback(tx as unknown as PrismaService);
+      },
+      {
+        maxWait: 15000,
+        timeout: 30000,
+      },
+    );
   }
 }

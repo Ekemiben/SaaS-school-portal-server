@@ -24,6 +24,9 @@ export interface AuditLogFilter {
   actorUserId?: string;
   isImpersonated?: boolean;
   impersonatedBy?: string;
+  startDate?: string;
+  endDate?: string;
+  status?: string;
   search?: string;
   limit?: number;
 }
@@ -139,6 +142,19 @@ export class AuditService {
         { resourceType: { contains: q, mode: 'insensitive' } },
         { resourceId: { contains: q, mode: 'insensitive' } },
       ];
+    }
+    if (filterObj?.startDate || filterObj?.endDate) {
+      where.createdAt = {};
+      if (filterObj.startDate) {
+        where.createdAt.gte = new Date(filterObj.startDate);
+      }
+      if (filterObj.endDate) {
+        const end = new Date(filterObj.endDate);
+        if (filterObj.endDate.length === 10) {
+          end.setHours(23, 59, 59, 999);
+        }
+        where.createdAt.lte = end;
+      }
     }
 
     const logs = await this.prisma.auditLog.findMany({

@@ -65,7 +65,22 @@ export class ReportsService {
     };
   }
 
-  async getFinancialSummary(tenantId: string) {
+  async getFinancialSummary(tenantId: string, startDate?: string, endDate?: string) {
+    const invoiceWhere: any = { tenantId };
+    const paymentWhere: any = { tenantId, status: 'SUCCESSFUL' };
+
+    if (startDate || endDate) {
+      const dateFilter: any = {};
+      if (startDate) dateFilter.gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        if (endDate.length === 10) end.setHours(23, 59, 59, 999);
+        dateFilter.lte = end;
+      }
+      invoiceWhere.createdAt = dateFilter;
+      paymentWhere.paidAt = dateFilter;
+    }
+
     const [
       invoicesAggregate,
       paymentsAggregate,
@@ -75,12 +90,12 @@ export class ReportsService {
       pendingInvoicesCount,
       feeStructuresCount,
     ] = await Promise.all([
-      this.prisma.invoice.aggregate({ where: { tenantId }, _sum: { totalAmount: true } }),
-      this.prisma.payment.aggregate({ where: { tenantId, status: 'SUCCESSFUL' }, _sum: { amount: true } }),
+      this.prisma.invoice.aggregate({ where: invoiceWhere, _sum: { totalAmount: true } }),
+      this.prisma.payment.aggregate({ where: paymentWhere, _sum: { amount: true } }),
       this.prisma.feeWaiver.aggregate({ where: { tenantId }, _sum: { waiverAmount: true } }),
-      this.prisma.invoice.count({ where: { tenantId } }),
-      this.prisma.invoice.count({ where: { tenantId, status: 'PAID' } }),
-      this.prisma.invoice.count({ where: { tenantId, status: { in: ['PENDING', 'PARTIALLY_PAID'] } } }),
+      this.prisma.invoice.count({ where: invoiceWhere }),
+      this.prisma.invoice.count({ where: { ...invoiceWhere, status: 'PAID' } }),
+      this.prisma.invoice.count({ where: { ...invoiceWhere, status: { in: ['PENDING', 'PARTIALLY_PAID'] } } }),
       this.prisma.feeStructure.count({ where: { tenantId } }),
     ]);
 
@@ -102,12 +117,19 @@ export class ReportsService {
     };
   }
 
-  async getAcademicSummary(tenantId: string, examinationId?: string) {
+  async getAcademicSummary(tenantId: string, examinationId?: string, termId?: string, academicYearId?: string) {
+    const where: any = { tenantId };
+    if (examinationId) {
+      where.examinationId = examinationId;
+    } else if (termId || academicYearId) {
+      where.examination = {
+        ...(termId ? { termId } : {}),
+        ...(academicYearId ? { academicYearId } : {}),
+      };
+    }
+
     const results = await this.prisma.result.findMany({
-      where: {
-        tenantId,
-        ...(examinationId ? { examinationId } : {}),
-      },
+      where,
     });
 
     const total = results.length;

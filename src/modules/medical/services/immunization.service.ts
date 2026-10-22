@@ -7,6 +7,7 @@ import {
   VaccineType,
   ImmunizationStatus,
 } from '../dto/immunization.dto.js';
+import { BloodGroup, Genotype } from '../dto/medical-profile.dto.js';
 import { randomUUID } from 'crypto';
 
 export const MANDATORY_SCHOOL_VACCINES: Array<{ type: VaccineType; name: string; requiredDoses: number }> = [
@@ -32,31 +33,74 @@ export class ImmunizationService {
     studentId: string,
     dto: CreateImmunizationRecordDto,
   ) {
-    const profile = await this.medicalProfileService.getMedicalProfile(tenantId, studentId);
-    const existing = profile.immunizations || [];
-
-    const record = {
-      id: `imz_${randomUUID().replace(/-/g, '').substring(0, 8)}`,
-      ...dto,
-      createdAt: new Date(),
-    };
-
-    const updatedList = [...existing, record];
-    await this.medicalProfileService.upsertMedicalProfile(tenantId, studentId, {
-      ...profile,
-      immunizations: updatedList,
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
     });
+    if (!student) {
+      throw new NotFoundException('Student record not found');
+    }
+
+    const record = await this.prisma.immunizationRecord.create({
+      data: {
+        id: `imz_${randomUUID().replace(/-/g, '').substring(0, 8)}`,
+        tenantId,
+        studentId,
+        vaccineType: dto.vaccineType,
+        vaccineName: dto.vaccineName,
+        requiredDoses: (dto as any).requiredDoses || 1,
+        doseNumber: dto.doseNumber || 1,
+        dateAdministered: new Date(dto.dateAdministered),
+        administeredBy: dto.administeredByStaffName || dto.administeredByClinic || (dto as any).administeredBy || null,
+        batchNumber: dto.batchNumber || null,
+        status: dto.status || ImmunizationStatus.ADMINISTERED,
+        documentFileId: (dto as any).documentFileId || null,
+        notes: dto.notes || null,
+      },
+    });
+
+    // Synchronize to MedicalProfile for consolidated view
+    try {
+      const profile = await this.medicalProfileService.getMedicalProfile(tenantId, studentId);
+      const existing = (profile.immunizations as any[]) || [];
+      await this.medicalProfileService.upsertMedicalProfile(tenantId, studentId, {
+        studentId,
+        bloodGroup: (profile.bloodGroup as BloodGroup) || BloodGroup.UNKNOWN,
+        genotype: (profile.genotype as Genotype) || Genotype.UNKNOWN,
+        vitals: profile.vitals as any,
+        emergencyContact: profile.emergencyContact as any,
+        chronicConditions: (profile.chronicConditions as any) || [],
+        allergies: (profile.allergies as any) || [],
+        immunizations: [...existing, record] as any,
+        hmoProvider: profile.hmoProvider || undefined,
+        hmoPolicyNumber: profile.hmoPolicyNumber || undefined,
+        dietaryRestrictions: profile.dietaryRestrictions || undefined,
+        specialCareNotes: profile.specialCareNotes || undefined,
+      });
+    } catch (err: any) {
+      this.logger.warn(`Could not sync immunization record to profile: ${err.message}`);
+    }
 
     return record;
   }
 
   async getImmunizationHistory(tenantId: string, studentId: string) {
-    const profile = await this.medicalProfileService.getMedicalProfile(tenantId, studentId);
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+    });
+    if (!student) {
+      throw new NotFoundException('Student record not found');
+    }
+
+    const records = await this.prisma.immunizationRecord.findMany({
+      where: { tenantId, studentId },
+      orderBy: { dateAdministered: 'desc' },
+    });
+
     return {
       studentId,
-      studentName: profile.student.fullName,
-      totalVaccinesAdministered: (profile.immunizations || []).length,
-      records: profile.immunizations || [],
+      studentName: `${student.firstName} ${student.lastName}`,
+      totalVaccinesAdministered: records.length,
+      records,
     };
   }
 
@@ -85,13 +129,21 @@ export class ImmunizationService {
   }
 
   async checkImmunizationCompliance(tenantId: string, studentId: string) {
-    const profile = await this.medicalProfileService.getMedicalProfile(tenantId, studentId);
-    const records = profile.immunizations || [];
+    const student = await this.prisma.student.findFirst({
+      where: { id: studentId, tenantId },
+    });
+    if (!student) {
+      throw new NotFoundException('Student record not found');
+    }
+
+    const records = await this.prisma.immunizationRecord.findMany({
+      where: { tenantId, studentId },
+    });
 
     const vaccineMap = new Map<VaccineType, number>();
     for (const r of records) {
       if (r.status === ImmunizationStatus.ADMINISTERED || r.status === ImmunizationStatus.EXEMPTED) {
-        vaccineMap.set(r.vaccineType, (vaccineMap.get(r.vaccineType) || 0) + 1);
+        vaccineMap.set(r.vaccineType as VaccineType, (vaccineMap.get(r.vaccineType as VaccineType) || 0) + 1);
       }
     }
 
@@ -114,7 +166,7 @@ export class ImmunizationService {
 
     return {
       studentId,
-      studentName: profile.student.fullName,
+      studentName: `${student.firstName} ${student.lastName}`,
       isFullyCompliant,
       nonCompliantCount,
       compliancePercentage: Number(

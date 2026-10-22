@@ -250,4 +250,21 @@ export class CommunicationsController {
   ) {
     return this.commsService.markThreadAsRead(tenant.tenantId, threadId, user?.id || user?.sub || 'user_demo');
   }
+
+  // --- Support Desk & Technical Inquiries ---
+  @Get('support/tickets')
+  @RequirePermissions(SystemPermissions.COMMUNICATIONS_VIEW)
+  getSupportTickets(@CurrentTenant() tenant: TenantContext) {
+    return this.commsService.getSupportTickets(tenant.tenantId);
+  }
+
+  @Post('support/tickets')
+  @RequirePermissions(SystemPermissions.COMMUNICATIONS_VIEW)
+  createSupportTicket(
+    @CurrentTenant() tenant: TenantContext,
+    @CurrentUser() user: any,
+    @Body() dto: { subject: string; category?: string; priority?: string; description: string },
+  ) {
+    return this.commsService.createSupportTicket(tenant.tenantId, user?.id || user?.sub || 'user_demo', dto);
+  }
 }

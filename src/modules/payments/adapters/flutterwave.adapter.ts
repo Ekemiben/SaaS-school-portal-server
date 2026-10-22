@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import crypto, { randomUUID } from 'crypto';
 import {
@@ -19,7 +19,7 @@ export class FlutterwavePaymentAdapter implements PaymentProviderAdapter {
     return (
       this.configService.get<string>('FLUTTERWAVE_SECRET_KEY') ||
       process.env.FLUTTERWAVE_SECRET_KEY ||
-      'FLWSECK_TEST-mock'
+      ''
     );
   }
 
@@ -27,7 +27,7 @@ export class FlutterwavePaymentAdapter implements PaymentProviderAdapter {
     return (
       this.configService.get<string>('FLUTTERWAVE_SECRET_HASH') ||
       process.env.FLUTTERWAVE_SECRET_HASH ||
-      'flutterwave_secret_hash'
+      ''
     );
   }
 
@@ -75,9 +75,9 @@ export class FlutterwavePaymentAdapter implements PaymentProviderAdapter {
       }
     }
 
-    // Mock fallback
+    // Fallback URL if secret key is unconfigured or initialize failed
     return {
-      authorizationUrl: `https://checkout.flutterwave.com/pay/${params.reference}`,
+      authorizationUrl: `https://checkout.flutterwave.com/pay/${encodeURIComponent(params.reference)}`,
       reference: params.reference,
       provider: 'flutterwave',
     };
@@ -94,7 +94,7 @@ export class FlutterwavePaymentAdapter implements PaymentProviderAdapter {
     if (isRealKey) {
       try {
         const response = await fetch(
-          `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${reference}`,
+          `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${encodeURIComponent(reference)}`,
           {
             headers: { Authorization: `Bearer ${activeKey}` },
           },
@@ -103,33 +103,51 @@ export class FlutterwavePaymentAdapter implements PaymentProviderAdapter {
         const data: any = await response.json();
         if (data.status === 'success' && data.data) {
           const tx = data.data;
+          const isSuccessful = tx.status === 'successful';
           return {
-            success: tx.status === 'successful',
-            reference: tx.tx_ref,
-            amount: tx.amount,
-            currency: tx.currency,
-            status: tx.status === 'successful' ? 'successful' : 'failed',
+            success: isSuccessful,
+            reference: tx.tx_ref || reference,
+            amount: Number(tx.amount || 0),
+            currency: tx.currency || 'NGN',
+            status: isSuccessful ? 'successful' : 'failed',
             paidAt: tx.created_at ? new Date(tx.created_at) : undefined,
             channel: tx.payment_type,
-            gatewayResponse: tx.processor_response,
+            gatewayResponse: tx.processor_response || data.message || 'Transaction processed',
             rawPayload: tx,
+          };
+        } else {
+          return {
+            success: false,
+            reference,
+            amount: 0,
+            currency: 'NGN',
+            status: 'failed',
+            gatewayResponse: data?.message || 'Flutterwave transaction verification unconfirmed',
+            rawPayload: data,
           };
         }
       } catch (err: any) {
         this.logger.error(`Flutterwave verify error: ${err?.message}`);
+        return {
+          success: false,
+          reference,
+          amount: 0,
+          currency: 'NGN',
+          status: 'failed',
+          gatewayResponse: `Flutterwave verification network error: ${err?.message}`,
+          rawPayload: null,
+        };
       }
     }
 
     return {
-      success: true,
+      success: false,
       reference,
-      amount: 150000,
+      amount: 0,
       currency: 'NGN',
-      status: 'successful',
-      paidAt: new Date(),
-      channel: 'card',
-      gatewayResponse: 'Approved',
-      rawPayload: { tx_ref: reference, status: 'successful' },
+      status: 'failed',
+      gatewayResponse: 'Flutterwave secret key is not configured or invalid',
+      rawPayload: null,
     };
   }
 
@@ -139,11 +157,51 @@ export class FlutterwavePaymentAdapter implements PaymentProviderAdapter {
     reference: string;
     bvn?: string;
   }) {
+    if (this.secretKey && !this.secretKey.includes('mock')) {
+      try {
+        const res = await fetch('https://api.flutterwave.com/v3/virtual-account-numbers', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.secretKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            email: params.customerEmail,
+            is_permanent: true,
+            bvn: params.bvn,
+            tx_ref: params.reference,
+            narration: `${params.customerName} School Fees`,
+          }),
+        });
+        const data = await res.json();
+        if (data && data.status === 'success' && data.data) {
+          return {
+            accountNumber: data.data.account_number,
+            accountName: data.data.account_name || `${params.customerName} (School Fees)`,
+            bankName: data.data.bank_name || 'Sterling Bank',
+            bankCode: data.data.bank_code || '232',
+            reference: params.reference,
+            currency: 'NGN',
+          };
+        }
+      } catch (err: any) {
+        this.logger.error(`Flutterwave DVA error: ${err?.message}`);
+        if (process.env.NODE_ENV === 'production') {
+          throw new BadRequestException(`Flutterwave virtual account creation failed: ${err?.message}`);
+        }
+      }
+    }
+
+    if (process.env.NODE_ENV === 'production') {
+      throw new BadRequestException('Dedicated Virtual Account creation requires active Flutterwave credentials in production.');
+    }
+
+    // Virtual NUBAN simulation for development / staging sandbox
     const mockNuban = `77${Math.floor(10000000 + Math.random() * 90000000)}`;
     return {
       accountNumber: mockNuban,
       accountName: `${params.customerName} (School Fees)`,
-      bankName: 'Sterling Bank (Flutterwave DVA)',
+      bankName: 'Sterling Bank (Flutterwave DVA Sandbox)',
       bankCode: '232',
       reference: params.reference,
       currency: 'NGN',

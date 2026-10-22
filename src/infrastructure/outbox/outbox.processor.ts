@@ -20,13 +20,30 @@ export class OutboxProcessor implements OnModuleInit, OnModuleDestroy {
     this.startPolling();
   }
 
-  startPolling(intervalMs = 3000) {
-    this.timer = setInterval(() => {
-      this.processPendingEvents().catch((err) => {
-        this.logger.error(`Outbox polling error: ${err.message}`);
-      });
-    }, intervalMs);
-    this.logger.log(`Outbox relay processor started (poll interval: ${intervalMs}ms)`);
+  startPolling(intervalMs?: number) {
+    const baseInterval = intervalMs || parseInt(process.env.OUTBOX_POLL_INTERVAL_MS || '5000', 10);
+
+    const poll = async () => {
+      let nextDelay = baseInterval;
+      try {
+        await this.processPendingEvents();
+      } catch (err: any) {
+        const msg = err?.message || String(err);
+        if (msg.includes('Transaction API error') || msg.includes('timeout') || msg.includes('Connection terminated')) {
+          this.logger.warn(`Outbox relay paused waiting for database: ${msg}`);
+          nextDelay = Math.max(baseInterval * 2, 10000); // Back off during DB wake-up / latency
+        } else {
+          this.logger.error(`Outbox polling error: ${msg}`);
+        }
+      } finally {
+        if (this.timer !== null) {
+          this.timer = setTimeout(poll, nextDelay);
+        }
+      }
+    };
+
+    this.timer = setTimeout(poll, baseInterval);
+    this.logger.log(`Outbox relay processor started (poll interval: ${baseInterval}ms)`);
   }
 
   private resolveQueue(eventType: string): string {
@@ -83,7 +100,7 @@ export class OutboxProcessor implements OnModuleInit, OnModuleDestroy {
 
   onModuleDestroy() {
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
     }
   }
