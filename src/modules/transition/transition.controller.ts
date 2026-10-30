@@ -90,6 +90,15 @@ export class TransitionController {
     return this.transitionService.updateConfig(tenant.tenantId, id, dto);
   }
 
+  @Delete('configs/:id')
+  @RequireAnyPermission('transitions.manage', 'admissions.manage')
+  async deleteConfig(
+    @CurrentTenant() tenant: TenantContext,
+    @Param('id') id: string,
+  ) {
+    return this.transitionService.deleteConfig(tenant.tenantId, id);
+  }
+
   // ==========================================
   // APPLICATIONS
   // ==========================================

@@ -90,7 +90,7 @@ export class AuthService {
           : roleName === 'PARENT'
           ? ['parents.view', 'students.view', 'academics.view', 'attendance.view', 'fees.view', 'payments.view']
           : roleName === 'TEACHER'
-          ? ['students.view', 'academics.view', 'attendance.view', 'attendance.mark', 'classes.view', 'timetable.view']
+          ? ['students.view', 'academics.view', 'attendance.view', 'attendance.mark', 'classes.view', 'timetable.view', 'results.enter', 'examinations.manage', 'teachers.view']
           : ['students.view', 'campuses.view', 'academics.view', 'attendance.view', 'fees.view'];
 
       const perms = await this.prisma.permission.findMany({
@@ -191,6 +191,55 @@ export class AuthService {
           },
         });
 
+        if (!user) {
+          try {
+            const defaultPasswordHash = await bcrypt.hash('Password123!', 10);
+            const newUserId = `usr_stu_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+            user = await this.prisma.user.create({
+              data: {
+                id: newUserId,
+                tenantId: targetTenantId,
+                email: studentEmail,
+                phone: resolvedStudent.phone || null,
+                firstName: resolvedStudent.firstName || 'Student',
+                lastName: resolvedStudent.lastName || 'Learner',
+                passwordHash: defaultPasswordHash,
+                isActive: resolvedStudent.status !== 'SUSPENDED',
+                userRoles: {
+                  create: {
+                    id: `ur_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                    roleId: studentRole.id,
+                  },
+                },
+                userCampuses: resolvedStudent.campusId
+                  ? {
+                      create: {
+                        id: `uc_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                        campusId: resolvedStudent.campusId,
+                        isDefault: true,
+                      },
+                    }
+                  : undefined,
+              },
+              include: {
+                tenant: { include: { domains: true } },
+                userRoles: {
+                  include: {
+                    role: {
+                      include: {
+                        permissions: { include: { permission: true } },
+                      },
+                    },
+                  },
+                },
+                userCampuses: true,
+              },
+            });
+          } catch (err: any) {
+            this.logger.warn(`Could not auto-provision user account for student on login: ${err.message}`);
+          }
+        }
+
         if (resolvedStudent && user && !resolvedStudent.email) {
           await this.prisma.student.update({
             where: { id: resolvedStudent.id },
@@ -259,6 +308,59 @@ export class AuthService {
             }).catch(() => {});
           }
         }
+
+        if (!user) {
+          try {
+            const parentRole = await this.ensureTenantRole(targetTenantId, 'PARENT');
+            const defaultPasswordHash = await bcrypt.hash('Password123!', 10);
+            const newUserId = `usr_par_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+            const cleanParentPhone = (resolvedParent.phone || '').replace(/[^0-9+]/g, '');
+            const parentEmail = resolvedParent.email
+              ? resolvedParent.email.toLowerCase().trim()
+              : `parent.${cleanParentPhone.replace(/[^0-9]/g, '') || randomUUID().slice(0, 6)}@${resolvedParent.tenant?.slug || 'portal'}.school`;
+
+            user = await this.prisma.user.create({
+              data: {
+                id: newUserId,
+                tenantId: targetTenantId,
+                email: parentEmail,
+                phone: resolvedParent.phone || null,
+                firstName: resolvedParent.firstName || 'Guardian',
+                lastName: resolvedParent.lastName || 'Parent',
+                passwordHash: defaultPasswordHash,
+                isActive: true,
+                userRoles: {
+                  create: {
+                    id: `ur_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                    roleId: parentRole.id,
+                  },
+                },
+              },
+              include: {
+                tenant: { include: { domains: true } },
+                userRoles: {
+                  include: {
+                    role: {
+                      include: {
+                        permissions: { include: { permission: true } },
+                      },
+                    },
+                  },
+                },
+                userCampuses: true,
+              },
+            });
+
+            if (user && !resolvedParent.userId) {
+              await this.prisma.parent.update({
+                where: { id: resolvedParent.id },
+                data: { userId: user.id },
+              }).catch(() => {});
+            }
+          } catch (err: any) {
+            this.logger.warn(`Could not auto-provision user account for parent on login: ${err.message}`);
+          }
+        }
       }
     }
 
@@ -277,7 +379,111 @@ export class AuthService {
         include: { tenant: true, campus: true },
       });
 
-      if (resolvedTeacher && resolvedTeacher.userId) {
+      if (resolvedTeacher) {
+        if (resolvedTeacher.userId) {
+          user = await this.prisma.user.findFirst({
+            where: { id: resolvedTeacher.userId, tenantId: targetTenantId },
+            include: {
+              tenant: { include: { domains: true } },
+              userRoles: {
+                include: {
+                  role: {
+                    include: {
+                      permissions: { include: { permission: true } },
+                    },
+                  },
+                },
+              },
+              userCampuses: true,
+            },
+          });
+        }
+
+        if (!user && resolvedTeacher.email) {
+          user = await this.prisma.user.findFirst({
+            where: { tenantId: targetTenantId, email: resolvedTeacher.email.toLowerCase().trim() },
+            include: {
+              tenant: { include: { domains: true } },
+              userRoles: {
+                include: {
+                  role: {
+                    include: {
+                      permissions: { include: { permission: true } },
+                    },
+                  },
+                },
+              },
+              userCampuses: true,
+            },
+          });
+        }
+
+        if (!user) {
+          try {
+            const teacherRole = await this.ensureTenantRole(targetTenantId, 'TEACHER');
+            const defaultPasswordHash = await bcrypt.hash('Password123!', 10);
+            const newUserId = `usr_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+            const teacherEmail = (resolvedTeacher.email || `${resolvedTeacher.employeeNumber.toLowerCase().replace(/[^a-z0-9]/g, '')}@teacher.portal`).toLowerCase().trim();
+
+            user = await this.prisma.user.create({
+              data: {
+                id: newUserId,
+                tenantId: targetTenantId,
+                email: teacherEmail,
+                phone: resolvedTeacher.phone || null,
+                firstName: resolvedTeacher.firstName || 'Teacher',
+                lastName: resolvedTeacher.lastName || 'Staff',
+                passwordHash: defaultPasswordHash,
+                isActive: resolvedTeacher.isActive !== false,
+                userRoles: {
+                  create: {
+                    id: `ur_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                    roleId: teacherRole.id,
+                  },
+                },
+                userCampuses: resolvedTeacher.campusId
+                  ? {
+                      create: {
+                        id: `uc_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                        campusId: resolvedTeacher.campusId,
+                        isDefault: true,
+                      },
+                    }
+                  : undefined,
+              },
+              include: {
+                tenant: { include: { domains: true } },
+                userRoles: {
+                  include: {
+                    role: {
+                      include: {
+                        permissions: { include: { permission: true } },
+                      },
+                    },
+                  },
+                },
+                userCampuses: true,
+              },
+            });
+          } catch (err: any) {
+            this.logger.warn(`Could not auto-provision user account for teacher on login: ${err.message}`);
+          }
+        }
+
+        if (user && !resolvedTeacher.userId) {
+          await this.prisma.teacher.update({
+            where: { id: resolvedTeacher.id },
+            data: { userId: user.id },
+          }).catch(() => {});
+          if (this.prisma.staff?.updateMany) {
+            await this.prisma.staff.updateMany({
+              where: { id: resolvedTeacher.id, tenantId: targetTenantId },
+              data: { userId: user.id },
+            }).catch(() => {});
+          }
+        }
+      }
+      if (!user && resolvedTeacher && resolvedTeacher.userId) {
         user = await this.prisma.user.findFirst({
           where: { id: resolvedTeacher.userId, tenantId: targetTenantId },
           include: {
@@ -1103,6 +1309,229 @@ export class AuthService {
     });
 
     return { success: true, message: 'Password updated successfully.' };
+  }
+
+  async adminResetUserPassword(
+    callerUser: any,
+    tenantId: string,
+    params: { targetType: 'TEACHER' | 'STUDENT' | 'PARENT'; targetId: string; newPassword?: string },
+  ) {
+    const adminRoles = [
+      'SUPER_ADMIN',
+      'PLATFORM_ADMIN',
+      'SCHOOL_OWNER',
+      'PRINCIPAL',
+      'VICE_PRINCIPAL',
+      'SCHOOL_ADMIN',
+      'ADMIN',
+      'School Admin',
+    ];
+    const callerPerms: string[] = Array.isArray(callerUser?.permissions) ? callerUser.permissions : [];
+    const isAuthorized =
+      callerUser?.isPlatformAdmin ||
+      adminRoles.includes(callerUser?.role) ||
+      callerPerms.includes('*') ||
+      callerPerms.includes('users.manage') ||
+      callerPerms.includes('teachers.manage') ||
+      callerPerms.includes('students.update');
+
+    if (!isAuthorized) {
+      throw new UnauthorizedException('Only school administrators can reset user passwords.');
+    }
+
+    const targetType = (params.targetType || 'TEACHER').toUpperCase();
+    const targetId = params.targetId;
+    const tempPassword = (params.newPassword || 'Password123!').trim();
+    const passwordHash = await bcrypt.hash(tempPassword, 10);
+
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+    const tenantSlug = tenant?.slug || 'portal';
+
+    if (targetType === 'TEACHER') {
+      const teacher = await this.prisma.teacher.findFirst({
+        where: { id: targetId, tenantId },
+      });
+      const staff = this.prisma.staff?.findFirst
+        ? await this.prisma.staff.findFirst({ where: { id: targetId, tenantId } })
+        : null;
+      const record: any = teacher || staff;
+      if (!record) {
+        throw new NotFoundException('Staff member not found in this school.');
+      }
+
+      const role = await this.ensureTenantRole(tenantId, 'TEACHER');
+      const email = (
+        record.email ||
+        `${(record.employeeNumber || record.id).toLowerCase().replace(/[^a-z0-9]/g, '')}@teacher.${tenantSlug}.school`
+      )
+        .toLowerCase()
+        .trim();
+
+      let userRecord = record.userId
+        ? await this.prisma.user.findFirst({ where: { id: record.userId, tenantId } })
+        : await this.prisma.user.findFirst({ where: { email, tenantId } });
+
+      if (userRecord) {
+        await this.prisma.user.update({
+          where: { id: userRecord.id },
+          data: { passwordHash, isActive: true, updatedAt: new Date() },
+        });
+      } else {
+        userRecord = await this.prisma.user.create({
+          data: {
+            id: `usr_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+            tenantId,
+            email,
+            phone: record.phone || null,
+            firstName: record.firstName || 'Teacher',
+            lastName: record.lastName || 'Staff',
+            passwordHash,
+            isActive: true,
+            userRoles: {
+              create: {
+                id: `ur_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                roleId: role.id,
+              },
+            },
+          },
+        });
+      }
+
+      if (teacher && teacher.userId !== userRecord.id) {
+        await this.prisma.teacher.update({
+          where: { id: teacher.id },
+          data: { userId: userRecord.id },
+        }).catch(() => {});
+      }
+      if (staff && this.prisma.staff?.updateMany) {
+        await this.prisma.staff.updateMany({
+          where: { id: targetId, tenantId },
+          data: { userId: userRecord.id },
+        }).catch(() => {});
+      }
+
+      return {
+        success: true,
+        message: `Login password for ${record.firstName} ${record.lastName} has been reset.`,
+        temporaryPassword: tempPassword,
+        loginIdentifier: record.email || record.employeeNumber,
+      };
+    }
+
+    if (targetType === 'STUDENT') {
+      const student = await this.prisma.student.findFirst({
+        where: { id: targetId, tenantId },
+      });
+      if (!student) {
+        throw new NotFoundException('Student not found in this school.');
+      }
+
+      const role = await this.ensureTenantRole(tenantId, 'STUDENT');
+      const studentEmail = student.email
+        ? student.email.toLowerCase().trim()
+        : `${student.admissionNumber.toLowerCase().replace(/[^a-z0-9]/g, '')}@student.${tenantSlug}.school`;
+
+      let userRecord = await this.prisma.user.findFirst({
+        where: { tenantId, email: studentEmail },
+      });
+
+      if (userRecord) {
+        await this.prisma.user.update({
+          where: { id: userRecord.id },
+          data: { passwordHash, isActive: true, updatedAt: new Date() },
+        });
+      } else {
+        userRecord = await this.prisma.user.create({
+          data: {
+            id: `usr_stu_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+            tenantId,
+            email: studentEmail,
+            phone: student.phone || null,
+            firstName: student.firstName,
+            lastName: student.lastName,
+            passwordHash,
+            isActive: true,
+            userRoles: {
+              create: {
+                id: `ur_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                roleId: role.id,
+              },
+            },
+          },
+        });
+      }
+
+      if (!student.email) {
+        await this.prisma.student.update({
+          where: { id: student.id },
+          data: { email: studentEmail },
+        }).catch(() => {});
+      }
+
+      return {
+        success: true,
+        message: `Login password for ${student.firstName} ${student.lastName} has been reset.`,
+        temporaryPassword: tempPassword,
+        loginIdentifier: student.admissionNumber,
+      };
+    }
+
+    const parent = await this.prisma.parent.findFirst({
+      where: { id: targetId, tenantId },
+    });
+    if (!parent) {
+      throw new NotFoundException('Parent record not found in this school.');
+    }
+
+    const role = await this.ensureTenantRole(tenantId, 'PARENT');
+    const cleanPhone = (parent.phone || '').replace(/[^0-9+]/g, '');
+    const parentEmail = parent.email
+      ? parent.email.toLowerCase().trim()
+      : `parent.${cleanPhone.replace(/[^0-9]/g, '') || randomUUID().slice(0, 6)}@${tenantSlug}.school`;
+
+    let userRecord = parent.userId
+      ? await this.prisma.user.findFirst({ where: { id: parent.userId, tenantId } })
+      : await this.prisma.user.findFirst({ where: { email: parentEmail, tenantId } });
+
+    if (userRecord) {
+      await this.prisma.user.update({
+        where: { id: userRecord.id },
+        data: { passwordHash, isActive: true, updatedAt: new Date() },
+      });
+    } else {
+      userRecord = await this.prisma.user.create({
+        data: {
+          id: `usr_par_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+          tenantId,
+          email: parentEmail,
+          phone: parent.phone || null,
+          firstName: parent.firstName,
+          lastName: parent.lastName,
+          passwordHash,
+          isActive: true,
+          userRoles: {
+            create: {
+              id: `ur_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+              roleId: role.id,
+            },
+          },
+        },
+      });
+    }
+
+    if (parent.userId !== userRecord.id) {
+      await this.prisma.parent.update({
+        where: { id: parent.id },
+        data: { userId: userRecord.id },
+      }).catch(() => {});
+    }
+
+    return {
+      success: true,
+      message: `Login password for ${parent.firstName} ${parent.lastName} has been reset.`,
+      temporaryPassword: tempPassword,
+      loginIdentifier: parent.email || parent.phone,
+    };
   }
 
   async switchCampus(userId: string, tenantId: string, campusId: string) {

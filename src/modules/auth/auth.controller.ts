@@ -212,10 +212,23 @@ export class AuthController {
     @Body() body: { currentPassword: string; newPassword: string },
   ) {
     return this.authService.changePassword(
-      user.id,
-      tenant.tenantId,
+      user?.id || user?.sub,
+      tenant?.tenantId || user?.tenantId,
       body.currentPassword,
       body.newPassword,
+    );
+  }
+
+  @Post('admin-reset-password')
+  async adminResetPassword(
+    @CurrentUser() user: any,
+    @CurrentTenant() tenant: TenantContext,
+    @Body() body: { targetType: 'TEACHER' | 'STUDENT' | 'PARENT'; targetId: string; newPassword?: string },
+  ) {
+    return this.authService.adminResetUserPassword(
+      user,
+      tenant?.tenantId || user?.tenantId,
+      body,
     );
   }
 

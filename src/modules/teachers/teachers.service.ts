@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service.js';
 import { randomUUID } from 'crypto';
+import * as bcrypt from 'bcryptjs';
 import { SystemPermissions } from '../../common/constants/permissions.js';
 
 @Injectable()
@@ -14,6 +15,137 @@ export class TeachersService {
   private readonly logger = new Logger(TeachersService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  private async ensureTeacherUserAccount(params: {
+    tenantId: string;
+    campusId: string;
+    firstName: string;
+    lastName: string;
+    email: string;
+    phone?: string | null;
+    passwordPlain?: string;
+    isActive?: boolean;
+  }): Promise<string | null> {
+    if (!this.prisma.user?.findFirst || !this.prisma.role?.findFirst) {
+      return null;
+    }
+
+    try {
+      const { tenantId, campusId, firstName, lastName, email, phone, passwordPlain, isActive = true } = params;
+      const emailClean = email.toLowerCase().trim();
+      const phoneClean = phone ? phone.replace(/\s+/g, '') : null;
+
+      let role = await this.prisma.role.findFirst({
+        where: { tenantId, name: 'TEACHER' },
+      });
+
+      if (!role) {
+        role = await this.prisma.role.create({
+          data: {
+            id: `role_teacher_${randomUUID().replace(/-/g, '').substring(0, 10)}`,
+            tenantId,
+            name: 'TEACHER',
+            description: 'Teaching Staff and Educator portal access',
+            isSystem: true,
+          },
+        });
+      }
+
+      if (this.prisma.permission?.findMany && this.prisma.rolePermission?.createMany) {
+        const teacherPerms = [
+          'students.view',
+          'academics.view',
+          'attendance.view',
+          'attendance.mark',
+          'classes.view',
+          'timetable.view',
+          'results.enter',
+          'examinations.manage',
+          'teachers.view',
+        ];
+        const perms = await this.prisma.permission.findMany({
+          where: { name: { in: teacherPerms } },
+        });
+        if (perms.length > 0) {
+          await this.prisma.rolePermission.createMany({
+            data: perms.map((p: any) => ({
+              roleId: role.id,
+              permissionId: p.id,
+            })),
+            skipDuplicates: true,
+          });
+        }
+      }
+
+      const existingUser = await this.prisma.user.findFirst({
+        where: {
+          tenantId,
+          OR: [
+            { email: emailClean },
+            ...(phoneClean ? [{ phone: phoneClean }] : []),
+          ],
+        },
+      });
+
+      let userId: string;
+      if (existingUser) {
+        userId = existingUser.id;
+        if (this.prisma.userRole?.upsert) {
+          await this.prisma.userRole.upsert({
+            where: {
+              userId_roleId: {
+                userId: existingUser.id,
+                roleId: role.id,
+              },
+            },
+            create: {
+              id: `ur_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+              userId: existingUser.id,
+              roleId: role.id,
+            },
+            update: {},
+          });
+        }
+      } else {
+        const defaultPassword = passwordPlain || 'Password123!';
+        const passwordHash = await bcrypt.hash(defaultPassword, 10);
+        const newUserId = `usr_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+        const createdUser = await this.prisma.user.create({
+          data: {
+            id: newUserId,
+            tenantId,
+            email: emailClean,
+            phone: phoneClean,
+            firstName,
+            lastName,
+            passwordHash,
+            isActive,
+            userRoles: {
+              create: {
+                id: `ur_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                roleId: role.id,
+              },
+            },
+            userCampuses: campusId
+              ? {
+                  create: {
+                    id: `uc_${randomUUID().replace(/-/g, '').substring(0, 12)}`,
+                    campusId,
+                    isDefault: true,
+                  },
+                }
+              : undefined,
+          },
+        });
+        userId = createdUser.id;
+      }
+
+      return userId;
+    } catch (err: any) {
+      this.logger.warn(`Failed to provision User account for teacher: ${err.message}`);
+      return null;
+    }
+  }
 
   private hasFinancialPermission(user?: any): boolean {
     if (!user) return false;
@@ -374,6 +506,17 @@ export class TeachersService {
     );
 
     const id = `stf_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
+    const resolvedEmail = (data.email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@school.edu`).toLowerCase().trim();
+    const provisionedUserId = await this.ensureTeacherUserAccount({
+      tenantId,
+      campusId,
+      firstName,
+      lastName,
+      email: resolvedEmail,
+      phone: phoneClean,
+      passwordPlain: data.password,
+      isActive,
+    });
 
     const createdResult = await this.prisma.$transaction(async (tx) => {
       let newStaff: any = null;
@@ -387,7 +530,8 @@ export class TeachersService {
             firstName,
             middleName: data.middleName || null,
             lastName,
-            email: (data.email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@school.edu`).toLowerCase().trim(),
+            email: resolvedEmail,
+            ...(provisionedUserId ? { userId: provisionedUserId } : {}),
             phone: phoneClean,
             gender: data.gender || null,
             dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : null,
@@ -449,7 +593,8 @@ export class TeachersService {
             employeeNumber: (newStaff || { employeeNumber }).employeeNumber,
             firstName,
             lastName,
-            email: (data.email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@school.edu`).toLowerCase().trim(),
+            email: resolvedEmail,
+            ...(provisionedUserId ? { userId: provisionedUserId } : {}),
             phone: phoneClean,
             departmentId,
             designationId,
@@ -727,6 +872,21 @@ export class TeachersService {
         });
       }
 
+      if (existing.userId && (tx as any).user?.updateMany) {
+        const userUpdateData: any = {};
+        if (updateData.firstName !== undefined) userUpdateData.firstName = updateData.firstName;
+        if (updateData.lastName !== undefined) userUpdateData.lastName = updateData.lastName;
+        if (updateData.email !== undefined) userUpdateData.email = updateData.email;
+        if (updateData.isActive !== undefined) userUpdateData.isActive = updateData.isActive;
+
+        if (Object.keys(userUpdateData).length > 0) {
+          await (tx as any).user.updateMany({
+            where: { id: existing.userId, tenantId },
+            data: userUpdateData,
+          });
+        }
+      }
+
       if (hasFinancialData) {
         const basicSalary = data.basicSalary !== undefined ? Number(data.basicSalary) : 0;
         const housingAllowance = data.housingAllowance !== undefined ? Number(data.housingAllowance) : 0;
@@ -770,20 +930,47 @@ export class TeachersService {
   }
 
   async delete(tenantId: string, teacherId: string) {
-    const existing = await this.prisma.teacher.findFirst({
+    const existingTeacher = await this.prisma.teacher.findFirst({
       where: { id: teacherId, tenantId },
     });
-    if (!existing) {
+    const existingStaff = this.prisma.staff?.findFirst
+      ? await this.prisma.staff.findFirst({
+          where: { id: teacherId, tenantId },
+        })
+      : null;
+
+    if (!existingTeacher && !existingStaff) {
       throw new NotFoundException('Teacher not found in this school');
     }
 
-    await this.prisma.class.updateMany({
-      where: { tenantId, classTeacherId: teacherId },
-      data: { classTeacherId: null },
-    });
+    const linkedUserId = existingTeacher?.userId || existingStaff?.userId || null;
 
-    await this.prisma.teacher.delete({
-      where: { id: teacherId },
+    await this.prisma.$transaction(async (tx) => {
+      if (tx.class?.updateMany) {
+        await tx.class.updateMany({
+          where: { tenantId, classTeacherId: teacherId },
+          data: { classTeacherId: null },
+        });
+      }
+
+      if (existingTeacher && tx.teacher?.delete) {
+        await tx.teacher.delete({
+          where: { id: teacherId },
+        });
+      }
+
+      if (existingStaff && tx.staff?.deleteMany) {
+        await tx.staff.deleteMany({
+          where: { id: teacherId, tenantId },
+        });
+      }
+
+      if (linkedUserId && (tx as any).user?.updateMany) {
+        await (tx as any).user.updateMany({
+          where: { id: linkedUserId, tenantId },
+          data: { isActive: false },
+        });
+      }
     });
 
     return { success: true, message: 'Teacher record removed successfully' };

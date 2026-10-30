@@ -16,28 +16,24 @@ describe('PrismaService (Production Persistence & Lifecycle)', () => {
     }
   });
 
-  it('should initialize memory store with default seed records for development/testing', () => {
+  it('should initialize with isDbConnected set to false prior to onModuleInit', () => {
     prismaService = new PrismaService();
     expect(prismaService.isDbConnected).toBe(false);
-    expect(prismaService.memoryStore.tenants.has('tenant_greenfield_100')).toBe(true);
-    expect(prismaService.memoryStore.campuses.has('campus_main_01')).toBe(true);
-    expect(prismaService.memoryStore.users.has('user_owner_001')).toBe(true);
   });
 
   it('should fail fast in production mode if PostgreSQL is unreachable', async () => {
     process.env.NODE_ENV = 'production';
     prismaService = new PrismaService();
 
-    // Mock $connect to fail simulating unreachable PostgreSQL in production
     vi.spyOn(prismaService, '$connect').mockRejectedValue(new Error('Connection refused at port 5432'));
 
     await expect(prismaService.onModuleInit()).rejects.toThrow(
-      /Silent fallback to memory storage is strictly prohibited in production/,
+      /Critical: Database connection is strictly required in production mode/,
     );
     expect(prismaService.isDbConnected).toBe(false);
   });
 
-  it('should fail fast when REQUIRE_DB is set to true and DB is unreachable', async () => {
+  it('should fail fast when PostgreSQL connection fails during onModuleInit', async () => {
     process.env.REQUIRE_DB = 'true';
     process.env.NODE_ENV = 'development';
     prismaService = new PrismaService();
@@ -45,19 +41,8 @@ describe('PrismaService (Production Persistence & Lifecycle)', () => {
     vi.spyOn(prismaService, '$connect').mockRejectedValue(new Error('ECONNREFUSED'));
 
     await expect(prismaService.onModuleInit()).rejects.toThrow(
-      /Silent fallback to memory storage is strictly prohibited in production/,
+      /Critical: Database connection is strictly required in production mode/,
     );
-  });
-
-  it('should gracefully fallback with warning in non-production mode when DB is unreachable', async () => {
-    process.env.NODE_ENV = 'development';
-    delete process.env.REQUIRE_DB;
-    prismaService = new PrismaService();
-
-    vi.spyOn(prismaService, '$connect').mockRejectedValue(new Error('ECONNREFUSED'));
-
-    await expect(prismaService.onModuleInit()).resolves.toBeUndefined();
-    expect(prismaService.isDbConnected).toBe(false);
   });
 
   it('should set isDbConnected to true when PostgreSQL connects successfully', async () => {
@@ -65,6 +50,7 @@ describe('PrismaService (Production Persistence & Lifecycle)', () => {
 
     vi.spyOn(prismaService, '$connect').mockResolvedValue(undefined as never);
     vi.spyOn(prismaService, '$queryRaw').mockResolvedValue([{ '?column?': 1 }] as never);
+    vi.spyOn(prismaService, '$executeRawUnsafe').mockResolvedValue(0 as never);
 
     await prismaService.onModuleInit();
     expect(prismaService.isDbConnected).toBe(true);
