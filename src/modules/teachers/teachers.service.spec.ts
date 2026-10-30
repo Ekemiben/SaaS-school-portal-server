@@ -353,4 +353,78 @@ describe('Step 1 Staff Master & Onboarding Integrity Verification', () => {
     expect(teacher.designationId).toBeNull();
     expect(teacher.staffRoomId).toBeNull();
   });
+
+  // Test 15: Update synchronizes Teacher, Staff, and User records
+  it('15. should synchronize Teacher, Staff, and User login records on update', async () => {
+    mockPrisma.staff = { updateMany: vi.fn(), findFirst: vi.fn(), deleteMany: vi.fn() };
+    mockPrisma.user = { updateMany: vi.fn() };
+    mockPrisma.teacher.findFirst.mockResolvedValue({
+      id: 'tch_sync_01',
+      tenantId: tenantA,
+      campusId: campusMain,
+      userId: 'usr_sync_01',
+      firstName: 'Old',
+      lastName: 'Name',
+      email: 'old@school.edu',
+      isActive: true,
+    });
+    mockPrisma.teacher.update.mockResolvedValue({
+      id: 'tch_sync_01',
+      tenantId: tenantA,
+      campusId: campusMain,
+      userId: 'usr_sync_01',
+      firstName: 'New',
+      lastName: 'Name',
+      email: 'new@school.edu',
+      isActive: false,
+    });
+
+    await teachersService.update(
+      tenantA,
+      'tch_sync_01',
+      { firstName: 'New', lastName: 'Name', email: 'new@school.edu', status: 'Suspended' },
+      adminUser,
+    );
+
+    expect(mockPrisma.staff.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { tenantId: tenantA, id: 'tch_sync_01' },
+      }),
+    );
+    expect(mockPrisma.user.updateMany).toHaveBeenCalledWith({
+      where: { id: 'usr_sync_01', tenantId: tenantA },
+      data: {
+        firstName: 'New',
+        lastName: 'Name',
+        email: 'new@school.edu',
+        isActive: false,
+      },
+    });
+  });
+
+  // Test 16: Delete removes both Teacher and Staff records and deactivates linked User
+  it('16. should delete both Teacher and Staff records and deactivate linked User on delete', async () => {
+    mockPrisma.staff = {
+      findFirst: vi.fn().mockResolvedValue({ id: 'tch_del_01', tenantId: tenantA, userId: 'usr_del_01' }),
+      deleteMany: vi.fn(),
+    };
+    mockPrisma.user = { updateMany: vi.fn() };
+    mockPrisma.teacher.findFirst.mockResolvedValue({
+      id: 'tch_del_01',
+      tenantId: tenantA,
+      userId: 'usr_del_01',
+    });
+
+    const res = await teachersService.delete(tenantA, 'tch_del_01');
+
+    expect(res.success).toBe(true);
+    expect(mockPrisma.teacher.delete).toHaveBeenCalledWith({ where: { id: 'tch_del_01' } });
+    expect(mockPrisma.staff.deleteMany).toHaveBeenCalledWith({
+      where: { id: 'tch_del_01', tenantId: tenantA },
+    });
+    expect(mockPrisma.user.updateMany).toHaveBeenCalledWith({
+      where: { id: 'usr_del_01', tenantId: tenantA },
+      data: { isActive: false },
+    });
+  });
 });

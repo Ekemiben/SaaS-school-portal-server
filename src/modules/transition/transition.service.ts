@@ -223,6 +223,29 @@ export class TransitionService {
     return updated;
   }
 
+  async deleteConfig(tenantId: string, id: string, actorUserId?: string) {
+    const config = await this.prisma.transitionConfig.findFirst({
+      where: { id, tenantId },
+    });
+    if (!config) throw new NotFoundException('Transition configuration not found');
+
+    await this.prisma.transitionConfig.delete({
+      where: { id },
+    });
+
+    await this.recordAuditLog(
+      tenantId,
+      actorUserId,
+      'TRANSITION_CONFIG_DELETED',
+      'TransitionConfig',
+      id,
+      config,
+      undefined,
+    );
+
+    return { success: true, message: 'Transition mapping rule deleted successfully' };
+  }
+
   // ==========================================
   // ELIGIBILITY & DASHBOARD ANALYTICS
   // ==========================================

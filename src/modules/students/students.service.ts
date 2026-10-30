@@ -440,6 +440,7 @@ export class StudentsService {
               },
               update: {},
             });
+          } else {
             const initialParentPassword = data.guardianPassword || data.password || 'Password123!';
             const passwordHash = await bcrypt.hash(initialParentPassword, 10);
             const newUserId = `usr_${randomUUID().replace(/-/g, '').substring(0, 12)}`;
@@ -634,6 +635,13 @@ export class StudentsService {
             },
           },
         });
+      }
+
+      if (!createdStudent.email && studentEmail) {
+        await this.prisma.student.update({
+          where: { id: createdStudent.id },
+          data: { email: studentEmail },
+        }).catch(() => {});
       }
 
       // Parent role & user if guardian info provided
@@ -1055,6 +1063,73 @@ export class StudentsService {
       issuedAt: new Date().toISOString(),
     };
 
+    // Fetch published examinations & student results
+    let publishedExaminations: any[] = [];
+    let studentResults: any[] = [];
+    try {
+      if (this.prisma.examination?.findMany && this.prisma.result?.findMany) {
+        const exams = await this.prisma.examination.findMany({
+          where: { tenantId, isPublished: true },
+          orderBy: { startDate: 'desc' },
+        });
+        publishedExaminations = exams.map((e) => ({
+          id: e.id,
+          name: e.name,
+          termId: e.termId,
+          academicYearId: e.academicYearId,
+          startDate: e.startDate,
+          endDate: e.endDate,
+        }));
+        const examIds = exams.map((e) => e.id);
+        if (examIds.length > 0) {
+          const rawResults = await this.prisma.result.findMany({
+            where: { tenantId, studentId: student.id, examinationId: { in: examIds } },
+            include: { subject: true, examination: true },
+          });
+          studentResults = rawResults.map((r: any) => ({
+            id: r.id,
+            examinationId: r.examinationId,
+            examinationName: r.examination?.name || 'Term Examination',
+            subjectId: r.subjectId,
+            subjectName: r.subject?.name || 'Subject',
+            marksObtained: r.marksObtained,
+            maxMarks: r.maxMarks || 100,
+            percentage: Number(((r.marksObtained / (r.maxMarks || 100)) * 100).toFixed(1)),
+            grade: r.grade || 'N/A',
+            remarks: r.remarks || 'Satisfactory',
+            componentScores: r.componentScores || null,
+          }));
+        }
+      }
+    } catch (err: any) {
+      this.logger.warn(`Could not fetch student results for portal profile: ${err.message}`);
+    }
+
+    // Fetch student class timetable entries
+    let timetableSchedule: any[] = [];
+    try {
+      if (classId && this.prisma.timetableEntry?.findMany) {
+        const entries = await this.prisma.timetableEntry.findMany({
+          where: { timetable: { tenantId, classId } },
+          include: { subject: true, teacher: true },
+          orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }],
+        });
+        timetableSchedule = entries.map((entry: any) => ({
+          id: entry.id,
+          dayOfWeek: entry.dayOfWeek,
+          periodNumber: entry.periodNumber,
+          startTime: entry.startTime,
+          endTime: entry.endTime,
+          subjectName: entry.subject?.name || 'General',
+          teacherName:
+            `${entry.teacher?.firstName || ''} ${entry.teacher?.lastName || ''}`.trim() || 'Educator',
+          room: entry.room || 'Classroom',
+        }));
+      }
+    } catch (err: any) {
+      this.logger.warn(`Could not fetch class timetable for student portal profile: ${err.message}`);
+    }
+
     return {
       student: {
         id: student.id,
@@ -1091,6 +1166,9 @@ export class StudentsService {
       },
       feeSchedule,
       examClearance,
+      publishedExaminations,
+      results: studentResults,
+      timetable: timetableSchedule,
       fees: {
         totalInvoiced,
         totalPaid,

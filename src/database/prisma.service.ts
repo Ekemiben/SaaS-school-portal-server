@@ -61,15 +61,17 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       await this.$executeRawUnsafe(`
         DO $$ 
         BEGIN 
-          IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'school_saas_app') THEN 
-            CREATE ROLE school_saas_app NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT; 
-          END IF; 
+          IF pg_try_advisory_xact_lock(74839201) THEN
+            IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'school_saas_app') THEN 
+              CREATE ROLE school_saas_app NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT; 
+              EXECUTE 'GRANT USAGE ON SCHEMA public TO school_saas_app';
+              EXECUTE 'GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO school_saas_app';
+              EXECUTE 'GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO school_saas_app';
+              EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON TABLES TO school_saas_app';
+              EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO school_saas_app';
+            END IF; 
+          END IF;
         END $$;
-        GRANT USAGE ON SCHEMA public TO school_saas_app;
-        GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO school_saas_app;
-        GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO school_saas_app;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON TABLES TO school_saas_app;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO school_saas_app;
       `);
       await this.ensureSchemaIntegrity();
     } catch (err: any) {
@@ -82,22 +84,26 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       await this.$executeRawUnsafe(`
         DO $$ 
         BEGIN 
-          IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns 
-            WHERE table_name = 'Parent' AND column_name = 'userId'
-          ) THEN
-            ALTER TABLE "Parent" ADD COLUMN "userId" TEXT;
-          END IF; 
-        END $$;
-        CREATE UNIQUE INDEX IF NOT EXISTS "Parent_userId_key" ON "Parent"("userId");
-        DO $$
-        BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM information_schema.table_constraints 
-            WHERE constraint_name = 'Parent_userId_fkey'
-          ) THEN
-            ALTER TABLE "Parent" ADD CONSTRAINT "Parent_userId_fkey" 
-            FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+          IF pg_try_advisory_xact_lock(74839202) THEN
+            IF NOT EXISTS (
+              SELECT 1 FROM information_schema.columns 
+              WHERE table_name = 'Parent' AND column_name = 'userId'
+            ) THEN
+              ALTER TABLE "Parent" ADD COLUMN "userId" TEXT;
+            END IF; 
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_indexes
+              WHERE tablename = 'Parent' AND indexname = 'Parent_userId_key'
+            ) THEN
+              CREATE UNIQUE INDEX "Parent_userId_key" ON "Parent"("userId");
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM information_schema.table_constraints 
+              WHERE constraint_name = 'Parent_userId_fkey'
+            ) THEN
+              ALTER TABLE "Parent" ADD CONSTRAINT "Parent_userId_fkey" 
+              FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+            END IF;
           END IF;
         END $$;
       `);
